@@ -1,0 +1,86 @@
+# Журнал изменений — crate `ktav`
+
+**Languages:** [English](CHANGELOG.md) · **Русский** · [简体中文](CHANGELOG.zh.md)
+
+Все значимые изменения в crate `ktav` документируются здесь. Формат
+основан на [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
+crate следует [Semantic Versioning](https://semver.org/) с
+Cargo-конвенцией: до 1.0 bump MINOR считается ломающим.
+
+Историю самой спецификации формата см. в репозитории
+[`ktav-lang/spec`](https://github.com/ktav-lang/spec).
+
+## [0.1.0] — 2026-04-22
+
+Первый релиз. Реализует [Ktav spec 0.1.0](https://github.com/ktav-lang/spec/blob/main/versions/0.1/spec.md).
+
+### Added
+
+- **Parser** — превращает текст Ktav в `Value` (владеющий) или
+  `ThinValue` (zero-copy view поверх входного буфера). Построчная
+  state machine с разворачиванием точечных ключей, многострочными
+  строками (со снятием отступа и побайтовыми), JSON-подобными
+  ключевыми словами `null` / `true` / `false` и типизированными
+  скалярными маркерами `:i` (Integer) и `:f` (Float).
+- **Serializer** — два пути:
+  - `ktav::to_string` (прямая эмиссия текста, основной путь).
+  - `ktav::ser::to_value` / `ktav::render` (двухшаговый вариант для
+    тех, кто хочет осмотреть `Value` между стадиями).
+  Оба автоматически эмитят `::` для строк, которые иначе были бы
+  неверно прочитаны парсером, и эмитят `:i` / `:f` для числовых
+  Rust-типов.
+- **Deserializer** — zero-copy путь через `ThinValue<'a>` и
+  `ThinDeserializer`. Ключи объектов и однострочные скалярные
+  значения заимствуются напрямую из входа; выделение памяти
+  происходит только для многострочных строк. Принимает обе формы
+  чисел — с маркером и без: документы, написанные без маркеров,
+  десериализуются прозрачно через `FromStr`.
+- **Serde integration** — `from_str`, `from_file`, `to_string`,
+  `to_file` принимают любой `T: Serialize` / `DeserializeOwned`,
+  включая типы, сгенерированные `#[derive]`, вложенные struct-ы,
+  `Vec`, `Option`, `HashMap` и стандартные externally-tagged формы
+  enum-ов. Целочисленные Rust-типы (`u8`..`u128`, `i8`..`i128`,
+  `usize`, `isize`) сериализуются с `:i`; плавающие (`f32`, `f64`) —
+  с `:f`; `NaN` и `±Infinity` отвергаются сериализатором (Ktav 0.1.0
+  их не представляет).
+- **Raw-маркер `::`** — заставляет значение быть литеральной String,
+  как в позиции пары (`key:: value`), так и как префикс элемента
+  массива (`:: value`).
+- **Типизированные маркеры `:i` и `:f`** — явные Integer / Float в
+  позиции пары (`port:i 8080`, `ratio:f 0.5`) и как префиксы
+  элементов массива (`:i 42`, `:f 3.14`). На уровне `Value` хранятся
+  как строки — для сохранения произвольной точности.
+- **Многострочные строки** — `( ... )` (со снятием общего отступа) и
+  `(( ... ))` (побайтово). Round-trip байт-в-байт через побайтовую
+  форму.
+- **Публичный enum `Value`** — `Null`, `Bool`, `Integer`, `Float`,
+  `String`, `Array`, `Object` (на основе `IndexMap` с
+  `rustc_hash::FxBuildHasher`). Аксессоры `Value::as_integer` /
+  `as_float`; аналогичные на `ThinValue`.
+- **Сообщения об ошибках** — каждая синтаксическая ошибка несёт номер
+  строки; ошибки десериализации несут точечный путь
+  (`upstreams.[0].port`). Нарушения типизированных скаляров
+  отмечаются префиксом `InvalidTypedScalar` в сообщении.
+- **Spec conformance тесты** — `tests/spec_conformance.rs` прогоняет
+  language-agnostic набор из репозитория `ktav-lang/spec`
+  (находится через env-переменную `KTAV_SPEC_DIR` или fallback
+  `../spec`). Три проверки: соответствие Value JSON-оракулу,
+  отвержение invalid-fixture-ов и lossless round-trip Value-уровня
+  через рендерер.
+
+### Performance (criterion, typed-конфиг 22 KB, Windows release)
+
+- `parse → struct`: **275 µs** (~80 MB/s)
+- `render struct → text`: **46 µs** (~475 MB/s)
+- `round-trip`: **377 µs**
+
+### Dependencies
+
+- `serde` с `derive`
+- `indexmap` с фичей `serde`
+- `rustc-hash` (FxHash — быстрый и детерминированный; не
+  устойчив к коллизиям, а парсеру конфигов это и не нужно)
+
+### MSRV
+
+`rustc 1.70` или новее.

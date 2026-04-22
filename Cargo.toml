@@ -1,0 +1,38 @@
+[package]
+name = "ktav"
+version = "0.1.0"
+edition = "2021"
+description = "Ktav — a plain configuration format. Three rules, zero indentation, zero quoting. Serde-native."
+license = "MIT"
+repository = "https://github.com/ktav-lang/rust"
+readme = "README.md"
+keywords = ["config", "configuration", "serde", "minimal", "plain"]
+categories = ["config", "parsing"]
+rust-version = "1.70"
+
+# Which version of the Ktav format specification this crate implements.
+# See https://github.com/ktav-lang/spec for the formal document.
+[package.metadata.ktav]
+spec-version = "0.1.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+indexmap = { version = "2", features = ["serde"] }
+rustc-hash = "2"
+itoa = "1"
+ryu = "1"
+compact_str = { version = "0.9", features = ["serde"] }
+bumpalo = { version = "3", features = ["collections"] }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[bench]]
+name = "parse"
+harness = false
