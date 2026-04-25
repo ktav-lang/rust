@@ -180,34 +180,86 @@ Ktav — serde-нативный. Любой тип, реализующий `Seri
 `Deserialize` (включая сгенерированные через `#[derive]`),
 round-trip-ится через Ktav из коробки.
 
+### Парсинг — декод сразу в типизированную структуру
+
 ```rust
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Upstream {
-    host: String,
-    port: u16,
-}
+#[derive(Debug, Deserialize, Serialize)]
+struct Db { host: String, timeout: u32 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Config {
-    port: u16,
-    banned_patterns: Vec<String>,
-    upstreams: Vec<Upstream>,
+    service: String,
+    port:    u16,
+    ratio:   f64,
+    tls:     bool,
+    tags:    Vec<String>,
+    db:      Db,
 }
 
-fn main() -> Result<(), ktav::Error> {
-    let cfg: Config = ktav::from_file("resocks5.conf")?;
-    let text = ktav::to_string(&cfg)?;
-    ktav::to_file(&cfg, "resocks5.conf")?;
-    Ok(())
+const SRC: &str = "\
+service: web
+port:i 8080
+ratio:f 0.75
+tls: true
+tags: [
+    prod
+    eu-west-1
+]
+db.host: primary.internal
+db.timeout:i 30
+";
+
+let cfg: Config = ktav::from_str(SRC)?;
+println!("port={} db.host={}", cfg.port, cfg.db.host);
+```
+
+### Обход — match по динамическому enum `Value`
+
+```rust
+use ktav::value::Value;
+
+let v = ktav::parse(SRC)?;
+let Value::Object(top) = &v else { unreachable!("top — всегда object") };
+
+for (k, v) in top {
+    let kind = match v {
+        Value::Null         => "null".into(),
+        Value::Bool(b)      => format!("bool={b}"),
+        Value::Integer(s)   => format!("int={s}"),
+        Value::Float(s)     => format!("float={s}"),
+        Value::String(s)    => format!("str={s:?}"),
+        Value::Array(a)     => format!("array({})", a.len()),
+        Value::Object(o)    => format!("object({})", o.len()),
+    };
+    println!("{k} -> {kind}");
 }
 ```
+
+### Билд + рендер — собираем документ в коде
+
+```rust
+use ktav::value::{ObjectMap, Value};
+
+let mut top = ObjectMap::default();
+top.insert("name".into(),  Value::String("frontend".into()));
+top.insert("port".into(),  Value::Integer("8443".into()));
+top.insert("tls".into(),   Value::Bool(true));
+top.insert("ratio".into(), Value::Float("0.95".into()));
+top.insert("notes".into(), Value::Null);
+
+let text = ktav::render::render(&Value::Object(top))?;
+```
+
+В обычных сценариях используйте serde-путь — `ktav::to_string(&cfg)`.
+К `Value` обращайтесь только когда схема динамическая.
 
 Четыре публичных entry point-а: [`from_str`](https://docs.rs/ktav) /
 [`from_file`](https://docs.rs/ktav) — для чтения,
 [`to_string`](https://docs.rs/ktav) / [`to_file`](https://docs.rs/ktav) —
-для записи.
+для записи. Полный запускаемый пример — в
+[`examples/basic.rs`](examples/basic.rs).
 
 ### Типизированные маркеры
 
