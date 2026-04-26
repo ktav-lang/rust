@@ -118,9 +118,18 @@ mod tests {
     fn bounded() {
         assert_eq!(parse_u_bounded("255", u8::MAX as u64), Some(255));
         assert_eq!(parse_u_bounded("256", u8::MAX as u64), None);
-        assert_eq!(parse_i_bounded("127", i8::MIN as i64, i8::MAX as i64), Some(127));
-        assert_eq!(parse_i_bounded("-128", i8::MIN as i64, i8::MAX as i64), Some(-128));
+        assert_eq!(
+            parse_i_bounded("127", i8::MIN as i64, i8::MAX as i64),
+            Some(127)
+        );
+        assert_eq!(
+            parse_i_bounded("-128", i8::MIN as i64, i8::MAX as i64),
+            Some(-128)
+        );
         assert_eq!(parse_i_bounded("128", i8::MIN as i64, i8::MAX as i64), None);
-        assert_eq!(parse_i_bounded("-129", i8::MIN as i64, i8::MAX as i64), None);
+        assert_eq!(
+            parse_i_bounded("-129", i8::MIN as i64, i8::MAX as i64),
+            None
+        );
     }
 }

@@ -244,22 +244,18 @@ impl<'a> EventParser<'a> {
                         self.stack.push(Frame::new_array());
                         Ok(())
                     }
-                    ValueStart::OpenMultilineStripped => {
-                        self.emit_keyed_open_multiline(
-                            key,
-                            MultilineMode::Stripped,
-                            line_num,
-                            events,
-                        )
-                    }
-                    ValueStart::OpenMultilineVerbatim => {
-                        self.emit_keyed_open_multiline(
-                            key,
-                            MultilineMode::Verbatim,
-                            line_num,
-                            events,
-                        )
-                    }
+                    ValueStart::OpenMultilineStripped => self.emit_keyed_open_multiline(
+                        key,
+                        MultilineMode::Stripped,
+                        line_num,
+                        events,
+                    ),
+                    ValueStart::OpenMultilineVerbatim => self.emit_keyed_open_multiline(
+                        key,
+                        MultilineMode::Verbatim,
+                        line_num,
+                        events,
+                    ),
                 }
             }
         }
@@ -562,7 +558,11 @@ impl<'a> EventParser<'a> {
         }
     }
 
-    fn close_synthetics_until(&mut self, target_synthetic_count: usize, events: &mut EventStream<'a>) {
+    fn close_synthetics_until(
+        &mut self,
+        target_synthetic_count: usize,
+        events: &mut EventStream<'a>,
+    ) {
         loop {
             let cur = match self.stack.last() {
                 Some(Frame::Object { levels, .. }) => levels.len() - 1,

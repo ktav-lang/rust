@@ -134,8 +134,12 @@ impl<'de, 'e, 'c> Deserializer<'de> for EventDeserializer<'de, 'e, 'c> {
                 Err(_) => visitor.visit_borrowed_str(s),
             },
             Some(Event::Str(s)) => visitor.visit_borrowed_str(s),
-            Some(Event::BeginObject) => visitor.visit_map(EventMap { cursor: self.cursor }),
-            Some(Event::BeginArray) => visitor.visit_seq(EventSeq { cursor: self.cursor }),
+            Some(Event::BeginObject) => visitor.visit_map(EventMap {
+                cursor: self.cursor,
+            }),
+            Some(Event::BeginArray) => visitor.visit_seq(EventSeq {
+                cursor: self.cursor,
+            }),
             other => Err(<Error as de::Error>::custom(format!(
                 "deserialize_any: unexpected event {:?}",
                 other
@@ -314,7 +318,9 @@ impl<'de, 'e, 'c> Deserializer<'de> for EventDeserializer<'de, 'e, 'c> {
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         match self.cursor.next() {
-            Some(Event::BeginArray) => visitor.visit_seq(EventSeq { cursor: self.cursor }),
+            Some(Event::BeginArray) => visitor.visit_seq(EventSeq {
+                cursor: self.cursor,
+            }),
             other => Err(<Error as de::Error>::custom(format!(
                 "expected array, got {:?}",
                 other
@@ -337,7 +343,9 @@ impl<'de, 'e, 'c> Deserializer<'de> for EventDeserializer<'de, 'e, 'c> {
 
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         match self.cursor.next() {
-            Some(Event::BeginObject) => visitor.visit_map(EventMap { cursor: self.cursor }),
+            Some(Event::BeginObject) => visitor.visit_map(EventMap {
+                cursor: self.cursor,
+            }),
             other => Err(<Error as de::Error>::custom(format!(
                 "expected object, got {:?}",
                 other
@@ -417,7 +425,8 @@ impl<'de, 'e, 'c> MapAccess<'de> for EventMap<'de, 'e, 'c> {
                     Some(Event::Key(k)) => k,
                     _ => unreachable!(),
                 };
-                seed.deserialize(BorrowedStrDeserializer { value: k }).map(Some)
+                seed.deserialize(BorrowedStrDeserializer { value: k })
+                    .map(Some)
             }
             other => Err(<Error as de::Error>::custom(format!(
                 "expected Key or EndObject in map, got {:?}",
@@ -450,7 +459,9 @@ impl<'de, 'e, 'c> SeqAccess<'de> for EventSeq<'de, 'e, 'c> {
                 self.cursor.next();
                 Ok(None)
             }
-            _ => seed.deserialize(EventDeserializer::new(self.cursor)).map(Some),
+            _ => seed
+                .deserialize(EventDeserializer::new(self.cursor))
+                .map(Some),
         }
     }
 }

@@ -77,11 +77,8 @@ fn make_config(n_upstreams: usize, n_patterns: usize) -> Config {
 
 // Sizes chosen so the smallest fits in a single L1 line group and the
 // largest spills out of L2 — typical config files vs synthetic stress.
-const SIZES: &[(&str, usize, usize)] = &[
-    ("small", 5, 4),
-    ("medium", 100, 50),
-    ("large", 1000, 200),
-];
+const SIZES: &[(&str, usize, usize)] =
+    &[("small", 5, 4), ("medium", 100, 50), ("large", 1000, 200)];
 
 // ---------------------------------------------------------------------------
 // Benchmarks
@@ -99,28 +96,19 @@ fn bench_parse_to_value(c: &mut Criterion) {
         // up; the ratio between the two formats stays in the report.
         group.throughput(Throughput::Bytes(ktav_text.len() as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("ktav", label),
-            &ktav_text,
-            |b, t| {
-                b.iter(|| {
-                    let v = ktav::parse(black_box(t)).unwrap();
-                    black_box(v)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("ktav", label), &ktav_text, |b, t| {
+            b.iter(|| {
+                let v = ktav::parse(black_box(t)).unwrap();
+                black_box(v)
+            })
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("json", label),
-            &json_text,
-            |b, t| {
-                b.iter(|| {
-                    let v: serde_json::Value =
-                        serde_json::from_str(black_box(t)).unwrap();
-                    black_box(v)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("json", label), &json_text, |b, t| {
+            b.iter(|| {
+                let v: serde_json::Value = serde_json::from_str(black_box(t)).unwrap();
+                black_box(v)
+            })
+        });
     }
 
     group.finish();
@@ -136,27 +124,19 @@ fn bench_parse_to_struct(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(ktav_text.len() as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("ktav", label),
-            &ktav_text,
-            |b, t| {
-                b.iter(|| {
-                    let v: Config = ktav::from_str(black_box(t)).unwrap();
-                    black_box(v)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("ktav", label), &ktav_text, |b, t| {
+            b.iter(|| {
+                let v: Config = ktav::from_str(black_box(t)).unwrap();
+                black_box(v)
+            })
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("json", label),
-            &json_text,
-            |b, t| {
-                b.iter(|| {
-                    let v: Config = serde_json::from_str(black_box(t)).unwrap();
-                    black_box(v)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("json", label), &json_text, |b, t| {
+            b.iter(|| {
+                let v: Config = serde_json::from_str(black_box(t)).unwrap();
+                black_box(v)
+            })
+        });
     }
 
     group.finish();
@@ -170,27 +150,19 @@ fn bench_render(c: &mut Criterion) {
         let ktav_text = ktav::to_string(&cfg).unwrap();
         group.throughput(Throughput::Bytes(ktav_text.len() as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("ktav", label),
-            &cfg,
-            |b, c| {
-                b.iter(|| {
-                    let s = ktav::to_string(black_box(c)).unwrap();
-                    black_box(s)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("ktav", label), &cfg, |b, c| {
+            b.iter(|| {
+                let s = ktav::to_string(black_box(c)).unwrap();
+                black_box(s)
+            })
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("json", label),
-            &cfg,
-            |b, c| {
-                b.iter(|| {
-                    let s = serde_json::to_string(black_box(c)).unwrap();
-                    black_box(s)
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("json", label), &cfg, |b, c| {
+            b.iter(|| {
+                let s = serde_json::to_string(black_box(c)).unwrap();
+                black_box(s)
+            })
+        });
     }
 
     group.finish();
