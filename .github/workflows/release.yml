@@ -1,0 +1,93 @@
+name: Release
+
+# Publish the `ktav` crate to crates.io when a `v*` tag is pushed.
+# The publish step only runs after the same fmt/clippy/test/build
+# gauntlet that CI uses on every push — so a green tag-push run is
+# proof that the contents are publish-ready.
+#
+# Required secret: `CARGO_REGISTRY_TOKEN` (a crates.io API token with
+# the `publish-update` scope, scoped to the `ktav` crate).
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual override: useful if a tag was pushed before the secret
+  # existed and you want to retry without moving the tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.2). Must already exist."
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  verify:
+    name: Verify pre-publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      - name: cargo test (release)
+        run: cargo test --release
+
+      - name: cargo build (release)
+        run: cargo build --release
+
+  publish:
+    name: cargo publish
+    needs: verify
+    runs-on: ubuntu-latest
+    # A protected environment lets you require manual approval on the
+    # first push of any new version without re-doing the workflow.
+    # Create it once in repo Settings → Environments → New env "crates-io"
+    # and gate the CARGO_REGISTRY_TOKEN secret to it.
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Confirm tag matches Cargo.toml version
+        shell: bash
+        run: |
+          # Drop the leading `v` from the tag (refs/tags/v0.1.2 → 0.1.2).
+          ref="${{ inputs.tag || github.ref_name }}"
+          tag="${ref#v}"
+          ver=$(awk -F'"' '/^version *= *"/ { print $2; exit }' Cargo.toml)
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag '$tag' does not match Cargo.toml version '$ver'"
+            exit 1
+          fi
+          echo "Publishing ktav $ver"
+
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
