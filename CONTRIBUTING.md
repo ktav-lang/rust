@@ -123,6 +123,39 @@ This rule applies repo-wide, not just to this crate — every
 `ktav-lang/*` binding has its own equivalent local-check incantation
 documented in its own `CONTRIBUTING.md`.
 
+## Releasing
+
+A release is **fully automated** for this crate — push a `v*` tag and
+the `Release` workflow handles everything:
+
+```
+git tag -a v0.1.X -m "v0.1.X"
+git push origin v0.1.X
+```
+
+That triggers three sequential jobs in `.github/workflows/release.yml`:
+
+1. **`verify`** — re-runs the four pre-push checks above (fmt /
+   clippy / test / build) on the tagged commit. No green here, no
+   publish.
+2. **`publish`** — `cargo publish` with the `CARGO_REGISTRY_TOKEN`
+   secret (gated to the `crates-io` environment). Confirms the tag
+   matches `Cargo.toml` version before uploading.
+3. **`github-release`** — creates a GitHub Release for the tag and
+   pulls the matching `## [vX.Y.Z]` section out of `CHANGELOG.md` for
+   the release notes. So **the CHANGELOG entry IS the release notes**:
+   write the changelog before tagging.
+
+What this means in practice:
+
+- **Always write the CHANGELOG entry before tagging.** Skipping it
+  leaves the GH Release with empty notes.
+- **Never `cargo publish` from a maintainer's machine** — the
+  workflow is the canonical path. (Manual publish would skip the
+  verify gate and produce no GH Release.)
+- If you need to retry a release without moving the tag, use
+  `workflow_dispatch` with the tag name as the input.
+
 Test categories:
 
 - `src/**/tests.rs` — private unit tests per module.
