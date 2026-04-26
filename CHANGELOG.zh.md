@@ -10,6 +10,13 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+## [0.1.2] —— 2026-04-26
+
+0.1.1 内容的重新发布,源码经过 `cargo fmt` 处理。0.1.1 被 yank,因为
+新增文件(`benches/vs_json.rs`, `src/thin/event*.rs`,
+`src/thin/fast_num.rs`)在发布前未经 rustfmt 处理,导致 CI lint 在
+tag push 时失败。**功能与 0.1.1 完全一致** —— 仅空白字符不同。
+
 ## [0.1.1] —— 2026-04-26
 
 ### 变更

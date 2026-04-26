@@ -528,13 +528,13 @@ impl<'a> EventParser<'a> {
         match self.stack.last_mut().unwrap() {
             Frame::Object { levels, .. } => {
                 let level = levels.last_mut().unwrap();
-                if level.leaf_keys.iter().any(|k| *k == seg) {
+                if level.leaf_keys.contains(&seg) {
                     return Err(Error::Syntax(format!(
                         "Line {}: conflict at '{}' — an existing value blocks the path",
                         line_num, seg
                     )));
                 }
-                if level.synthetic_keys.iter().any(|k| *k == seg) {
+                if level.synthetic_keys.contains(&seg) {
                     return Err(Error::Syntax(format!(
                         "Line {}: conflict at '{}' — synthetic dotted-key prefix already closed by an intervening different prefix; group lines with the same prefix together",
                         line_num, seg
@@ -595,13 +595,13 @@ impl<'a> EventParser<'a> {
         match self.stack.last_mut().unwrap() {
             Frame::Object { levels, .. } => {
                 let level = levels.last_mut().unwrap();
-                if level.synthetic_keys.iter().any(|k| *k == leaf) {
+                if level.synthetic_keys.contains(&leaf) {
                     return Err(Error::Syntax(format!(
                         "Line {}: conflict at '{}' — an existing value blocks the path",
                         line_num, leaf
                     )));
                 }
-                if level.leaf_keys.iter().any(|k| *k == leaf) {
+                if level.leaf_keys.contains(&leaf) {
                     return Err(Error::Syntax(format!(
                         "Line {}: duplicate key '{}'",
                         line_num, leaf

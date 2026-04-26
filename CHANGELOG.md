@@ -8,6 +8,14 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+## [0.1.2] — 2026-04-26
+
+Re-publish of 0.1.1's contents with the source tree run through
+`cargo fmt`. 0.1.1 was yanked because the new files (`benches/vs_json.rs`,
+`src/thin/event*.rs`, `src/thin/fast_num.rs`) hadn't been formatted
+through rustfmt before publish, which tripped the CI lint check on the
+tag push. **Functionally identical to 0.1.1** — only whitespace differs.
+
 ## [0.1.1] — 2026-04-26
 
 ### Changed

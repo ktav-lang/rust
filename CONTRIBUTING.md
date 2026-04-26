@@ -100,6 +100,29 @@ cargo test multiline               # by name filter
 cargo test --doc                   # doc-tests only
 ```
 
+## Pre-push local checks (mandatory)
+
+Run **all four** of these locally before `git push`. CI runs the same
+commands and a failure mid-pipeline costs more than a few seconds at
+the keyboard — and in the case of a tag push that triggers a release,
+a fix-and-force-tag-move dance.
+
+```
+cargo fmt --all -- --check          # canonical formatting
+cargo clippy --release -- -D warnings  # zero warnings policy
+cargo test --release                # full suite, release mode
+cargo build --release               # final binary build
+```
+
+If any of these are red, the push is **not** ready. The CI in this
+repo enforces all four (see `.github/workflows/ci.yml`); pushing a
+broken commit guarantees a red main badge and, for tag pushes,
+breaks the release pipeline.
+
+This rule applies repo-wide, not just to this crate — every
+`ktav-lang/*` binding has its own equivalent local-check incantation
+documented in its own `CONTRIBUTING.md`.
+
 Test categories:
 
 - `src/**/tests.rs` — private unit tests per module.
