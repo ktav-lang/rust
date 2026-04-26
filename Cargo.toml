@@ -1,6 +1,6 @@
 [package]
 name = "ktav"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Ktav — a plain configuration format. Three rules, zero indentation, zero quoting. Serde-native."
 license = "MIT"
@@ -35,4 +35,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [[bench]]
 name = "parse"
+harness = false
+
+[[bench]]
+name = "vs_json"
 harness = false

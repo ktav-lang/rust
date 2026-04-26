@@ -10,6 +10,40 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+## [0.1.1] —— 2026-04-26
+
+### 变更
+
+- **类型化反序列化快路径** —— `from_str` 与 `from_file` 不再构建中间
+  `ThinValue` 树。解析器直接将事件序列(`Vec<Event>`)发射到 bump
+  arena,serde 反序列化器以单一游标线性遍历它 —— 每个文档一次分配
+  而非每个复合节点一次,且无需通过 `Box` 间接加载枚举判别式。
+  在 275 KB 配置上的实测:`parse → struct` **−18.7%**(3.60 ms →
+  2.93 ms)。
+- **`fast_num` 字节循环 atoi** —— 类型化反序列化器中的 `i8`..`i64`
+  / `u8`..`u64` 路径绕过通用的 `<T as FromStr>` 路线,改为调用手写
+  的 `parse_i64` / `parse_u64` 并附带宽度检查。浮点路径仍走
+  `f64::from_str`。
+
+### 新增
+
+- 内部 `Event` 枚举与 `EventCursor` 遍历器(`thin/event*.rs`)。
+
+### 移除
+
+- `ThinValue` 枚举及其 `ThinDeserializer`(已被事件流取代;两者均为
+  `pub(crate)`,公开 API 不受影响)。
+
+### 行为变化
+
+- **dotted-key 前缀的交错使用现在会被拒绝为 conflict。** 形如
+  `a.x: 1\nb.y: 2\na.z: 3` 的文档(合成对象 `a` 被打开,被 `b.`
+  关闭,然后被 `a.z` 尝试重新打开)以前会通过 tree-builder 静默
+  合并为单一 `a` 对象。事件流标记器在不缓冲整个文档的情况下无法
+  做到这一点,因此现在会返回清晰的 conflict 错误,提示用户将相同
+  前缀的行分组在一起。使用分组 dotted-key(规范模式)的文档不受
+  影响 —— 所有 spec-conformance 用例仍然通过。
+
 ## [0.1.0] —— 2026-04-22
 
 首次发布。实现 [Ktav spec 0.1.0](https://github.com/ktav-lang/spec/blob/main/versions/0.1/spec.md)。

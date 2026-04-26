@@ -76,6 +76,92 @@ fn duplicate_key() {
 }
 
 #[test]
+fn duplicate_key_inside_dotted_synthetic() {
+    // Inside a synthetic object built from dotted-key prefix `db.`, two
+    // hits with the same leaf must be a duplicate-key error — even
+    // though the document never wrote a literal `{ ... }` for `db`.
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        _db: serde::de::IgnoredAny,
+    }
+    let err = from_str::<Cfg>("db.host: a\ndb.host: b\n").unwrap_err();
+    assert!(
+        matches!(err, Error::Syntax(ref m) if m.contains("duplicate key")),
+        "got: {:?}",
+        err
+    );
+}
+
+#[test]
+fn dotted_prefix_after_scalar_at_same_name_conflicts() {
+    // Reverse of `dotted_key_conflicts_with_scalar_at_shared_prefix`:
+    // first the scalar `a: 1`, then `a.b: 2` tries to descend.
+    // The new event-tokenizer must reject this, same as the tree path.
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        _a: serde::de::IgnoredAny,
+    }
+    let err = from_str::<Cfg>("a: 1\na.b: 2\n").unwrap_err();
+    let msg = format!("{}", err);
+    assert!(msg.contains("conflict"), "got: {}", msg);
+}
+
+#[test]
+fn scalar_after_dotted_prefix_conflicts() {
+    // `a.b: 1` opens a synthetic object at `a`. A subsequent flat
+    // `a: 2` would have to overwrite the sub-object — must be a
+    // conflict, not a silent drop.
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        _a: serde::de::IgnoredAny,
+    }
+    let err = from_str::<Cfg>("a.b: 1\na: 2\n").unwrap_err();
+    let msg = format!("{}", err);
+    assert!(msg.contains("conflict"), "got: {}", msg);
+}
+
+#[test]
+fn interleaved_dotted_prefix_is_rejected_as_conflict() {
+    // `a.x: 1` opens synthetic `a`. `b.y: 2` closes `a` and opens `b`.
+    // `a.z: 3` would have to *re-open* the closed `a` — the streaming
+    // event tokenizer can't do that without buffering the whole
+    // document, so it surfaces a clear conflict error (the user can
+    // group lines with the same prefix together).
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        _a: serde::de::IgnoredAny,
+        _b: serde::de::IgnoredAny,
+    }
+    let err = from_str::<Cfg>("a.x: 1\nb.y: 2\na.z: 3\n").unwrap_err();
+    let msg = format!("{}", err);
+    assert!(msg.contains("conflict"), "got: {}", msg);
+}
+
+#[test]
+fn grouped_dotted_keys_with_multiple_prefixes_work() {
+    // Sanity-check the canonical pattern: dotted keys grouped per
+    // prefix. This is the standard convention; the rejection above
+    // only kicks in when prefixes are interleaved.
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct A {
+        x: u32,
+        z: u32,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct B {
+        y: u32,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Cfg {
+        a: A,
+        b: B,
+    }
+    let cfg: Cfg = from_str("a.x: 1\na.z: 3\nb.y: 2\n").unwrap();
+    assert_eq!(cfg.a, A { x: 1, z: 3 });
+    assert_eq!(cfg.b, B { y: 2 });
+}
+
+#[test]
 fn empty_key() {
     #[derive(Debug, Deserialize)]
     struct Cfg {

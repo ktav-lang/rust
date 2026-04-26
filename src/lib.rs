@@ -88,14 +88,16 @@ pub fn parse(text: &str) -> Result<Value> {
 }
 
 /// Parse a Ktav document from a string and deserialize it into `T`. Uses
-/// the zero-copy thin path: object keys and single-line scalars are
-/// borrowed directly from `s`; multi-line strings and the compound-node
-/// backing arrays live in a per-call bump arena that frees in one go
-/// when this function returns.
+/// the zero-copy event path: the parser tokenizes the document into a
+/// flat `Vec<Event>` (object keys and single-line scalars are borrowed
+/// directly from `s`), and serde walks that vec linearly without ever
+/// materialising a tree. Compound nesting is bracketed by
+/// `BeginObject`/`EndObject` events instead of nested allocations.
 pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
     let bump = bumpalo::Bump::new();
-    let thin = thin::parse_thin(s, &bump)?;
-    T::deserialize(thin::ThinDeserializer::new(thin))
+    let events = thin::parse_events(s, &bump)?;
+    let mut cursor = thin::EventCursor::new(&events);
+    T::deserialize(thin::EventDeserializer::new(&mut cursor))
 }
 
 /// Parse a Ktav document from a file path and deserialize it into `T`.

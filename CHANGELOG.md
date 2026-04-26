@@ -8,6 +8,44 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+## [0.1.1] — 2026-04-26
+
+### Changed
+
+- **Typed-deserialization fast path** — `from_str` and `from_file` no
+  longer build a `ThinValue` tree as an intermediate. The parser now
+  emits a flat `Vec<Event>` directly into a bump arena, and the serde
+  deserializer walks it linearly with a single cursor — one allocation
+  per document instead of one per compound, and no per-node enum-
+  discriminant load behind a `Box`-style indirection. Net impact on a
+  275 KB config: **−18.7%** on `parse → struct` (3.60 ms → 2.93 ms).
+- **`fast_num` byte-loop atoi** — the `i8`..`i64` / `u8`..`u64` paths
+  in the typed deserializer skip the generic `<T as FromStr>` route
+  and call hand-rolled `parse_i64` / `parse_u64` with a width check.
+  Floats stay on `f64::from_str`.
+
+### Added
+
+- `Event` token enum and `EventCursor` walker (`thin/event*.rs`),
+  internal — not exposed in the public surface.
+
+### Removed
+
+- `ThinValue` enum and its `ThinDeserializer` (replaced by the event
+  stream — both were `pub(crate)`, so no breakage at the public API).
+
+### Behavior change
+
+- **Interleaved dotted-key prefixes are now rejected as a conflict**.
+  A document like `a.x: 1\nb.y: 2\na.z: 3` (synthetic `a` opened, then
+  closed by `b.`, then re-opened by `a.z`) used to silently merge into
+  one `a` object via the tree-builder. The event-stream tokenizer
+  cannot do that without buffering the whole document, so it now
+  surfaces a clear conflict error suggesting the user group lines with
+  the same prefix together. Documents with grouped dotted keys (the
+  canonical pattern) are unaffected — every spec-conformance fixture
+  still passes.
+
 ## [0.1.0] — 2026-04-22
 
 Initial release. Implements [Ktav spec 0.1.0](https://github.com/ktav-lang/spec/blob/main/versions/0.1/spec.md).
