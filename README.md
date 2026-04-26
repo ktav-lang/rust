@@ -592,3 +592,13 @@ help, please reach out at **phpcraftdream@gmail.com**.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Other Ktav implementations
+
+- [`spec`](https://github.com/ktav-lang/spec) — specification + conformance suite
+- [`csharp`](https://github.com/ktav-lang/csharp) — C# / .NET (`dotnet add package Ktav`)
+- [`golang`](https://github.com/ktav-lang/golang) — Go (`go get github.com/ktav-lang/golang`)
+- [`java`](https://github.com/ktav-lang/java) — Java / JVM (`io.github.ktav-lang:ktav` on Maven Central)
+- [`js`](https://github.com/ktav-lang/js) — JS / TS (`npm install @ktav-lang/ktav`)
+- [`php`](https://github.com/ktav-lang/php) — PHP (`composer require ktav-lang/ktav`)
+- [`python`](https://github.com/ktav-lang/python) — Python (`pip install ktav`)
