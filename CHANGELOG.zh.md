@@ -10,6 +10,22 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+## [0.1.4] —— 2026-04-26
+
+### 变更
+
+- **`Frame::Object` 初始容量 4 → 8**(`src/parser/frame.rs`)。
+  解析器的 per-compound `IndexMap` 现在预分配 8 个槽位而非 4 个,
+  消除了典型配置行(5–8 字段)的首次扩容/rehash。这是 **untyped**
+  解析路径(`ktav::parse → Value`)—— 也是所有 C-ABI 绑定
+  (PHP/JS/Python/Go/Java/C#)通过 `cabi` 走的路径,因此一旦它们
+  升级到 0.1.4 就会获得相同的加速。
+- 在 `parse_to_value` 基准上的影响(3 次运行中位数):small
+  **−30%**(18.9 µs → 13.3 µs)、large **−13%**(5.04 ms → 4.4 ms)、
+  medium 在噪声范围内(~−3%)。
+
+单行改动;完整测试套件(334 个用例,含 spec conformance)不受影响。
+
 ## [0.1.3] —— 2026-04-26
 
 与已 yank 的 0.1.2 内容完全相同 —— 通过新的自动化 `Release` 工作流

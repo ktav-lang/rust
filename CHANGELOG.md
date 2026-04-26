@@ -8,6 +8,24 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+## [0.1.4] — 2026-04-26
+
+### Changed
+
+- **`Frame::Object` initial capacity 4 → 8** (`src/parser/frame.rs`).
+  The parser's per-compound `IndexMap` now pre-sizes for 8 entries
+  instead of 4, which eliminates the first growth/rehash for the
+  typical 5–8-field config row. This is the **untyped** parse path
+  (`ktav::parse → Value`) — the same path every C-ABI binding
+  (PHP/JS/Python/Go/Java/C#) walks through `cabi`, so they all see
+  the speedup once they pick up 0.1.4.
+- Net impact on the `parse_to_value` bench (3-run median): small
+  **−30%** (18.9 µs → 13.3 µs), large **−13%** (5.04 ms → 4.4 ms),
+  medium in the noise (~−3%).
+
+One-line change; full test suite (334 cases incl. spec conformance)
+unaffected.
+
 ## [0.1.3] — 2026-04-26
 
 Same content as the yanked 0.1.2 — re-released through the new

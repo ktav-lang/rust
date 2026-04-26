@@ -21,9 +21,11 @@ pub(super) enum Frame<'a> {
 impl<'a> Frame<'a> {
     pub(super) fn new_object() -> Self {
         // Most Ktav objects have a handful of entries; preallocating avoids
-        // the first one or two rehashes.
+        // the first one or two rehashes. Empirically `8` covers the typical
+        // 5-7-field config row without growing, and the overhead vs `4` for
+        // tiny objects is negligible (one extra word group of unused slots).
         Frame::Object {
-            pairs: ObjectMap::with_capacity_and_hasher(4, FxBuildHasher),
+            pairs: ObjectMap::with_capacity_and_hasher(8, FxBuildHasher),
             pending_key: None,
         }
     }
