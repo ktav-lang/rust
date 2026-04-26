@@ -61,10 +61,11 @@ fn main() {
     }
 
     // ── 3. Build a config in code, render it as Ktav text. ─────────────
-    let mut upstreams = Vec::new();
-    upstreams.push(upstream("a.example", 1080));
-    upstreams.push(upstream("b.example", 1080));
-    upstreams.push(upstream("c.example", 1080));
+    let upstreams = vec![
+        upstream("a.example", 1080),
+        upstream("b.example", 1080),
+        upstream("c.example", 1080),
+    ];
 
     let mut top = obj_map();
     top.insert("name".into(), Value::String("frontend".into()));

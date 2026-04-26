@@ -10,6 +10,13 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+## [0.1.3] —— 2026-04-26
+
+与已 yank 的 0.1.2 内容完全相同 —— 通过新的自动化 `Release` 工作流
+(CI verify → `cargo publish`)重新发布,从而后续发布不再依赖维护
+者本地机器上的手动 `cargo publish`。0.1.2 被 yank 仅用于在一个全新
+版本上端到端验证流水线(crates.io 不可变,无法重新发布 0.1.2 本身)。
+
 ## [0.1.2] —— 2026-04-26
 
 0.1.1 内容的重新发布,源码经过 `cargo fmt` 处理。0.1.1 被 yank,因为

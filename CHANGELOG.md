@@ -8,6 +8,15 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+## [0.1.3] — 2026-04-26
+
+Same content as the yanked 0.1.2 — re-released through the new
+automated `Release` workflow (CI verify → `cargo publish`) so future
+releases never depend on a manual `cargo publish` from a maintainer's
+machine. 0.1.2 was yanked solely to validate the pipeline end-to-end
+on a fresh version (crates.io is immutable; we can't re-publish 0.1.2
+itself).
+
 ## [0.1.2] — 2026-04-26
 
 Re-publish of 0.1.1's contents with the source tree run through
