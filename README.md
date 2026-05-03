@@ -259,6 +259,66 @@ Four public entry points: [`from_str`](https://docs.rs/ktav) /
 [`to_file`](https://docs.rs/ktav) for writing. A complete runnable
 example lives in [`examples/basic.rs`](examples/basic.rs).
 
+### Inspect errors — structured variants for tooling
+
+`Error::Structured(ErrorKind)` carries a typed category plus a
+byte-offset `Span` for every parse failure, so editors and linters
+can highlight the exact offending range instead of the whole line.
+
+```rust
+use ktav::{parse, Error, ErrorKind};
+
+let src = "port: 80\nport: 443\n";
+match parse(src) {
+    Ok(_) => unreachable!(),
+    Err(Error::Structured(ErrorKind::DuplicateKey { line, key, span, .. })) => {
+        println!("line {line}: duplicate key {key:?}");
+        println!("offending bytes: {:?}", span.slice(src));   // -> Some("port")
+        let (l, c) = span.line_col(src);                      // 1-based / 0-based byte col
+        println!("highlight at {l}:{c}");
+    }
+    Err(other) => panic!("{other}"),
+}
+```
+
+Variants: `MissingSeparatorSpace`, `InvalidTypedScalar`, `DuplicateKey`,
+`KeyPathConflict`, `EmptyKey`, `InvalidKey`, `UnclosedCompound`,
+`UnbalancedBracket`, `InlineNonEmptyCompound`, `MissingSeparator`,
+`Other`. The enum is `#[non_exhaustive]` — always include a `_ =>`
+arm. `Error::line()` / `Error::span()` are convenience accessors when
+the variant doesn't matter. The `Display` impl produces the same
+human-readable string the legacy `Error::Syntax(_)` did, so existing
+string-based callers keep working.
+
+A complete runnable example walks all variants:
+[`examples/errors.rs`](examples/errors.rs) — `cargo run --example errors`.
+
+### Stream parse — events without an intermediate tree
+
+`parse_events` invokes a callback for each parse event, with strings
+borrowed directly into the input buffer — no allocation per event, no
+intermediate `Value` tree. Useful when you don't need the full document:
+counting keys, streaming to another format, building a custom shape.
+
+```rust
+use ktav::{parse_events, ParseEvent};
+
+let src = "port:i 8080\nhost: example.com\n";
+let mut keys = Vec::new();
+parse_events(src, |ev| {
+    if let ParseEvent::Key(k) = ev {
+        keys.push(k.to_string());
+    }
+})?;
+assert_eq!(keys, ["port", "host"]);
+```
+
+The whole document is wrapped in an outer `BeginObject` / `EndObject`
+pair; nested compounds bracket their contents. `ParseEvent` is
+`#[non_exhaustive]`. A complete runnable example with depth tracking
+and a pretty-printer:
+[`examples/events.rs`](examples/events.rs) — `cargo run --example events`.
+
 ### Typed markers
 
 Rust numeric types (`u8`..`u128`, `i8`..`i128`, `usize`, `isize`, `f32`,

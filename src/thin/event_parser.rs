@@ -15,7 +15,7 @@
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
 
-use crate::error::{Error, Result};
+use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 
 use super::event::{Event, EventStream};
 
@@ -34,14 +34,38 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
         bump,
         stack: Vec::with_capacity(8),
         collecting: None,
+        opener_offsets: Vec::with_capacity(8),
+        multiline_opener: None,
     };
     p.stack.push(Frame::new_object(bump));
+    p.opener_offsets.push(0);
 
-    for (idx, line) in text.lines().enumerate() {
-        p.handle_line(line, idx + 1, &mut events)?;
+    let bytes = text.as_bytes();
+    let mut line_start: usize = 0;
+    let mut line_num: usize = 0;
+    while line_start <= bytes.len() {
+        let nl = bytes[line_start..].iter().position(|&b| b == b'\n');
+        let (end, next_start) = match nl {
+            Some(rel) => (line_start + rel, line_start + rel + 1),
+            None => {
+                if line_start == bytes.len() {
+                    break;
+                }
+                (bytes.len(), bytes.len() + 1)
+            }
+        };
+        let content_end = if end > line_start && bytes[end - 1] == b'\r' {
+            end - 1
+        } else {
+            end
+        };
+        let line: &'a str = &text[line_start..content_end];
+        line_num += 1;
+        p.handle_line(line, line_num, line_start as u32, &mut events)?;
+        line_start = next_start;
     }
 
-    p.finish(&mut events)?;
+    p.finish(bytes.len() as u32, &mut events)?;
     Ok(events)
 }
 
@@ -53,6 +77,13 @@ struct EventParser<'a> {
     bump: &'a Bump,
     stack: Vec<Frame<'a>>,
     collecting: Option<Collecting<'a>>,
+    /// Byte offset (in original input) of the opener that started each
+    /// frame. Index `0` is the implicit root (always `0`); subsequent
+    /// entries are pushed for each child frame.
+    opener_offsets: Vec<u32>,
+    /// Byte offset of the `(` / `((` line that started a multi-line
+    /// string, if one is currently being collected.
+    multiline_opener: Option<u32>,
 }
 
 enum Frame<'a> {
@@ -114,18 +145,28 @@ struct Collecting<'a> {
 // ---------------------------------------------------------------------------
 
 impl<'a> EventParser<'a> {
-    fn finish(&mut self, events: &mut EventStream<'a>) -> Result<()> {
-        if self.collecting.is_some() {
-            return Err(Error::Syntax(
-                "Unclosed multi-line string at end of input".to_string(),
-            ));
+    fn finish(&mut self, eof_offset: u32, events: &mut EventStream<'a>) -> Result<()> {
+        if let Some(c) = &self.collecting {
+            let kind = match c.mode {
+                MultilineMode::Stripped => CompoundKind::MultilineStripped,
+                MultilineMode::Verbatim => CompoundKind::MultilineVerbatim,
+            };
+            let start = self.multiline_opener.unwrap_or(eof_offset);
+            return Err(Error::Structured(ErrorKind::UnclosedCompound {
+                kind,
+                span: Span::new(start, eof_offset),
+            }));
         }
         if self.stack.len() > 1 {
             let kind = match self.stack.last().unwrap() {
-                Frame::Object { .. } => "object",
-                Frame::Array => "array",
+                Frame::Object { .. } => CompoundKind::Object,
+                Frame::Array => CompoundKind::Array,
             };
-            return Err(Error::Syntax(format!("Unclosed {} at end of input", kind)));
+            let start = *self.opener_offsets.last().unwrap();
+            return Err(Error::Structured(ErrorKind::UnclosedCompound {
+                kind,
+                span: Span::new(start, eof_offset),
+            }));
         }
         // Close all synthetics still open in the root frame, then the
         // root object itself.
@@ -138,6 +179,7 @@ impl<'a> EventParser<'a> {
         &mut self,
         raw: &'a str,
         line_num: usize,
+        line_start: u32,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
         if let Some(ref mut c) = self.collecting {
@@ -150,6 +192,7 @@ impl<'a> EventParser<'a> {
                 if trimmed == term {
                     let collecting = self.collecting.take().unwrap();
                     let s = finalize_multiline(collecting, self.bump);
+                    self.multiline_opener = None;
                     return self.attach_scalar(Event::Str(s), line_num, events);
                 }
             }
@@ -163,17 +206,19 @@ impl<'a> EventParser<'a> {
             return Ok(());
         }
 
+        let trimmed_span = trimmed_span_in(raw, trimmed, line_start);
+
         if trimmed == "}" {
-            return self.close_frame(BracketKind::Object, line_num, events);
+            return self.close_frame(BracketKind::Object, line_num, trimmed_span, events);
         }
         if trimmed == "]" {
-            return self.close_frame(BracketKind::Array, line_num, events);
+            return self.close_frame(BracketKind::Array, line_num, trimmed_span, events);
         }
 
         if matches!(self.stack.last(), Some(Frame::Array)) {
-            self.handle_array_item(trimmed, line_num, events)
+            self.handle_array_item(trimmed, line_num, trimmed_span, events)
         } else {
-            self.handle_object_pair(trimmed, line_num, events)
+            self.handle_object_pair(trimmed, line_num, trimmed_span, events)
         }
     }
 
@@ -185,46 +230,60 @@ impl<'a> EventParser<'a> {
         &mut self,
         trimmed: &'a str,
         line_num: usize,
+        trimmed_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
-        let colon = trimmed.find(':').ok_or_else(|| {
-            Error::Syntax(format!(
-                "Line {}: no ':' — object entries must be 'key: value' pairs",
-                line_num
-            ))
-        })?;
+        let colon = match trimmed.find(':') {
+            Some(c) => c,
+            None => {
+                return Err(Error::Structured(ErrorKind::MissingSeparator {
+                    line: line_num as u32,
+                    span: trimmed_span,
+                }));
+            }
+        };
 
         let key = trimmed[..colon].trim_end();
+        let key_start = trimmed_span.start;
+        let key_end = key_start + key.len() as u32;
         if key.is_empty() {
-            return Err(Error::Syntax(format!("Empty key at line {}", line_num)));
+            return Err(Error::Structured(ErrorKind::EmptyKey {
+                line: line_num as u32,
+                span: Span::new(key_start, key_start + 1),
+            }));
         }
 
         let after_colon = &trimmed[colon + 1..];
+        let after_colon_off = key_start + (colon as u32) + 1;
+        let key_span = Span::new(key_start, key_end);
 
         match classify_separator(after_colon) {
             Separator::Raw(rest) => {
-                require_sep_end(rest, line_num)?;
-                self.emit_keyed_scalar(key, Event::Str(rest.trim()), line_num, events)
+                require_sep_end(rest, line_num, after_colon_off + 1, trimmed_span)?;
+                self.emit_keyed_scalar(key, Event::Str(rest.trim()), line_num, key_span, events)
             }
             Separator::TypedInteger(body) => {
-                let normalized = validate_typed_integer(body, line_num, self.bump)?;
-                self.emit_keyed_scalar(key, Event::Integer(normalized), line_num, events)
+                let body_span = body_span_for(body, after_colon, after_colon_off, trimmed_span);
+                let normalized = validate_typed_integer(body, line_num, self.bump, body_span)?;
+                self.emit_keyed_scalar(key, Event::Integer(normalized), line_num, key_span, events)
             }
             Separator::TypedFloat(body) => {
-                let normalized = validate_typed_float(body, line_num, self.bump)?;
-                self.emit_keyed_scalar(key, Event::Float(normalized), line_num, events)
+                let body_span = body_span_for(body, after_colon, after_colon_off, trimmed_span);
+                let normalized = validate_typed_float(body, line_num, self.bump, body_span)?;
+                self.emit_keyed_scalar(key, Event::Float(normalized), line_num, key_span, events)
             }
             Separator::Plain => {
-                require_sep_end(after_colon, line_num)?;
-                match classify(after_colon.trim_start(), line_num)? {
+                require_sep_end(after_colon, line_num, after_colon_off, trimmed_span)?;
+                match classify(after_colon.trim_start(), line_num, trimmed_span)? {
                     ValueStart::Scalar(s) => {
-                        self.emit_keyed_scalar(key, scalar_to_event(s), line_num, events)
+                        self.emit_keyed_scalar(key, scalar_to_event(s), line_num, key_span, events)
                     }
                     ValueStart::EmptyObject => self.emit_keyed_compound(
                         key,
                         Event::BeginObject,
                         Event::EndObject,
                         line_num,
+                        key_span,
                         events,
                     ),
                     ValueStart::EmptyArray => self.emit_keyed_compound(
@@ -232,30 +291,43 @@ impl<'a> EventParser<'a> {
                         Event::BeginArray,
                         Event::EndArray,
                         line_num,
+                        key_span,
                         events,
                     ),
                     ValueStart::OpenObject => {
-                        self.emit_keyed_open(key, Event::BeginObject, line_num, events)?;
+                        self.emit_keyed_open(key, Event::BeginObject, line_num, key_span, events)?;
                         self.stack.push(Frame::new_object(self.bump));
+                        self.opener_offsets.push(trimmed_span.end - 1);
                         Ok(())
                     }
                     ValueStart::OpenArray => {
-                        self.emit_keyed_open(key, Event::BeginArray, line_num, events)?;
+                        self.emit_keyed_open(key, Event::BeginArray, line_num, key_span, events)?;
                         self.stack.push(Frame::new_array());
+                        self.opener_offsets.push(trimmed_span.end - 1);
                         Ok(())
                     }
-                    ValueStart::OpenMultilineStripped => self.emit_keyed_open_multiline(
-                        key,
-                        MultilineMode::Stripped,
-                        line_num,
-                        events,
-                    ),
-                    ValueStart::OpenMultilineVerbatim => self.emit_keyed_open_multiline(
-                        key,
-                        MultilineMode::Verbatim,
-                        line_num,
-                        events,
-                    ),
+                    ValueStart::OpenMultilineStripped => {
+                        let r = self.emit_keyed_open_multiline(
+                            key,
+                            MultilineMode::Stripped,
+                            line_num,
+                            key_span,
+                            events,
+                        );
+                        self.multiline_opener = Some(trimmed_span.end - 1);
+                        r
+                    }
+                    ValueStart::OpenMultilineVerbatim => {
+                        let r = self.emit_keyed_open_multiline(
+                            key,
+                            MultilineMode::Verbatim,
+                            line_num,
+                            key_span,
+                            events,
+                        );
+                        self.multiline_opener = Some(trimmed_span.end - 2);
+                        r
+                    }
                 }
             }
         }
@@ -267,10 +339,11 @@ impl<'a> EventParser<'a> {
         key: &'a str,
         value: Event<'a>,
         line_num: usize,
+        key_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, events)?;
-        self.register_leaf_key(leaf, line_num)?;
+        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        self.register_leaf_key(leaf, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(value);
         Ok(())
@@ -283,10 +356,11 @@ impl<'a> EventParser<'a> {
         open: Event<'a>,
         close: Event<'a>,
         line_num: usize,
+        key_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, events)?;
-        self.register_leaf_key(leaf, line_num)?;
+        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        self.register_leaf_key(leaf, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(open);
         events.push(close);
@@ -299,10 +373,11 @@ impl<'a> EventParser<'a> {
         key: &'a str,
         open: Event<'a>,
         line_num: usize,
+        key_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, events)?;
-        self.register_leaf_key(leaf, line_num)?;
+        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        self.register_leaf_key(leaf, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(open);
         Ok(())
@@ -313,10 +388,11 @@ impl<'a> EventParser<'a> {
         key: &'a str,
         mode: MultilineMode,
         line_num: usize,
+        key_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, events)?;
-        self.register_leaf_key(leaf, line_num)?;
+        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        self.register_leaf_key(leaf, line_num, key_span)?;
         events.push(Event::Key(leaf));
         self.collecting = Some(Collecting {
             mode,
@@ -333,27 +409,31 @@ impl<'a> EventParser<'a> {
         &mut self,
         trimmed: &'a str,
         line_num: usize,
+        trimmed_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
+        let line_start = trimmed_span.start;
         if let Some(rest) = trimmed.strip_prefix("::") {
-            require_sep_end(rest, line_num)?;
+            require_sep_end(rest, line_num, line_start + 2, trimmed_span)?;
             events.push(Event::Str(rest.trim_start()));
             return Ok(());
         }
         if let Some(rest) = trimmed.strip_prefix(":i") {
-            require_sep_end(rest, line_num)?;
-            let normalized = validate_typed_integer(rest, line_num, self.bump)?;
+            require_sep_end(rest, line_num, line_start + 2, trimmed_span)?;
+            let body_span = Span::new(line_start + 2, trimmed_span.end);
+            let normalized = validate_typed_integer(rest, line_num, self.bump, body_span)?;
             events.push(Event::Integer(normalized));
             return Ok(());
         }
         if let Some(rest) = trimmed.strip_prefix(":f") {
-            require_sep_end(rest, line_num)?;
-            let normalized = validate_typed_float(rest, line_num, self.bump)?;
+            require_sep_end(rest, line_num, line_start + 2, trimmed_span)?;
+            let body_span = Span::new(line_start + 2, trimmed_span.end);
+            let normalized = validate_typed_float(rest, line_num, self.bump, body_span)?;
             events.push(Event::Float(normalized));
             return Ok(());
         }
 
-        match classify(trimmed, line_num)? {
+        match classify(trimmed, line_num, trimmed_span)? {
             ValueStart::Scalar(s) => events.push(scalar_to_event(s)),
             ValueStart::EmptyObject => {
                 events.push(Event::BeginObject);
@@ -366,22 +446,26 @@ impl<'a> EventParser<'a> {
             ValueStart::OpenObject => {
                 events.push(Event::BeginObject);
                 self.stack.push(Frame::new_object(self.bump));
+                self.opener_offsets.push(trimmed_span.end - 1);
             }
             ValueStart::OpenArray => {
                 events.push(Event::BeginArray);
                 self.stack.push(Frame::new_array());
+                self.opener_offsets.push(trimmed_span.end - 1);
             }
             ValueStart::OpenMultilineStripped => {
                 self.collecting = Some(Collecting {
                     mode: MultilineMode::Stripped,
                     lines: BumpVec::with_capacity_in(8, self.bump),
                 });
+                self.multiline_opener = Some(trimmed_span.end - 1);
             }
             ValueStart::OpenMultilineVerbatim => {
                 self.collecting = Some(Collecting {
                     mode: MultilineMode::Verbatim,
                     lines: BumpVec::with_capacity_in(8, self.bump),
                 });
+                self.multiline_opener = Some(trimmed_span.end - 2);
             }
         }
         Ok(())
@@ -409,6 +493,7 @@ impl<'a> EventParser<'a> {
         &mut self,
         key: &'a str,
         line_num: usize,
+        key_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<&'a str> {
         if !key.as_bytes().contains(&b'.') {
@@ -416,10 +501,11 @@ impl<'a> EventParser<'a> {
             // frame, then the leaf is just `key`.
             self.close_synthetics_to_real(events);
             if !is_valid_key(key) {
-                return Err(Error::Syntax(format!(
-                    "Invalid key at line {}: '{}'",
-                    line_num, key
-                )));
+                return Err(Error::Structured(ErrorKind::InvalidKey {
+                    line: line_num as u32,
+                    key: key.to_string(),
+                    span: key_span,
+                }));
             }
             return Ok(key);
         }
@@ -430,10 +516,11 @@ impl<'a> EventParser<'a> {
         // saves the heap-allocated `Vec<&str>` per dotted line.
         let (prefix_str, leaf) = key.rsplit_once('.').unwrap();
         if leaf.is_empty() || !is_valid_key(leaf) {
-            return Err(Error::Syntax(format!(
-                "Invalid key at line {}: '{}'",
-                line_num, key
-            )));
+            return Err(Error::Structured(ErrorKind::InvalidKey {
+                line: line_num as u32,
+                key: key.to_string(),
+                span: key_span,
+            }));
         }
 
         let cur_levels_len = match self.stack.last().unwrap() {
@@ -458,10 +545,11 @@ impl<'a> EventParser<'a> {
                 None => break,
             };
             if !is_valid_key(seg) {
-                return Err(Error::Syntax(format!(
-                    "Invalid key at line {}: '{}'",
-                    line_num, key
-                )));
+                return Err(Error::Structured(ErrorKind::InvalidKey {
+                    line: line_num as u32,
+                    key: key.to_string(),
+                    span: key_span,
+                }));
             }
             if seg != cur_prefix {
                 next_seg = Some(seg);
@@ -479,16 +567,17 @@ impl<'a> EventParser<'a> {
         // Stage 3: emit Key + BeginObject + push level for the carry-
         // over segment (if any), then for the rest of `new_iter`.
         if let Some(seg) = next_seg {
-            self.push_synthetic(seg, line_num, events)?;
+            self.push_synthetic(seg, line_num, key_span, events)?;
         }
         for seg in new_iter {
             if !is_valid_key(seg) {
-                return Err(Error::Syntax(format!(
-                    "Invalid key at line {}: '{}'",
-                    line_num, key
-                )));
+                return Err(Error::Structured(ErrorKind::InvalidKey {
+                    line: line_num as u32,
+                    key: key.to_string(),
+                    span: key_span,
+                }));
             }
-            self.push_synthetic(seg, line_num, events)?;
+            self.push_synthetic(seg, line_num, key_span, events)?;
         }
 
         Ok(leaf)
@@ -499,9 +588,10 @@ impl<'a> EventParser<'a> {
         &mut self,
         seg: &'a str,
         line_num: usize,
+        key_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
-        self.register_synthetic_prefix(seg, line_num)?;
+        self.register_synthetic_prefix(seg, line_num, key_span)?;
         events.push(Event::Key(seg));
         events.push(Event::BeginObject);
         let bump = self.bump;
@@ -524,21 +614,30 @@ impl<'a> EventParser<'a> {
     ///   require buffering the whole document, which the event-stream
     ///   path explicitly avoids — group lines with the same prefix
     ///   together to keep them in one synthetic block)
-    fn register_synthetic_prefix(&mut self, seg: &'a str, line_num: usize) -> Result<()> {
+    fn register_synthetic_prefix(
+        &mut self,
+        seg: &'a str,
+        line_num: usize,
+        key_span: Span,
+    ) -> Result<()> {
         match self.stack.last_mut().unwrap() {
             Frame::Object { levels, .. } => {
                 let level = levels.last_mut().unwrap();
                 if level.leaf_keys.contains(&seg) {
-                    return Err(Error::Syntax(format!(
-                        "Line {}: conflict at '{}' — an existing value blocks the path",
-                        line_num, seg
-                    )));
+                    return Err(Error::Structured(ErrorKind::KeyPathConflict {
+                        line: line_num as u32,
+                        path: seg.to_string(),
+                        kind: ConflictKind::BlockedByValue,
+                        span: key_span,
+                    }));
                 }
                 if level.synthetic_keys.contains(&seg) {
-                    return Err(Error::Syntax(format!(
-                        "Line {}: conflict at '{}' — synthetic dotted-key prefix already closed by an intervening different prefix; group lines with the same prefix together",
-                        line_num, seg
-                    )));
+                    return Err(Error::Structured(ErrorKind::KeyPathConflict {
+                        line: line_num as u32,
+                        path: seg.to_string(),
+                        kind: ConflictKind::SyntheticReopen,
+                        span: key_span,
+                    }));
                 }
                 level.synthetic_keys.push(seg);
                 Ok(())
@@ -591,21 +690,24 @@ impl<'a> EventParser<'a> {
     /// for the scalar). Linear scan — fine for K < ~20; worse for very
     /// wide objects, but those are rare in real configs.
     #[inline]
-    fn register_leaf_key(&mut self, leaf: &'a str, line_num: usize) -> Result<()> {
+    fn register_leaf_key(&mut self, leaf: &'a str, line_num: usize, key_span: Span) -> Result<()> {
         match self.stack.last_mut().unwrap() {
             Frame::Object { levels, .. } => {
                 let level = levels.last_mut().unwrap();
                 if level.synthetic_keys.contains(&leaf) {
-                    return Err(Error::Syntax(format!(
-                        "Line {}: conflict at '{}' — an existing value blocks the path",
-                        line_num, leaf
-                    )));
+                    return Err(Error::Structured(ErrorKind::KeyPathConflict {
+                        line: line_num as u32,
+                        path: leaf.to_string(),
+                        kind: ConflictKind::BlockedByValue,
+                        span: key_span,
+                    }));
                 }
                 if level.leaf_keys.contains(&leaf) {
-                    return Err(Error::Syntax(format!(
-                        "Line {}: duplicate key '{}'",
-                        line_num, leaf
-                    )));
+                    return Err(Error::Structured(ErrorKind::DuplicateKey {
+                        line: line_num as u32,
+                        key: leaf.to_string(),
+                        span: key_span,
+                    }));
                 }
                 level.leaf_keys.push(leaf);
                 Ok(())
@@ -622,15 +724,16 @@ impl<'a> EventParser<'a> {
         &mut self,
         expected: BracketKind,
         line_num: usize,
+        trimmed_span: Span,
         events: &mut EventStream<'a>,
     ) -> Result<()> {
         if self.stack.len() <= 1 {
-            return Err(Error::Syntax(format!(
-                "Line {}: '{}' without matching '{}'",
-                line_num,
-                expected.close(),
-                expected.open()
-            )));
+            return Err(Error::Structured(ErrorKind::UnbalancedBracket {
+                line: line_num as u32,
+                span: trimmed_span,
+                expected: expected.to_compound(),
+                found: expected.close(),
+            }));
         }
         // Close any open synthetics in the current frame first (if it's
         // an object), then close the frame itself.
@@ -641,13 +744,14 @@ impl<'a> EventParser<'a> {
             Frame::Object { .. } => BracketKind::Object,
             Frame::Array => BracketKind::Array,
         };
+        let _ = self.opener_offsets.pop();
         if got as u8 != expected as u8 {
-            return Err(Error::Syntax(format!(
-                "Line {}: '{}' does not match the open '{}'",
-                line_num,
-                expected.close(),
-                got.open()
-            )));
+            return Err(Error::Structured(ErrorKind::UnbalancedBracket {
+                line: line_num as u32,
+                span: trimmed_span,
+                expected: got.to_compound(),
+                found: expected.close(),
+            }));
         }
         let close_event = match got {
             BracketKind::Object => Event::EndObject,
@@ -671,16 +775,16 @@ enum BracketKind {
 }
 
 impl BracketKind {
-    fn open(self) -> char {
-        match self {
-            BracketKind::Object => '{',
-            BracketKind::Array => '[',
-        }
-    }
     fn close(self) -> char {
         match self {
             BracketKind::Object => '}',
             BracketKind::Array => ']',
+        }
+    }
+    fn to_compound(self) -> CompoundKind {
+        match self {
+            BracketKind::Object => CompoundKind::Object,
+            BracketKind::Array => CompoundKind::Array,
         }
     }
 }
@@ -707,14 +811,47 @@ enum Separator<'a> {
 }
 
 #[inline]
-fn require_sep_end(rest: &str, line_num: usize) -> Result<()> {
+fn require_sep_end(rest: &str, line_num: usize, body_off: u32, trimmed_span: Span) -> Result<()> {
     if rest.is_empty() || rest.starts_with(char::is_whitespace) {
         Ok(())
     } else {
-        Err(Error::Syntax(format!(
-            "Line {}: MissingSeparatorSpace: separator must be followed by whitespace or end of line",
-            line_num,
-        )))
+        Err(Error::Structured(ErrorKind::MissingSeparatorSpace {
+            line: line_num as u32,
+            column: 0,
+            marker: ':',
+            span: Span::new(body_off, trimmed_span.end),
+        }))
+    }
+}
+
+/// Locate `trimmed` inside `raw` and produce its absolute span.
+fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span {
+    if trimmed.is_empty() {
+        return Span::new(line_start, line_start);
+    }
+    let raw_ptr = raw.as_ptr() as usize;
+    let trim_ptr = trimmed.as_ptr() as usize;
+    debug_assert!(trim_ptr >= raw_ptr && trim_ptr - raw_ptr <= raw.len());
+    let off = (trim_ptr - raw_ptr) as u32;
+    let start = line_start + off;
+    Span::new(start, start + trimmed.len() as u32)
+}
+
+fn body_span_for(body: &str, after_colon: &str, after_colon_off: u32, fallback: Span) -> Span {
+    if body.is_empty() {
+        let p = after_colon_off + after_colon.len() as u32;
+        return Span::new(p, p);
+    }
+    let after_ptr = after_colon.as_ptr() as usize;
+    let body_ptr = body.as_ptr() as usize;
+    if body_ptr >= after_ptr && body_ptr - after_ptr <= after_colon.len() {
+        let off = (body_ptr - after_ptr) as u32;
+        Span::new(
+            after_colon_off + off,
+            after_colon_off + off + body.len() as u32,
+        )
+    } else {
+        fallback
     }
 }
 
@@ -736,48 +873,81 @@ fn classify_separator<'a>(after_colon: &'a str) -> Separator<'a> {
     Separator::Plain
 }
 
-fn validate_typed_integer<'a>(body: &'a str, line_num: usize, bump: &'a Bump) -> Result<&'a str> {
+fn validate_typed_integer<'a>(
+    body: &'a str,
+    line_num: usize,
+    bump: &'a Bump,
+    span: Span,
+) -> Result<&'a str> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        return Err(invalid_typed_scalar(line_num, "integer body is empty"));
+        return Err(invalid_typed_scalar(
+            line_num,
+            'i',
+            "integer body is empty",
+            span,
+        ));
     }
     if opens_compound_or_multiline(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'i',
             "typed marker `:i` cannot open a compound or multi-line value",
+            span,
         ));
     }
     if !is_integer_literal(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'i',
             &format!("'{}' is not a valid integer literal for `:i`", trimmed),
+            span,
         ));
     }
     Ok(strip_leading_plus(trimmed, bump))
 }
 
-fn validate_typed_float<'a>(body: &'a str, line_num: usize, bump: &'a Bump) -> Result<&'a str> {
+fn validate_typed_float<'a>(
+    body: &'a str,
+    line_num: usize,
+    bump: &'a Bump,
+    span: Span,
+) -> Result<&'a str> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        return Err(invalid_typed_scalar(line_num, "float body is empty"));
+        return Err(invalid_typed_scalar(
+            line_num,
+            'f',
+            "float body is empty",
+            span,
+        ));
     }
     if opens_compound_or_multiline(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'f',
             "typed marker `:f` cannot open a compound or multi-line value",
+            span,
         ));
     }
     if !is_float_literal(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'f',
             &format!("'{}' is not a valid float literal for `:f`", trimmed),
+            span,
         ));
     }
     Ok(strip_leading_plus(trimmed, bump))
 }
 
-fn invalid_typed_scalar(line_num: usize, detail: &str) -> Error {
-    Error::Syntax(format!("Line {}: InvalidTypedScalar: {}", line_num, detail))
+fn invalid_typed_scalar(line_num: usize, marker: char, detail: &str, span: Span) -> Error {
+    Error::Structured(ErrorKind::InvalidTypedScalar {
+        line: line_num as u32,
+        marker,
+        body: detail.to_string(),
+        span,
+    })
 }
 
 fn opens_compound_or_multiline(s: &str) -> bool {
@@ -850,7 +1020,7 @@ fn is_float_literal(s: &str) -> bool {
     i == bytes.len()
 }
 
-fn classify<'a>(trimmed: &'a str, line_num: usize) -> Result<ValueStart<'a>> {
+fn classify<'a>(trimmed: &'a str, line_num: usize, trimmed_span: Span) -> Result<ValueStart<'a>> {
     if trimmed == "{" {
         return Ok(ValueStart::OpenObject);
     }
@@ -862,20 +1032,22 @@ fn classify<'a>(trimmed: &'a str, line_num: usize) -> Result<ValueStart<'a>> {
         if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyObject);
         }
-        return Err(Error::Syntax(format!(
-            "Line {}: inline non-empty object is not supported; put entries on separate lines",
-            line_num
-        )));
+        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+            body: "object".to_string(),
+        }));
     }
 
     if trimmed.starts_with('[') {
         if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyArray);
         }
-        return Err(Error::Syntax(format!(
-            "Line {}: inline non-empty array is not supported; put items on separate lines",
-            line_num
-        )));
+        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+            body: "array".to_string(),
+        }));
     }
 
     match trimmed {

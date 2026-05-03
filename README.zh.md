@@ -247,6 +247,63 @@ let text = ktav::render::render(&Value::Object(top))?;
 [`to_string`](https://docs.rs/ktav) / [`to_file`](https://docs.rs/ktav)。
 完整可运行示例:[`examples/basic.rs`](examples/basic.rs)。
 
+### 检视错误 —— 给工具链使用的结构化变体
+
+`Error::Structured(ErrorKind)` 为每次解析失败携带类型化的类别加字节
+偏移 `Span`,因此编辑器和 linter 可以高亮恰好出错的范围,而不是
+整行。
+
+```rust
+use ktav::{parse, Error, ErrorKind};
+
+let src = "port: 80\nport: 443\n";
+match parse(src) {
+    Ok(_) => unreachable!(),
+    Err(Error::Structured(ErrorKind::DuplicateKey { line, key, span, .. })) => {
+        println!("第 {line} 行:重复键 {key:?}");
+        println!("出错字节: {:?}", span.slice(src));   // -> Some("port")
+        let (l, c) = span.line_col(src);                // 行 1 起,列 0 起按字节
+        println!("高亮 {l}:{c}");
+    }
+    Err(other) => panic!("{other}"),
+}
+```
+
+变体:`MissingSeparatorSpace`、`InvalidTypedScalar`、`DuplicateKey`、
+`KeyPathConflict`、`EmptyKey`、`InvalidKey`、`UnclosedCompound`、
+`UnbalancedBracket`、`InlineNonEmptyCompound`、`MissingSeparator`、
+`Other`。该枚举标注 `#[non_exhaustive]` —— 必须包含 `_ =>` 分支。
+变体不重要时可使用便捷访问器 `Error::line()` / `Error::span()`。
+`Display` 输出的字符串与遗留 `Error::Syntax(_)` 完全一致,因此原有
+基于字符串的调用方无需修改即可继续工作。
+
+完整可运行示例遍历所有变体:
+[`examples/errors.rs`](examples/errors.rs) —— `cargo run --example errors`。
+
+### 流式解析 —— 不构建中间树的事件流
+
+`parse_events` 对每个解析事件调用回调,字符串直接从 input 缓冲区
+借用 —— 不在每个事件上分配,也不构建中间 `Value` 树。在不需要完整
+文档时很有用:统计键、流式转换到其他格式、构建自定义形状。
+
+```rust
+use ktav::{parse_events, ParseEvent};
+
+let src = "port:i 8080\nhost: example.com\n";
+let mut keys = Vec::new();
+parse_events(src, |ev| {
+    if let ParseEvent::Key(k) = ev {
+        keys.push(k.to_string());
+    }
+})?;
+assert_eq!(keys, ["port", "host"]);
+```
+
+整个文档由外层 `BeginObject` / `EndObject` 对包裹;嵌套复合值括起其
+自身内容。`ParseEvent` 标注 `#[non_exhaustive]`。完整的、带深度跟踪
+和漂亮打印的可运行示例:
+[`examples/events.rs`](examples/events.rs) —— `cargo run --example events`。
+
 ### 类型化标记
 
 Rust 数值类型(`u8`..`u128`、`i8`..`i128`、`usize`、`isize`、`f32`、

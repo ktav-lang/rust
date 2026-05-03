@@ -10,6 +10,98 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+
+## [0.1.5] —— 2026-05-01
+
+主要发布:带字节偏移 span 的结构化错误、公开的事件式解析器 API、
+对错误枚举追溯应用 `#[non_exhaustive]` 以保证前向兼容。
+
+### 新增
+
+- `ErrorKind` 枚举(10 个规范定义变体 + `Other`),每个变体携带
+  字节偏移 `span: Span`,直接向下游消费者暴露 `(line, column, kind)`,
+  无需通过正则解析格式化消息。完整变体清单见英文版。
+- 现有 `Error` 枚举上的 `Error::Structured(ErrorKind)` 变体。
+- `pub struct Span { start: u32, end: u32 }`,提供 `Span::new`、
+  `Span::EMPTY`、`slice(input)` 与 `line_col(input)`(line 从 1 起,
+  column 从 0 起按字节计;多字节 UTF-8 已通过西里尔与 🦀 测试固定)。
+- `Error::line() -> Option<u32>` 和 `Error::span() -> Option<Span>` —
+  覆盖每个变体的便捷访问器。
+- `pub mod thin` —— 公开的事件式解析器 API:
+  `ktav::parse_events(input, callback)` 对从 input 借用的每个事件
+  调用所提供的 `FnMut(ParseEvent<'_>)`。`ParseEvent` 是
+  `#[non_exhaustive]` 枚举,有 10 个变体。内部 bumpalo arena
+  保持私有 —— 公共 API 不泄露 arena 类型。
+- `src/lib.rs` 的 crate 级可运行 doctest,演示 `Error::Structured`
+  匹配配合 `Span::slice` 以及 `parse_events` 回调形态。
+- 六个新顶层测试文件:`tests/error_format.rs`、
+  `tests/structured_errors.rs`、`tests/error_spans.rs`、
+  `tests/error_accessors.rs`、`tests/non_exhaustive.rs`、
+  `tests/thin_public.rs` —— 详见英文版。
+- `benches/` 下的合成 Criterion 基准,覆盖 small_1k / medium_50k /
+  large_500k 负载在成功路径和错误路径上的解析性能。baseline 数字
+  位于 `bench-baseline.md`。
+
+### 变更
+
+- 对 `Error`、`ErrorKind`、`ConflictKind`、`CompoundKind` 追溯应用
+  `#[non_exhaustive]`。未来添加变体对下游的 `match` 不再是破坏性
+  变更 —— 调用方现在必须包含 `_ =>` 分支。
+- 解析器在任何内部调用点都不再构造 `Error::Syntax(format!(...))`
+  (约 37 个站点重构为 `Error::Structured`)。回归保护测试
+  (`parser_no_longer_emits_legacy_syntax_variant`)运行 12 个非法
+  输入,若有人在 `src/` 内重新引入旧变体,CI 会大声失败。
+- `parser/parse_str.rs` 用维护累积 `line_start` 计数的手工字节遍历
+  循环替代 `str::lines()`,以便在每个错误站点计算字节偏移 span 而
+  无需重新扫描。`thin/event_parser.rs` 在零拷贝路径上镜像同一
+  plumbing。
+- `Display for ErrorKind` 与解析器先前格式化进 `Error::Syntax(...)`
+  的字符串完全字节相同(覆盖七个先前已固定类别)—— 这是让现有
+  基于字符串的调用方在
+  [`STRUCTURED_ERRORS.md`](../STRUCTURED_ERRORS.md) 描述的生态系统
+  级迁移期间保持不变工作的契约。
+- 三个先前归入 `Other` 的形态升级为命名 `ErrorKind` 变体:
+  `UnbalancedBracket`(孤立闭符 / 形状不匹配)、
+  `InlineNonEmptyCompound`(`x: {foo}` —— 规范 § 6.7)、
+  `MissingSeparator`(无 `:` 的行)。升级后,`Other` 仅保留没有任何
+  规范非法夹具能触发的解析器内部不变量。
+
+### 性能
+
+`cargo bench --bench parse -- --quick` 与 0.1.4 baseline 对比:成功
+路径零回归,错误路径略快(惰性 Display 取代了即时 `format!`)。
+完整表格见英文版。
+
+### 备注
+
+- 为了向后兼容,`Error::Syntax(String)` 保留 —— 公共 API 仍不拒绝
+  老调用方。移除推迟到 ktav 1.0。
+- 测试数:332 (0.1.4) → 391 (+59),外加 1 个新 doctest。
+- cabi/绑定迁移以通过 FFI 边界消费 `ErrorKind` 的工作单独记录在
+  [`STRUCTURED_ERRORS.md`](../STRUCTURED_ERRORS.md),并作为协调发布
+  的生态系统 0.2.0 一并交付。
+
+### SemVer 说明
+
+按
+[Cargo SemVer 参考](https://doc.rust-lang.org/cargo/reference/semver.html#enum-non-exhaustive),
+为先前未标注的枚举(`Error`、`ConflictKind`、`CompoundKind`)添加
+`#[non_exhaustive]` 是破坏性变更,通常需要主版本号 bump(0.2.0)。
+本次发布有意作为 **0.1.5** 推出:
+
+1. Pre-1.0 的 Cargo 惯例允许在任何 bump(包括 patch)上做破坏性
+   变更。
+2. `ktav::Error` 所有已知的下游消费者(`ktav-lang/` 下的六个语言
+   绑定)均仅调用 `Err(e) => e.to_string()`。生态系统中不存在会被
+   该变更悄悄破坏的穷尽 `match err { Error::Io(_) => …,
+   Error::Syntax(_) => …, Error::Message(_) => … }` 模式。
+3. 七个标准类别的 Display 字符串与 0.1.4 字节相同,因此任何在
+   tree 之外做字符串匹配的假想消费者也无需修改即可继续工作。
+
+如果你的代码确实保留了对 `ktav::Error` 的穷尽 `match` 而本次发布
+将其破坏 —— 请添加 `_ => …` 分支。该分支从此永久必须存在,且不会
+随未来变体的添加而再次需要变更。
+
 ## [0.1.4] —— 2026-04-26
 
 ### 变更

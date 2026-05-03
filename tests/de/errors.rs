@@ -5,6 +5,18 @@ use serde::Deserialize;
 
 use super::common::fixture;
 
+/// Helper: extract the syntactic message from either the legacy
+/// `Error::Syntax(_)` variant or the new `Error::Structured(_)` variant.
+/// Display parity (see `tests/error_format.rs`) guarantees this returns
+/// the same string for either shape.
+fn syntax_msg(err: &Error) -> String {
+    match err {
+        Error::Syntax(m) => m.clone(),
+        Error::Structured(k) => k.to_string(),
+        other => panic!("expected Syntax/Structured error, got {:?}", other),
+    }
+}
+
 #[test]
 fn unclosed_object() {
     #[derive(Debug, Deserialize)]
@@ -12,11 +24,7 @@ fn unclosed_object() {
         _x: String,
     }
     let err = from_str::<Cfg>("x: {\n  y: 1\n").unwrap_err();
-    assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("Unclosed")),
-        "got: {:?}",
-        err
-    );
+    assert!(syntax_msg(&err).contains("Unclosed"), "got: {:?}", err);
 }
 
 #[test]
@@ -26,11 +34,7 @@ fn unclosed_array() {
         _x: Vec<String>,
     }
     let err = from_str::<Cfg>("x: [\n  a\n").unwrap_err();
-    assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("Unclosed")),
-        "got: {:?}",
-        err
-    );
+    assert!(syntax_msg(&err).contains("Unclosed"), "got: {:?}", err);
 }
 
 #[test]
@@ -40,8 +44,10 @@ fn mismatched_bracket() {
         _x: String,
     }
     let err = from_str::<Cfg>("x: {\n]\n").unwrap_err();
+    // 0.1.6: bracket mismatches surface as `UnbalancedBracket` with a
+    // pinned Display string of `'<closer>' without matching '<opener>'`.
     assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("does not match")),
+        syntax_msg(&err).contains("UnbalancedBracket"),
         "got: {:?}",
         err
     );
@@ -55,7 +61,7 @@ fn stray_close_bracket() {
     }
     let err = from_str::<Cfg>("}\n").unwrap_err();
     assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("without matching")),
+        syntax_msg(&err).contains("without matching"),
         "got: {:?}",
         err
     );
@@ -68,11 +74,7 @@ fn duplicate_key() {
         _port: u16,
     }
     let err = from_str::<Cfg>("port: 80\nport: 443\n").unwrap_err();
-    assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("duplicate key")),
-        "got: {:?}",
-        err
-    );
+    assert!(syntax_msg(&err).contains("duplicate key"), "got: {:?}", err);
 }
 
 #[test]
@@ -85,11 +87,7 @@ fn duplicate_key_inside_dotted_synthetic() {
         _db: serde::de::IgnoredAny,
     }
     let err = from_str::<Cfg>("db.host: a\ndb.host: b\n").unwrap_err();
-    assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("duplicate key")),
-        "got: {:?}",
-        err
-    );
+    assert!(syntax_msg(&err).contains("duplicate key"), "got: {:?}", err);
 }
 
 #[test]
@@ -168,11 +166,7 @@ fn empty_key() {
         _x: String,
     }
     let err = from_str::<Cfg>(": value\n").unwrap_err();
-    assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("Empty key")),
-        "got: {:?}",
-        err
-    );
+    assert!(syntax_msg(&err).contains("Empty key"), "got: {:?}", err);
 }
 
 #[test]
@@ -182,11 +176,7 @@ fn key_with_special_chars() {
         _x: String,
     }
     let err = from_str::<Cfg>("[foo]: bar\n").unwrap_err();
-    assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("Invalid key")),
-        "got: {:?}",
-        err
-    );
+    assert!(syntax_msg(&err).contains("Invalid key"), "got: {:?}", err);
 }
 
 #[test]
@@ -196,8 +186,10 @@ fn line_without_colon_in_object() {
         _x: String,
     }
     let err = from_str::<Cfg>("just-some-text\n").unwrap_err();
+    // 0.1.6: the bare-word case now surfaces as `MissingSeparator` with
+    // the pinned `'key: value' pairs` Display string.
     assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("no ':'")),
+        syntax_msg(&err).contains("MissingSeparator"),
         "got: {:?}",
         err
     );
@@ -211,7 +203,7 @@ fn inline_nonempty_object() {
     }
     let err = from_str::<Cfg>("x: { a: 1 }\n").unwrap_err();
     assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("inline non-empty object")),
+        syntax_msg(&err).contains("inline non-empty object"),
         "got: {:?}",
         err
     );
@@ -225,7 +217,7 @@ fn inline_nonempty_array() {
     }
     let err = from_str::<Cfg>("x: [a b c]\n").unwrap_err();
     assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("inline non-empty array")),
+        syntax_msg(&err).contains("inline non-empty array"),
         "got: {:?}",
         err
     );
@@ -238,11 +230,7 @@ fn bracket_value_without_double_colon() {
         _x: String,
     }
     let err = from_str::<Cfg>("x: [a-z]+\n").unwrap_err();
-    assert!(
-        matches!(err, Error::Syntax(ref m) if m.contains("inline")),
-        "got: {:?}",
-        err
-    );
+    assert!(syntax_msg(&err).contains("inline"), "got: {:?}", err);
 }
 
 #[test]

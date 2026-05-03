@@ -8,6 +8,152 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+
+## [0.1.5] — 2026-05-01
+
+Major release: structured errors with byte-offset spans, public
+event-based parser API, `#[non_exhaustive]` retroactively applied to
+the error enums for forward-compatibility.
+
+### Added
+
+- `ErrorKind` enum (10 spec-defined variants + `Other`) with byte-offset
+  `span: Span` on every variant, exposing `(line, column, kind)` directly
+  to downstream consumers without regex-parsing the formatted message.
+
+      pub enum ErrorKind {
+          MissingSeparatorSpace { line, column, marker, span },
+          InvalidTypedScalar    { line, marker, body, span },
+          DuplicateKey          { line, key, span },
+          KeyPathConflict       { line, path, kind: ConflictKind, span },
+          EmptyKey              { line, span },
+          InvalidKey            { line, key, span },
+          UnclosedCompound      { kind: CompoundKind, span },
+          UnbalancedBracket     { line, expected: CompoundKind, found: char, span },
+          InlineNonEmptyCompound{ line, body, span },
+          MissingSeparator      { line, span },
+          Other                 { line: Option<u32>, message, span },
+      }
+
+- `Error::Structured(ErrorKind)` variant on the existing `Error` enum.
+- `pub struct Span { start: u32, end: u32 }` with `Span::new`,
+  `Span::EMPTY`, `slice(input)`, and `line_col(input)` (1-based line,
+  0-based byte column — multi-byte UTF-8 aware via tests pinning
+  Cyrillic and 🦀).
+- `Error::line() -> Option<u32>` and `Error::span() -> Option<Span>`
+  convenience accessors covering every variant.
+- `pub mod thin` — public event-based parser API:
+  `ktav::parse_events(input, callback)` invoking the supplied
+  `FnMut(ParseEvent<'_>)` for each event borrowed from the input.
+  `ParseEvent` is a `#[non_exhaustive]` enum with 10 variants
+  (`Null`, `Bool`, `Integer`, `Float`, `Str`, `Key`, `BeginObject`,
+  `EndObject`, `BeginArray`, `EndArray`). The internal bumpalo arena
+  stays private — the public API does not leak the arena type.
+- Crate-level runnable doctest in `src/lib.rs` demonstrating both
+  `Error::Structured` matching with `Span::slice` and the
+  `parse_events` callback shape.
+- Three new top-level test files:
+  `tests/error_format.rs` — Display-string regression net (canonical
+  pinning for the 7 categories that LSP / bindings rely on);
+  `tests/structured_errors.rs` — variant identity + (line, span) byte
+  ranges per spec invalid fixture;
+  `tests/error_spans.rs` — span byte-range semantics + `Span::slice`
+  and `Span::line_col` edge cases (UTF-8 multi-byte, char-boundary
+  rounding);
+  `tests/error_accessors.rs` — every `Error` variant tested for
+  `line()` / `span()` returning `Some` / `None` as documented;
+  `tests/non_exhaustive.rs` — wildcard-arm reachability proof for
+  `Error` and `ErrorKind`;
+  `tests/thin_public.rs` — event sequencing, nested compounds, marker
+  items, error propagation, borrow contract.
+- Synthetic Criterion benchmarks under `benches/` covering parse
+  perf at small_1k / medium_50k / large_500k workloads on both
+  success and error paths. Baseline numbers in `bench-baseline.md`.
+
+### Changed
+
+- `#[non_exhaustive]` retroactively applied to `Error`, `ErrorKind`,
+  `ConflictKind`, and `CompoundKind`. Future variant additions are
+  no longer breaking changes for downstream `match`-ers, who must
+  now include a `_ =>` arm.
+- The parser no longer constructs `Error::Syntax(format!(...))` at any
+  internal call site (~37 sites refactored to `Error::Structured`).
+  A regression guard test
+  (`parser_no_longer_emits_legacy_syntax_variant`) runs 12 invalid
+  inputs and fails CI loudly if anyone reintroduces the legacy
+  variant inside `src/`.
+- `parser/parse_str.rs` replaces `str::lines()` with a manual
+  byte-walking loop maintaining a cumulative `line_start` counter
+  so byte-offset spans can be computed at every error site without
+  rescanning. `thin/event_parser.rs` mirrors the same plumbing on
+  the zero-copy path.
+- `Display for ErrorKind` is byte-identical to the strings the parser
+  previously formatted into `Error::Syntax(...)` for the seven
+  pre-existing categories — the contract that lets every existing
+  string-based caller keep working unmodified during the
+  ecosystem-wide migration tracked in
+  [`STRUCTURED_ERRORS.md`](../STRUCTURED_ERRORS.md).
+- Three formerly-`Other` shapes promoted to named `ErrorKind` variants:
+  `UnbalancedBracket` (stray closer / shape mismatch),
+  `InlineNonEmptyCompound` (`x: {foo}` — spec § 6.7),
+  `MissingSeparator` (line with no `:`). After this promotion, `Other`
+  contains only parser-internal invariants that no spec invalid
+  fixture can trigger.
+
+### Performance
+
+`cargo bench --bench parse -- --quick` against the 0.1.4 baseline:
+
+|                                | 0.1.4 baseline | 0.1.5  | Δ      |
+|--------------------------------|----------------|--------|--------|
+| `parse_synth/small_1k`         | 16.1 µs        | 16.0 µs| −0.6 % |
+| `parse_synth/medium_50k`       | 896 µs         | 663 µs | −26 %  |
+| `parse_synth/large_500k`       | 9.49 ms        | 9.27 ms| −2.3 % |
+| `parse_synth_error/small_1k`   | 7.5 µs         | 7.2 µs | −4.0 % |
+| `parse_synth_error/medium_50k` | 340 µs         | 346 µs | +1.8 % |
+| `parse_synth_error/large_500k` | 4.47 ms        | 4.50 ms| +0.7 % |
+
+Net: zero success-path regression. Error-path slightly faster — the
+new `Display` impl constructs the formatted string lazily at
+`.to_string()` time, whereas the prior `format!(...)` allocated a
+`String` at every error site eagerly. The cumulative-byte counter
+that powers spans is statistically free.
+
+### Notes
+
+- `Error::Syntax(String)` is preserved for backward compatibility —
+  the public API stays deny-no-old-callers. Removal is deferred to
+  ktav 1.0.
+- Test count: 332 (0.1.4) → 391 (+59) plus 1 new doctest.
+- The cabi/binding migration to consume `ErrorKind` over the FFI
+  boundary is tracked separately in
+  [`STRUCTURED_ERRORS.md`](../STRUCTURED_ERRORS.md) and ships as a
+  coordinated ecosystem 0.2.0.
+
+### SemVer note
+
+Adding `#[non_exhaustive]` to a previously-unmarked enum (`Error`,
+`ConflictKind`, `CompoundKind`) is, per the
+[Cargo SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html#enum-non-exhaustive),
+a breaking change that would normally require a major bump (0.2.0).
+This release ships as **0.1.5** intentionally:
+
+1. Pre-1.0 Cargo convention permits breaking changes on any bump,
+   including patches.
+2. All known downstream consumers of `ktav::Error` (the six language
+   bindings under `ktav-lang/`) call `Err(e) => e.to_string()` only.
+   No exhaustive `match err { Error::Io(_) => …, Error::Syntax(_)
+   => …, Error::Message(_) => … }` patterns exist in the ecosystem
+   that this change would silently break.
+3. The seven canonical-category Display strings remain byte-identical
+   to 0.1.4, so any hypothetical out-of-tree consumer doing string
+   matching keeps working unmodified.
+
+If your code does keep an exhaustive match over `ktav::Error` and
+this release breaks it, add an `_ => …` arm. That arm is now
+required forever and will not need to change again as future
+variants are added.
+
 ## [0.1.4] — 2026-04-26
 
 ### Changed

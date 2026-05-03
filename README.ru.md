@@ -261,6 +261,67 @@ let text = ktav::render::render(&Value::Object(top))?;
 для записи. Полный запускаемый пример — в
 [`examples/basic.rs`](examples/basic.rs).
 
+### Анализ ошибок — структурированные варианты для тулинга
+
+`Error::Structured(ErrorKind)` несёт типизированную категорию плюс
+byte-offset `Span` для каждого parse-фейла, так что редакторы и
+линтеры могут подсветить именно offending диапазон, а не всю строку.
+
+```rust
+use ktav::{parse, Error, ErrorKind};
+
+let src = "port: 80\nport: 443\n";
+match parse(src) {
+    Ok(_) => unreachable!(),
+    Err(Error::Structured(ErrorKind::DuplicateKey { line, key, span, .. })) => {
+        println!("строка {line}: дубликат ключа {key:?}");
+        println!("offending байты: {:?}", span.slice(src));    // -> Some("port")
+        let (l, c) = span.line_col(src);                       // line 1-based, col 0-based по байтам
+        println!("подсветить в {l}:{c}");
+    }
+    Err(other) => panic!("{other}"),
+}
+```
+
+Варианты: `MissingSeparatorSpace`, `InvalidTypedScalar`, `DuplicateKey`,
+`KeyPathConflict`, `EmptyKey`, `InvalidKey`, `UnclosedCompound`,
+`UnbalancedBracket`, `InlineNonEmptyCompound`, `MissingSeparator`,
+`Other`. Enum помечен `#[non_exhaustive]` — обязателен arm `_ =>`.
+`Error::line()` / `Error::span()` — convenience accessors для случаев
+когда вариант неважен. `Display` выдаёт те же читаемые строки, что и
+legacy `Error::Syntax(_)`, поэтому существующие string-based вызывающие
+работают без изменений.
+
+Полный запускаемый пример проходит по всем вариантам:
+[`examples/errors.rs`](examples/errors.rs) — `cargo run --example errors`.
+
+### Stream-парсинг — события без промежуточного дерева
+
+`parse_events` вызывает callback на каждое событие парсинга, со
+строками заимствующимися напрямую из input-буфера — без аллокации на
+событие, без промежуточного `Value`-дерева. Полезно когда полный
+документ не нужен: подсчёт ключей, стриминг в другой формат, построение
+custom-shape-а.
+
+```rust
+use ktav::{parse_events, ParseEvent};
+
+let src = "port:i 8080\nhost: example.com\n";
+let mut keys = Vec::new();
+parse_events(src, |ev| {
+    if let ParseEvent::Key(k) = ev {
+        keys.push(k.to_string());
+    }
+})?;
+assert_eq!(keys, ["port", "host"]);
+```
+
+Весь документ обёрнут внешней парой `BeginObject` / `EndObject`;
+вложенные компаунды обрамляют своё содержимое. `ParseEvent` помечен
+`#[non_exhaustive]`. Полный запускаемый пример с tracking-ом глубины
+и pretty-print-ом:
+[`examples/events.rs`](examples/events.rs) — `cargo run --example events`.
+
 ### Типизированные маркеры
 
 Числовые Rust-типы (`u8`..`u128`, `i8`..`i128`, `usize`, `isize`, `f32`,

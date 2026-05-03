@@ -202,12 +202,12 @@ fn typed_integer_line_number_is_reported() {
         _b: u16,
     }
     let err = from_str::<Cfg>("a:i 1\nb:i not-a-number\n").unwrap_err();
-    match err {
-        Error::Syntax(m) => {
-            // The parser itself rejects non-digit body for `:i`.
-            assert!(m.contains("Line 2"), "got: {}", m);
-            assert!(m.contains("InvalidTypedScalar"), "got: {}", m);
-        }
-        _ => panic!("expected Syntax error, got {:?}", err),
-    }
+    let m = match &err {
+        Error::Syntax(m) => m.clone(),
+        Error::Structured(k) => k.to_string(),
+        _ => panic!("expected Syntax/Structured error, got {:?}", err),
+    };
+    // The parser itself rejects non-digit body for `:i`.
+    assert!(m.contains("Line 2"), "got: {}", m);
+    assert!(m.contains("InvalidTypedScalar"), "got: {}", m);
 }

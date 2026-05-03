@@ -4,8 +4,15 @@
 //! under `target/criterion/` — the first run establishes a baseline; every
 //! subsequent run reports `+/- X%` against it.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde::{Deserialize, Serialize};
+
+// Synthesized realistic-mix fixtures (1k / 50k / 500k targets) +
+// `with_bad_line` for the error-path bench. Sibling file mounted as a
+// module — Cargo treats each `benches/*.rs` as its own crate root, so
+// the explicit `#[path]` is needed to share `fixtures.rs`.
+#[path = "fixtures.rs"]
+mod fixtures;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -165,6 +172,61 @@ fn bench_multiline_dedent(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// Synthesised size-keyed workloads (1k / 50k / 500k)
+//
+// These benches feed the realistic-mix synthesiser into both the success
+// path (`parse_synth`) and the error path (`parse_synth_error`). The
+// error path injects a single bad line at the document midpoint and
+// asserts the parser returns `Err` — that exercises the
+// error-construction code that the upcoming structured-errors refactor
+// will touch, so we want a baseline on it now.
+// ---------------------------------------------------------------------------
+
+type SynthFn = fn() -> String;
+const SYNTH_SIZES: &[(&str, SynthFn)] = &[
+    ("small_1k", fixtures::small_1k),
+    ("medium_50k", fixtures::medium_50k),
+    ("large_500k", fixtures::large_500k),
+];
+
+fn bench_parse_synth(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse_synth");
+    for &(label, gen) in SYNTH_SIZES {
+        let text = gen();
+        group.throughput(Throughput::Bytes(text.len() as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(label), &text, |b, t| {
+            b.iter(|| {
+                let v = ktav::parse(black_box(t)).unwrap();
+                black_box(v)
+            })
+        });
+    }
+    group.finish();
+}
+
+fn bench_parse_synth_error(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse_synth_error");
+    for &(label, gen) in SYNTH_SIZES {
+        let good = gen();
+        let bad = fixtures::with_bad_line(&good);
+        // Sanity: the injected line must actually trigger an Err so we
+        // really are timing the error path, not a silent success.
+        assert!(
+            ktav::parse(&bad).is_err(),
+            "fixture for {label} did not produce an error",
+        );
+        group.throughput(Throughput::Bytes(bad.len() as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(label), &bad, |b, t| {
+            b.iter(|| {
+                let r = ktav::parse(black_box(t));
+                black_box(r.is_err())
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parse_to_value,
@@ -172,5 +234,7 @@ criterion_group!(
     bench_render,
     bench_roundtrip,
     bench_multiline_dedent,
+    bench_parse_synth,
+    bench_parse_synth_error,
 );
 criterion_main!(benches);

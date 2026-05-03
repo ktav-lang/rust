@@ -10,6 +10,130 @@ Cargo-конвенцией: до 1.0 bump MINOR считается ломающ�
 Историю самой спецификации формата см. в репозитории
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec).
 
+
+## [0.1.5] — 2026-05-01
+
+Большой релиз: структурированные ошибки с byte-offset spans, публичное
+event-based API парсера, retroactive `#[non_exhaustive]` на error-enum-ах
+для forward-compatibility.
+
+### Добавлено
+
+- Enum `ErrorKind` (10 спек-определённых вариантов + `Other`) с
+  byte-offset `span: Span` на каждом варианте, выставляющий
+  `(line, column, kind)` напрямую downstream-потребителям без regex-
+  парсинга форматированного сообщения.
+
+      pub enum ErrorKind {
+          MissingSeparatorSpace { line, column, marker, span },
+          InvalidTypedScalar    { line, marker, body, span },
+          DuplicateKey          { line, key, span },
+          KeyPathConflict       { line, path, kind: ConflictKind, span },
+          EmptyKey              { line, span },
+          InvalidKey            { line, key, span },
+          UnclosedCompound      { kind: CompoundKind, span },
+          UnbalancedBracket     { line, expected: CompoundKind, found: char, span },
+          InlineNonEmptyCompound{ line, body, span },
+          MissingSeparator      { line, span },
+          Other                 { line: Option<u32>, message, span },
+      }
+
+- Вариант `Error::Structured(ErrorKind)` на существующем enum `Error`.
+- `pub struct Span { start: u32, end: u32 }` с `Span::new`,
+  `Span::EMPTY`, `slice(input)`, и `line_col(input)` (line 1-based,
+  column 0-based байтовая — multi-byte UTF-8 учтён через тесты,
+  пинящие кириллицу и 🦀).
+- `Error::line() -> Option<u32>` и `Error::span() -> Option<Span>` —
+  convenience-accessors, покрывающие каждый вариант.
+- `pub mod thin` — публичное event-based API парсера:
+  `ktav::parse_events(input, callback)` вызывает поставленный
+  `FnMut(ParseEvent<'_>)` для каждого события, заимствованного из
+  input. `ParseEvent` — `#[non_exhaustive]` enum с 10 вариантами
+  (`Null`, `Bool`, `Integer`, `Float`, `Str`, `Key`, `BeginObject`,
+  `EndObject`, `BeginArray`, `EndArray`). Внутренняя bumpalo arena
+  остаётся приватной — публичный API не утекает тип арены.
+- Crate-level runnable doctest в `src/lib.rs` демонстрирует и
+  matching `Error::Structured` со `Span::slice`, и форму
+  `parse_events` callback.
+- Шесть новых top-level test-файлов: `tests/error_format.rs`,
+  `tests/structured_errors.rs`, `tests/error_spans.rs`,
+  `tests/error_accessors.rs`, `tests/non_exhaustive.rs`,
+  `tests/thin_public.rs` — детально описаны в английской версии.
+- Синтетические Criterion-бенчи под `benches/` покрывающие parse-perf
+  на small_1k / medium_50k / large_500k workloads, на success и error
+  путях. Baseline-числа в `bench-baseline.md`.
+
+### Изменено
+
+- `#[non_exhaustive]` retroactively применён к `Error`, `ErrorKind`,
+  `ConflictKind` и `CompoundKind`. Будущие добавления вариантов
+  больше не являются ломающим изменением для downstream-`match`-еров,
+  которые теперь обязаны иметь arm `_ =>`.
+- Парсер больше не конструирует `Error::Syntax(format!(...))` ни на
+  одном внутреннем call-сайте (~37 сайтов перерефакторены на
+  `Error::Structured`). Регрессионный guard-test
+  (`parser_no_longer_emits_legacy_syntax_variant`) гоняет 12
+  невалидных входов и громко фейлит CI, если кто-то реинтродуктит
+  legacy-вариант внутри `src/`.
+- `parser/parse_str.rs` заменяет `str::lines()` на ручной
+  byte-walking loop, поддерживающий cumulative-`line_start` счётчик —
+  byte-offset spans вычисляются на каждом error-сайте без
+  пересканирования. `thin/event_parser.rs` зеркалит то же plumbing
+  на zero-copy пути.
+- `Display for ErrorKind` byte-identical к строкам, которые парсер
+  ранее форматировал в `Error::Syntax(...)` для семи pre-existing
+  категорий — это контракт, позволяющий каждому существующему
+  string-based caller-у работать без изменений на время
+  ecosystem-wide миграции, описанной в
+  [`STRUCTURED_ERRORS.md`](../STRUCTURED_ERRORS.md).
+- Три прежде-`Other` формы промоутированы в именованные варианты
+  `ErrorKind`: `UnbalancedBracket` (lone closer / shape mismatch),
+  `InlineNonEmptyCompound` (`x: {foo}` — спека § 6.7),
+  `MissingSeparator` (строка без `:`). После promotion-а `Other`
+  содержит только парсер-внутренние invariants, которые ни одна
+  spec invalid фикстура не триггерит.
+
+### Производительность
+
+`cargo bench --bench parse -- --quick` против baseline 0.1.4: zero
+регрессии на success-path, error-path немного быстрее (lazy Display
+вместо eager `format!`). Полная таблица — в английской версии.
+
+### Заметки
+
+- `Error::Syntax(String)` сохранён для обратной совместимости —
+  публичный API остаётся deny-no-old-callers. Удаление отложено до
+  ktav 1.0.
+- Тестов: 332 (0.1.4) → 391 (+59) плюс 1 новый doctest.
+- Миграция cabi/биндингов на потребление `ErrorKind` через FFI
+  трекается отдельно в
+  [`STRUCTURED_ERRORS.md`](../STRUCTURED_ERRORS.md) и идёт как
+  coordinated ecosystem 0.2.0.
+
+### SemVer-замечание
+
+Добавление `#[non_exhaustive]` к ранее непомеченным enum-ам (`Error`,
+`ConflictKind`, `CompoundKind`) — согласно
+[Cargo SemVer reference](https://doc.rust-lang.org/cargo/reference/semver.html#enum-non-exhaustive)
+— breaking change, требующий major-bump-а (0.2.0). Этот релиз
+выпускается как **0.1.5** намеренно:
+
+1. Pre-1.0 Cargo-конвенция допускает breaking-изменения на любом
+   bump-е, включая патчи.
+2. Все известные downstream-потребители `ktav::Error` (шесть
+   языковых биндингов под `ktav-lang/`) делают только
+   `Err(e) => e.to_string()`. Exhaustive `match err { Error::Io(_)
+   => …, Error::Syntax(_) => …, Error::Message(_) => … }` в
+   экосистеме нет — ломать тихо нечего.
+3. Display-строки семи канонических категорий byte-identical к
+   0.1.4, поэтому любой гипотетический out-of-tree-потребитель,
+   делающий string matching, продолжает работать без изменений.
+
+Если ваш код всё-таки держит exhaustive `match` по `ktav::Error` и
+этот релиз его ломает — добавьте arm `_ => …`. Этот arm теперь
+обязателен навсегда и больше не потребует изменений при добавлении
+будущих вариантов.
+
 ## [0.1.4] — 2026-04-26
 
 ### Изменено

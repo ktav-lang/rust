@@ -17,6 +17,27 @@
 //! :: value              — (inside an array) literal-string item
 //! ```
 //!
+//! ## Structured errors
+//!
+//! The parser returns [`Error::Structured`] for every parse failure since
+//! `0.1.5`. Each [`ErrorKind`] variant carries a 1-based `line` and a
+//! byte-offset [`Span`] you can slice the original input with.
+//!
+//! ```
+//! use ktav::{parse, Error, ErrorKind};
+//!
+//! let src = "port:8080\n";
+//! match parse(src) {
+//!     Ok(_) => unreachable!(),
+//!     Err(Error::Structured(ErrorKind::MissingSeparatorSpace { line, span, .. })) => {
+//!         assert_eq!(line, 1);
+//!         // The span covers the offending body chunk glued to the marker.
+//!         assert_eq!(span.slice(src), Some("8080"));
+//!     }
+//!     Err(other) => panic!("unexpected error: {other:?}"),
+//! }
+//! ```
+//!
 //! ## Example
 //!
 //! See [`tests/doc_example.rs`](../tests/doc_example.rs) for the executed
@@ -68,10 +89,11 @@ pub mod error;
 pub mod parser;
 pub mod render;
 pub mod ser;
-mod thin;
+pub mod thin;
 pub mod value;
 
-pub use error::{Error, Result};
+pub use error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
+pub use thin::{parse_events, ParseEvent};
 pub use value::{ObjectMap, Value};
 
 use std::fs;
@@ -95,7 +117,7 @@ pub fn parse(text: &str) -> Result<Value> {
 /// `BeginObject`/`EndObject` events instead of nested allocations.
 pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
     let bump = bumpalo::Bump::new();
-    let events = thin::parse_events(s, &bump)?;
+    let events = thin::parse_events_raw(s, &bump)?;
     let mut cursor = thin::EventCursor::new(&events);
     T::deserialize(thin::EventDeserializer::new(&mut cursor))
 }

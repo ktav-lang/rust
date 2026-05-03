@@ -1,7 +1,7 @@
 //! Classify the text following a `:` (or a bare array-line) into a
 //! [`ValueStart`].
 
-use crate::error::Error;
+use crate::error::{Error, ErrorKind, Span};
 use crate::value::Scalar;
 
 use super::value_start::ValueStart;
@@ -9,7 +9,14 @@ use super::value_start::ValueStart;
 /// `text` MUST already have trailing whitespace removed (guaranteed by
 /// `handle_line`'s `raw.trim()` at the top of the pipeline). Only leading
 /// whitespace — between `:` and the value — needs to be stripped here.
-pub(super) fn classify_value_start(text: &str, line_num: usize) -> Result<ValueStart, Error> {
+///
+/// `trimmed_span` covers the trimmed source line; it is used as the
+/// `Span` payload for any structured error emitted here.
+pub(super) fn classify_value_start(
+    text: &str,
+    line_num: usize,
+    trimmed_span: Span,
+) -> Result<ValueStart, Error> {
     let trimmed = text.trim_start();
 
     if trimmed == "{" {
@@ -23,20 +30,22 @@ pub(super) fn classify_value_start(text: &str, line_num: usize) -> Result<ValueS
         if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyObject);
         }
-        return Err(Error::Syntax(format!(
-            "Line {}: inline non-empty object is not supported; put entries on separate lines",
-            line_num
-        )));
+        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+            body: "object".to_string(),
+        }));
     }
 
     if trimmed.starts_with('[') {
         if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyArray);
         }
-        return Err(Error::Syntax(format!(
-            "Line {}: inline non-empty array is not supported; put items on separate lines",
-            line_num
-        )));
+        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+            body: "array".to_string(),
+        }));
     }
 
     // Multi-line string openers — exact tokens only.
@@ -71,21 +80,34 @@ pub(super) fn classify_value_start(text: &str, line_num: usize) -> Result<ValueS
 
 /// Validate the body of a `:i` typed-integer scalar. Returns the stripped
 /// textual form on success; an `InvalidTypedScalar` error otherwise.
-pub(super) fn validate_typed_integer(body: &str, line_num: usize) -> Result<Scalar, Error> {
+pub(super) fn validate_typed_integer(
+    body: &str,
+    line_num: usize,
+    span: Span,
+) -> Result<Scalar, Error> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        return Err(invalid_typed_scalar(line_num, "integer body is empty"));
+        return Err(invalid_typed_scalar(
+            line_num,
+            'i',
+            "integer body is empty",
+            span,
+        ));
     }
     if opens_compound_or_multiline(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'i',
             "typed marker `:i` cannot open a compound or multi-line value",
+            span,
         ));
     }
     if !is_integer_literal(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'i',
             &format!("'{}' is not a valid integer literal for `:i`", trimmed),
+            span,
         ));
     }
     Ok(strip_leading_plus(trimmed).into())
@@ -93,28 +115,46 @@ pub(super) fn validate_typed_integer(body: &str, line_num: usize) -> Result<Scal
 
 /// Validate the body of a `:f` typed-float scalar. Returns the stripped
 /// textual form on success; an `InvalidTypedScalar` error otherwise.
-pub(super) fn validate_typed_float(body: &str, line_num: usize) -> Result<Scalar, Error> {
+pub(super) fn validate_typed_float(
+    body: &str,
+    line_num: usize,
+    span: Span,
+) -> Result<Scalar, Error> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        return Err(invalid_typed_scalar(line_num, "float body is empty"));
+        return Err(invalid_typed_scalar(
+            line_num,
+            'f',
+            "float body is empty",
+            span,
+        ));
     }
     if opens_compound_or_multiline(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'f',
             "typed marker `:f` cannot open a compound or multi-line value",
+            span,
         ));
     }
     if !is_float_literal(trimmed) {
         return Err(invalid_typed_scalar(
             line_num,
+            'f',
             &format!("'{}' is not a valid float literal for `:f`", trimmed),
+            span,
         ));
     }
     Ok(strip_leading_plus(trimmed).into())
 }
 
-fn invalid_typed_scalar(line_num: usize, detail: &str) -> Error {
-    Error::Syntax(format!("Line {}: InvalidTypedScalar: {}", line_num, detail))
+fn invalid_typed_scalar(line_num: usize, marker: char, detail: &str, span: Span) -> Error {
+    Error::Structured(ErrorKind::InvalidTypedScalar {
+        line: line_num as u32,
+        marker,
+        body: detail.to_string(),
+        span,
+    })
 }
 
 fn opens_compound_or_multiline(s: &str) -> bool {

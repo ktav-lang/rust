@@ -130,17 +130,17 @@ f:: [literal]
 
 fn expect_invalid_typed_scalar(src: &str) -> String {
     let err = parse(src).unwrap_err();
-    match err {
-        Error::Syntax(m) => {
-            assert!(
-                m.contains("InvalidTypedScalar"),
-                "expected InvalidTypedScalar in error, got: {}",
-                m
-            );
-            m
-        }
-        _ => panic!("expected Syntax error, got {:?}", err),
-    }
+    let m = match &err {
+        Error::Syntax(m) => m.clone(),
+        Error::Structured(k) => k.to_string(),
+        _ => panic!("expected Syntax/Structured error, got {:?}", err),
+    };
+    assert!(
+        m.contains("InvalidTypedScalar"),
+        "expected InvalidTypedScalar in error, got: {}",
+        m
+    );
+    m
 }
 
 #[test]
