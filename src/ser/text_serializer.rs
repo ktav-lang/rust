@@ -574,9 +574,9 @@ impl<'a> PairValueSer<'a> {
             // would be eaten by the parser-side dedent, or a sole-`)`
             // line would close stripped early).
             let has_sole_single = has_sole_terminator_line(v, ")");
-            let has_leading_ws = v.split('\n').any(|line| {
-                !line.is_empty() && line.starts_with(|c: char| c.is_whitespace())
-            });
+            let has_leading_ws = v
+                .split('\n')
+                .any(|line| !line.is_empty() && line.starts_with(|c: char| c.is_whitespace()));
             let stripped_ok = !has_sole_single && !has_leading_ws;
 
             if stripped_ok {
@@ -875,9 +875,9 @@ impl<'a> ItemValueSer<'a> {
             // fall back to verbatim only when content has leading
             // whitespace or contains a sole-`)` line.
             let has_sole_single = has_sole_terminator_line(v, ")");
-            let has_leading_ws = v.split('\n').any(|line| {
-                !line.is_empty() && line.starts_with(|c: char| c.is_whitespace())
-            });
+            let has_leading_ws = v
+                .split('\n')
+                .any(|line| !line.is_empty() && line.starts_with(|c: char| c.is_whitespace()));
             let stripped_ok = !has_sole_single && !has_leading_ws;
 
             if stripped_ok {

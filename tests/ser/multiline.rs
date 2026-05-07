@@ -61,7 +61,10 @@ fn string_with_newline_inside_array_uses_stripped_form() {
     };
     let s = to_string(&cfg).unwrap();
     // Array item indent = 1 → content indent = 2 (8 spaces).
-    assert_eq!(s, "items: [\n    one\n    (\n        multi\n        line\n    )\n]\n");
+    assert_eq!(
+        s,
+        "items: [\n    one\n    (\n        multi\n        line\n    )\n]\n"
+    );
 }
 
 #[test]
