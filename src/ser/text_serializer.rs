@@ -568,14 +568,41 @@ struct PairValueSer<'a> {
 impl<'a> PairValueSer<'a> {
     fn write_scalar_line(self, v: &str) {
         if v.contains('\n') {
-            // Multi-line verbatim form. One `\n` after content covers both
-            // cases: no-trailing-\n in v → separator before `))`; trailing
-            // \n in v → blank-line marker that survives the round-trip.
-            self.out.push_str(": ((\n");
-            self.out.push_str(v);
-            self.out.push('\n');
-            write_indent(self.out, self.indent);
-            self.out.push_str("))\n");
+            // Mirror render/pair.rs choice: prefer indented stripped form
+            // for readability; fall back to verbatim only when content
+            // can't round-trip through stripped (leading whitespace
+            // would be eaten by the parser-side dedent, or a sole-`)`
+            // line would close stripped early).
+            let has_sole_single = has_sole_terminator_line(v, ")");
+            let has_leading_ws = v.split('\n').any(|line| {
+                !line.is_empty() && line.starts_with(|c: char| c.is_whitespace())
+            });
+            let stripped_ok = !has_sole_single && !has_leading_ws;
+
+            if stripped_ok {
+                // Stripped form (default). content_indent = key_indent + 1.
+                self.out.push_str(": (\n");
+                let content_indent = self.indent + 1;
+                for line in v.split('\n') {
+                    if !line.is_empty() {
+                        write_indent(self.out, content_indent);
+                        self.out.push_str(line);
+                    }
+                    self.out.push('\n');
+                }
+                write_indent(self.out, self.indent);
+                self.out.push_str(")\n");
+            } else {
+                // Verbatim form (fallback). One `\n` after content covers
+                // both cases: no-trailing-\n in v → separator before `))`;
+                // trailing \n in v → blank-line marker that survives the
+                // round-trip.
+                self.out.push_str(": ((\n");
+                self.out.push_str(v);
+                self.out.push('\n');
+                write_indent(self.out, self.indent);
+                self.out.push_str("))\n");
+            }
         } else if needs_raw_marker(v) {
             self.out.push_str(":: ");
             self.out.push_str(v);
@@ -586,6 +613,12 @@ impl<'a> PairValueSer<'a> {
             self.out.push('\n');
         }
     }
+}
+
+/// Same role as in `render/pair.rs`: a content line trimming to the
+/// form's terminator must not collide with that terminator (spec § 5.6.1).
+fn has_sole_terminator_line(s: &str, term: &str) -> bool {
+    s.split('\n').any(|line| line.trim() == term)
 }
 
 impl<'a> ser::Serializer for PairValueSer<'a> {
@@ -838,11 +871,34 @@ impl<'a> ItemValueSer<'a> {
     fn write_scalar_line(self, v: &str) {
         write_indent(self.out, self.indent);
         if v.contains('\n') {
-            self.out.push_str("((\n");
-            self.out.push_str(v);
-            self.out.push('\n');
-            write_indent(self.out, self.indent);
-            self.out.push_str("))\n");
+            // Mirror render/array_item.rs: prefer indented stripped form,
+            // fall back to verbatim only when content has leading
+            // whitespace or contains a sole-`)` line.
+            let has_sole_single = has_sole_terminator_line(v, ")");
+            let has_leading_ws = v.split('\n').any(|line| {
+                !line.is_empty() && line.starts_with(|c: char| c.is_whitespace())
+            });
+            let stripped_ok = !has_sole_single && !has_leading_ws;
+
+            if stripped_ok {
+                self.out.push_str("(\n");
+                let content_indent = self.indent + 1;
+                for line in v.split('\n') {
+                    if !line.is_empty() {
+                        write_indent(self.out, content_indent);
+                        self.out.push_str(line);
+                    }
+                    self.out.push('\n');
+                }
+                write_indent(self.out, self.indent);
+                self.out.push_str(")\n");
+            } else {
+                self.out.push_str("((\n");
+                self.out.push_str(v);
+                self.out.push('\n');
+                write_indent(self.out, self.indent);
+                self.out.push_str("))\n");
+            }
         } else if v.is_empty() {
             // An empty-string item would otherwise render as a bare
             // indented blank line, which the parser treats as decorative

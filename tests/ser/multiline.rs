@@ -95,24 +95,22 @@ fn string_with_sole_closing_paren_line_falls_back_to_verbatim() {
 
 #[test]
 fn exactly_one_newline_as_content_emits_blank_line() {
-    // Content "\n" is one newline character. Serializer should emit:
-    //   body: ((
-    //
-    //   ))
-    // (blank line between `((` and `))`, because content ends with `\n`).
+    // Content "\n" — one newline. In stripped form, blank lines stay blank
+    // (no indent prefix), and the trailing \n is preserved by the empty
+    // line before `)`.
     #[derive(Serialize)]
     struct Cfg {
         body: String,
     }
     let cfg = Cfg { body: "\n".into() };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "body: ((\n\n\n))\n");
+    assert_eq!(s, "body: (\n\n\n)\n");
 }
 
 #[test]
 fn two_trailing_newlines_produce_two_blank_lines() {
-    // Content "a\n\n" (final \n + explicit blank). Expect two \n after `a`
-    // plus the extra blank-line marker.
+    // Content "a\n\n" — `a`, then two trailing \n. In stripped form: indented
+    // `a`, then two blank lines (preserve original \n count) before `)`.
     #[derive(Serialize)]
     struct Cfg {
         body: String,
@@ -121,7 +119,7 @@ fn two_trailing_newlines_produce_two_blank_lines() {
         body: "a\n\n".into(),
     };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "body: ((\na\n\n\n))\n");
+    assert_eq!(s, "body: (\n    a\n\n\n)\n");
 }
 
 #[test]
@@ -137,7 +135,7 @@ fn no_trailing_newline_emits_no_extra_blank_line() {
         body: "a\nb".into(),
     };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "body: ((\na\nb\n))\n");
+    assert_eq!(s, "body: (\n    a\n    b\n)\n");
 }
 
 #[test]

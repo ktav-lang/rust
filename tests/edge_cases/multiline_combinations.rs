@@ -56,9 +56,10 @@ fn multiline_inside_deeply_nested_struct() {
         },
     };
     let s = to_string(&cfg).unwrap();
-    // The `((` / `))` markers should be present.
-    assert!(s.contains("((\n"));
-    assert!(s.contains("))\n"));
+    // Multi-line stripped form `( ... )` is the default; round-trip should
+    // restore the original structure regardless of which form was emitted.
+    assert!(s.contains("(\n"));
+    assert!(s.contains(")\n"));
     let back: Root = from_str(&s).unwrap();
     assert_eq!(cfg, back);
 }
