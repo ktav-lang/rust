@@ -43,19 +43,29 @@ pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut Str
         Value::String(s) => {
             if s.contains('\n') {
                 // Pick the form whose terminator doesn't clash with the
-                // content (spec § 5.6.1):
-                // - If no line trims to `))` → verbatim is byte-exact.
-                // - Else if no line trims to `)` → stripped works
-                //   (dedent restores the original content; content's
-                //   `))` line lives safely because stripped's terminator
-                //   is `)`).
-                // - Else (both present) → the value cannot be losslessly
-                //   represented as a Ktav 0.1.0 string. Report an error;
-                //   the caller either reformats the value or splits it.
-                let has_sole_double = has_sole_terminator_line(s, "))");
+                // content (spec § 5.6.1). Prefer **stripped** (`(` ... `)`)
+                // because indented output is much more readable; fall back
+                // to **verbatim** (`((` ... `))`) when stripped can't
+                // round-trip the content losslessly.
+                //
+                // Stripped's parser dedents by the *minimum* leading
+                // whitespace across non-blank lines, so any content that
+                // has its own leading whitespace gets clobbered. We use
+                // stripped only when no content line begins with
+                // whitespace; otherwise verbatim (which copies bytes).
+                //
+                // Forms also collide with terminator lines: a sole-`)`
+                // line breaks stripped, a sole-`))` line breaks verbatim.
                 let has_sole_single = has_sole_terminator_line(s, ")");
+                let has_sole_double = has_sole_terminator_line(s, "))");
+                let has_leading_ws = s
+                    .split('\n')
+                    .any(|line| !line.is_empty() && line.starts_with(|c: char| c.is_whitespace()));
 
-                if has_sole_double && has_sole_single {
+                let stripped_ok = !has_sole_single && !has_leading_ws;
+                let verbatim_ok = !has_sole_double;
+
+                if !stripped_ok && !verbatim_ok {
                     return Err(Error::Message(
                         "String cannot round-trip through Ktav 0.1.0 — content \
                          has both a sole-`)` line and a sole-`))` line; \
@@ -65,11 +75,12 @@ pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut Str
                     ));
                 }
 
-                if has_sole_double {
-                    // Stripped form. Each content line gets a `content_indent`
-                    // prefix; the dedent on parse strips it back off, so the
-                    // round-trip is byte-exact (blank lines inside `s` remain
-                    // blank: spec § 5.6 replaces them with the empty string).
+                if stripped_ok {
+                    // Stripped form (default). Each content line gets a
+                    // `content_indent` prefix; the dedent on parse strips
+                    // it back off, so the round-trip is byte-exact (blank
+                    // lines inside `s` remain blank: spec § 5.6 replaces
+                    // them with the empty string).
                     out.push_str(": (\n");
                     let content_indent = indent + 1;
                     for line in s.split('\n') {
@@ -82,11 +93,11 @@ pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut Str
                     push_indent(out, indent);
                     out.push_str(")\n");
                 } else {
-                    // Verbatim form (default for multi-line strings). Exactly
-                    // one `\n` is pushed after `s`: if `s` already ends with
-                    // `\n`, the result is `...\n\n` before `))`, i.e. a blank
-                    // content line that preserves the trailing newline
-                    // through the verbatim-join round-trip.
+                    // Verbatim form (fallback). Exactly one `\n` is pushed
+                    // after `s`: if `s` already ends with `\n`, the result
+                    // is `...\n\n` before `))`, i.e. a blank content line
+                    // that preserves the trailing newline through the
+                    // verbatim-join round-trip.
                     out.push_str(": ((\n");
                     out.push_str(s);
                     out.push('\n');

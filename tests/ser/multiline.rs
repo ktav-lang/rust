@@ -1,11 +1,14 @@
 //! Multi-line string serialization — values containing `\n` are emitted
-//! in the verbatim `(( ... ))` form for lossless round-trip.
+//! in the indented stripped `( ... )` form for readability. The verbatim
+//! `(( ... ))` form is used as a fallback only when the content has its
+//! own leading whitespace (which stripped's dedent would clobber) or
+//! contains a sole-`)` line that would close stripped prematurely.
 
 use ktav::to_string;
 use serde::Serialize;
 
 #[test]
-fn string_with_newline_uses_verbatim_form() {
+fn plain_multiline_uses_stripped_form_with_indent() {
     #[derive(Serialize)]
     struct Cfg {
         body: String,
@@ -14,12 +17,14 @@ fn string_with_newline_uses_verbatim_form() {
         body: "line1\nline2".into(),
     };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "body: ((\nline1\nline2\n))\n");
+    // Each content line is indented by one level (4 spaces); dedent on
+    // parse strips it back off for byte-exact round-trip.
+    assert_eq!(s, "body: (\n    line1\n    line2\n)\n");
 }
 
 #[test]
 fn string_with_trailing_newline_emits_extra_blank_line() {
-    // The trailing '\n' is preserved via a blank line before `))` — on
+    // The trailing '\n' is preserved via a blank line before `)` — on
     // read-back, the empty line after 'line2' contributes that newline.
     #[derive(Serialize)]
     struct Cfg {
@@ -29,7 +34,7 @@ fn string_with_trailing_newline_emits_extra_blank_line() {
         body: "line1\nline2\n".into(),
     };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "body: ((\nline1\nline2\n\n))\n");
+    assert_eq!(s, "body: (\n    line1\n    line2\n\n)\n");
 }
 
 #[test]
@@ -46,7 +51,7 @@ fn string_without_newline_uses_single_line_form() {
 }
 
 #[test]
-fn string_with_newline_inside_array_uses_verbatim_form() {
+fn string_with_newline_inside_array_uses_stripped_form() {
     #[derive(Serialize)]
     struct Cfg {
         items: Vec<String>,
@@ -55,7 +60,37 @@ fn string_with_newline_inside_array_uses_verbatim_form() {
         items: vec!["one".into(), "multi\nline".into()],
     };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "items: [\n    one\n    ((\nmulti\nline\n    ))\n]\n");
+    // Array item indent = 1 → content indent = 2 (8 spaces).
+    assert_eq!(s, "items: [\n    one\n    (\n        multi\n        line\n    )\n]\n");
+}
+
+#[test]
+fn string_with_leading_whitespace_falls_back_to_verbatim() {
+    // Stripped's dedent would lose the original leading spaces, so we
+    // fall back to verbatim which copies bytes literally.
+    #[derive(Serialize)]
+    struct Cfg {
+        body: String,
+    }
+    let cfg = Cfg {
+        body: "    indented\nplain".into(),
+    };
+    let s = to_string(&cfg).unwrap();
+    assert_eq!(s, "body: ((\n    indented\nplain\n))\n");
+}
+
+#[test]
+fn string_with_sole_closing_paren_line_falls_back_to_verbatim() {
+    // A line containing only `)` would close the stripped form early.
+    #[derive(Serialize)]
+    struct Cfg {
+        body: String,
+    }
+    let cfg = Cfg {
+        body: "x\n)\ny".into(),
+    };
+    let s = to_string(&cfg).unwrap();
+    assert_eq!(s, "body: ((\nx\n)\ny\n))\n");
 }
 
 #[test]

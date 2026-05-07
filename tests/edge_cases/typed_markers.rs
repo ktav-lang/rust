@@ -174,10 +174,13 @@ fn integer_marker_opening_multiline_is_rejected() {
 }
 
 #[test]
-fn float_marker_with_integer_body_is_rejected() {
-    // `:f` requires a decimal point in the mantissa — `42` alone is not
-    // a valid float literal.
-    expect_invalid_typed_scalar("x:f 42\n");
+fn float_marker_accepts_integer_body() {
+    // `:f` accepts integer literals (decimal point optional). Same convention
+    // as JSON/TOML/YAML — `42` coerces to float without a fractional part.
+    let v = parse("x:f 42\n").unwrap();
+    let obj = v.as_object().unwrap();
+    let f = obj.get("x").unwrap().as_float().unwrap();
+    assert_eq!(f, "42");
 }
 
 #[test]

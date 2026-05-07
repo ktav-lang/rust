@@ -184,8 +184,9 @@ fn is_integer_literal(s: &str) -> bool {
     true
 }
 
-/// Matches `^[-+]?[0-9]+\.[0-9]+([eE][-+]?[0-9]+)?$`. Mantissa MUST have a
-/// decimal point — `42` (without `.`) is not a valid `:f` literal.
+/// Matches `^[-+]?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$`.
+/// Decimal point is OPTIONAL — `42`, `42.0`, `42e3`, `42.5e-2` all valid.
+/// (Integer literals coerce to float — same convention as JSON, TOML, YAML.)
 fn is_float_literal(s: &str) -> bool {
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -200,18 +201,17 @@ fn is_float_literal(s: &str) -> bool {
     if i == digits_before {
         return false;
     }
-    // Mandatory decimal point.
-    if i == bytes.len() || bytes[i] != b'.' {
-        return false;
-    }
-    i += 1;
-    // Fractional part: at least one digit.
-    let digits_after = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
+    // Optional decimal point + fractional digits.
+    if i < bytes.len() && bytes[i] == b'.' {
         i += 1;
-    }
-    if i == digits_after {
-        return false;
+        let digits_after = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == digits_after {
+            // `42.` without fractional digits — invalid.
+            return false;
+        }
     }
     // Optional scientific exponent.
     if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {

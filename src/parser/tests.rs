@@ -235,8 +235,17 @@ fn typed_float_preserves_minus_and_exponent_signs() {
 }
 
 #[test]
-fn typed_float_requires_decimal_point() {
-    assert!(validate_typed_float(" 42", 1, S).is_err());
+fn typed_float_accepts_integer_literals() {
+    // Integer literals coerce to float (same as JSON/TOML/YAML)
+    assert_eq!(validate_typed_float(" 42", 1, S).unwrap(), "42");
+    assert_eq!(validate_typed_float(" 0", 1, S).unwrap(), "0");
+    assert_eq!(validate_typed_float(" -7", 1, S).unwrap(), "-7");
+    assert_eq!(validate_typed_float(" 100e3", 1, S).unwrap(), "100e3");
+}
+
+#[test]
+fn typed_float_rejects_malformed() {
+    // Trailing dot or leading dot still invalid
     assert!(validate_typed_float(" 1.", 1, S).is_err());
     assert!(validate_typed_float(" .5", 1, S).is_err());
 }
