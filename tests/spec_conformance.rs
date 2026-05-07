@@ -73,16 +73,27 @@ fn ktav_to_json(v: &Value) -> JsonValue {
         Value::Null => JsonValue::Null,
         Value::Bool(b) => JsonValue::Bool(*b),
         Value::String(s) => JsonValue::String(s.to_string()),
-        Value::Integer(s) | Value::Float(s) => {
+        Value::Integer(s) => {
             // serde_json with `arbitrary_precision` compares Numbers by
-            // textual form. Fixture oracles write exponents in lowercase
-            // `e` (the JSON-preferred form); Ktav accepts both `e` and
-            // `E` in the grammar, so normalize here for the comparison.
-            // This does not affect what the Value holds — unit tests in
-            // `tests/edge_cases/typed_markers.rs` verify `E` survives
-            // round-trip unchanged.
+            // textual form. Integer literals normalize lowercase `e` for
+            // exponent (Ktav accepts both, JSON prefers lowercase).
             let normalized = s.replace('E', "e");
             let n = JsonNumber::from_string_unchecked(normalized);
+            JsonValue::Number(n)
+        }
+        Value::Float(s) => {
+            // For Float we additionally normalize integer-shape literals
+            // (no `.`, no `eE`) into JSON-canonical `<digits>.0` so an
+            // oracle that writes `42.0` matches Ktav `:f 42` (Float("42")).
+            // The Value still holds the original textual form — unit tests
+            // in `tests/edge_cases/typed_markers.rs` pin that contract.
+            let normalized = s.replace('E', "e");
+            let canonical = if !normalized.contains(['.', 'e']) {
+                format!("{}.0", normalized)
+            } else {
+                normalized
+            };
+            let n = JsonNumber::from_string_unchecked(canonical);
             JsonValue::Number(n)
         }
         Value::Array(items) => JsonValue::Array(items.iter().map(ktav_to_json).collect()),
