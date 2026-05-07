@@ -9,6 +9,49 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.2.0] — 2026-05-07
+
+Minor release with two breaking output / validation changes:
+
+### Changed (breaking)
+
+- **Multi-line strings emit indented stripped form `( ... )` by default**,
+  not verbatim `(( ... ))`. Verbatim is still produced as a fallback when
+  the content has its own leading whitespace (which the parser-side
+  dedent would clobber) or contains a sole-`)` line that would close the
+  stripped form prematurely. Code that compares `to_string` /
+  `render` output byte-for-byte to a baked-in `((...))` literal needs to
+  be updated. Round-tripping (`parse(to_string(v)) == v`) is unchanged.
+
+      // Before (0.1.5):
+      // body: ((
+      // line1
+      // line2
+      // ))
+      //
+      // After (0.2.0):
+      // body: (
+      //     line1
+      //     line2
+      // )
+
+  Both `Value` → `render::render(&value)` and `T: Serialize` →
+  `ser::to_string(&t)` paths are updated consistently.
+
+- **Typed-float marker `:f` now accepts integer literals.** The mantissa's
+  decimal point is **optional**: `:f 42` is valid (parsed as `42.0`),
+  matching the JSON / TOML / YAML convention that integer literals
+  coerce to floats. `:f 1.` (no fractional digits) and `:f .5` (no
+  integer part) remain invalid. Code that depends on `:f 42` raising
+  `InvalidTypedScalar` needs to be updated.
+
+### Spec
+
+- `spec/versions/0.1/tests` fixture `typed_float_without_decimal` moved
+  from `invalid/` to `valid/typed_float_integer_body` to reflect the new
+  semantics. Spec submodule synced.
+
+
 ## [0.1.5] — 2026-05-01
 
 Major release: structured errors with byte-offset spans, public

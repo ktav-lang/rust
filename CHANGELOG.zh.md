@@ -11,6 +11,34 @@
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
 
+## [0.2.0] —— 2026-05-07
+
+次要发布,带两项 breaking 输出 / 校验改动:
+
+### 变更(breaking)
+
+- **多行字符串默认输出为缩进 stripped 形式 `( ... )`**,而非 verbatim
+  `(( ... ))`。当内容自带前导空白(会被解析侧的 dedent 吞掉)或包含
+  仅为 `)` 的行(会提前关闭 stripped)时,fallback 到 verbatim。逐字节
+  比较 `to_string` / `render` 输出与硬编码 `((...))` 的代码需要更新。
+  Round-trip(`parse(to_string(v)) == v`)未受影响。
+
+  序列化双路径(`Value` → `render::render(&value)` 与
+  `T: Serialize` → `ser::to_string(&t)`)同步更新,行为一致。
+
+- **类型标记 `:f` 接受整数字面量。** 尾数中的小数点现在是**可选**:
+  `:f 42` 合法(解析为 `42.0`),沿用 JSON / TOML / YAML 的惯例
+  (整数字面量隐式提升为 float)。`:f 1.`(无小数部分)与 `:f .5`
+  (无整数部分)仍然非法。依赖 `:f 42` 报 `InvalidTypedScalar` 的
+  代码需要更新。
+
+### Spec
+
+- `spec/versions/0.1/tests` 中的 fixture `typed_float_without_decimal`
+  从 `invalid/` 移到 `valid/typed_float_integer_body`,以反映新语义。
+  spec submodule 已同步。
+
+
 ## [0.1.5] —— 2026-05-01
 
 主要发布:带字节偏移 span 的结构化错误、公开的事件式解析器 API、
