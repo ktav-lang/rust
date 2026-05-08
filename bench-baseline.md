@@ -4,7 +4,7 @@ Captured before the structured-errors refactor so any regression in the
 parser/error-construction code is visible against this reference.
 
 - **Date:** 2026-05-01
-- **Crate:** `ktav` 0.1.4 (`D:\dev\ktav-lang\rust`)
+- **Crate:** `ktav` 0.1.4
 - **Toolchain:** `rustc 1.93.0 (254b59607 2026-01-19)`
 - **OS:** Microsoft Windows 10 Pro, build 10.0.19045
 - **CPU:** 11th Gen Intel(R) Core(TM) i7-11800H @ 2.30 GHz
@@ -67,8 +67,9 @@ MiB/s figure is informational.
 
 ## Re-running
 
+From the `rust/` crate root:
+
 ```sh
-cd D:\dev\ktav-lang\rust
 cargo bench --bench parse -- --quick parse_synth
 ```
 
@@ -109,3 +110,253 @@ statistically free.
 intermediate run (3.46 ms baseline outlier vs 4.50 ms post); Criterion
 reported "no change in performance detected" at p=0.10 across runs.
 The number above is the stabilised post-refactor median.
+
+
+## Post-0.2.x — stripped-multiline default + `:f`-int + duplicate-key span
+
+Captured 2026-05-08 on the same Win10 / i7-11800H / rustc 1.93.0 host
+with `cargo bench --bench parse -- --quick parse_synth`. Compared
+against the 0.1.5 numbers above.
+
+Note: criterion reported **"no change in performance detected"** at
+p=0.05 for every line — the host had IDE / language servers running
+during this run, which adds the usual ±5–20 % wall-clock noise. The
+numbers below are the stabilised medians; treat them as
+order-of-magnitude.
+
+| Bench                          | 0.1.5    | 0.2.x    | Δ        |
+|--------------------------------|----------|----------|----------|
+| `parse_synth/small_1k`         | 16.0 µs  | ~16.4 µs | +2 %     |
+| `parse_synth/medium_50k`       | 663 µs   | 717 µs   | +8 %     |
+| `parse_synth/large_500k`       | 9.27 ms  | 9.79 ms  | +5.6 %   |
+| `parse_synth_error/small_1k`   | 7.18 µs  | 7.45 µs  | +3.7 %   |
+| `parse_synth_error/medium_50k` | 346 µs   | 386 µs   | +11.5 %  |
+| `parse_synth_error/large_500k` | 4.50 ms  | 5.43 ms  | +20 %    |
+
+The `parse_synth_error/large_500k` row is the most concerning, but
+criterion's bootstrap interval is ±19 % on this run (host noise), so
+the +20 % delta is statistically indistinguishable from noise. We will
+re-measure on a quiet host before drawing conclusions.
+
+What changed between 0.1.5 and 0.2.x that could conceivably move
+the success path:
+
+  * **`Frame::Object::pending_key_span`** (a 64-bit `Option<Span>`
+    field) added so that duplicate-key / key-path-conflict errors
+    point at the offending key instead of the closing brace. Cost:
+    one extra word of stack per Object frame; written on every
+    pair-with-compound, read once on close. Negligible per pair.
+  * **`classify_value_start` paren-string check** — one extra
+    `starts_with('(')` byte test per value classification, before the
+    keyword fallthrough. The success path on synth fixtures hits it
+    on every scalar pair (most of the workload), so a measurable
+    fraction of any regression here would land on `parse_synth/*`.
+
+Neither change touches the error path, so the +20 % on
+`parse_synth_error/large_500k` is host noise rather than a real
+regression. Re-run on quiet host pending.
+
+
+## Post-optimisation — render pre-sized buffer (2026-05-08)
+
+`render::render` now starts the output `String` with a recursive
+size estimate (`estimate_size(value)`) instead of `String::new()`,
+saving the doubling reallocations that `push_str` chains would
+otherwise trigger on the way to a multi-KB output. The estimate
+under-counts indentation and `:: `/`:i `/multi-line wrappers, so
+oversized docs still fall back to growth — but the common medium
+case skips every realloc.
+
+`vs_json` results (release, --quick on the same host, IDE noisy):
+
+| bench               | pre-opt   | post-opt | Δ        | note             |
+|---------------------|-----------|----------|----------|------------------|
+| `render/ktav/small` | ~2.7 µs   | 3.2 µs   | +18 %    | within noise     |
+| `render/ktav/medium`| ~55 µs    | 60.6 µs  | +10 %    | within noise     |
+| `render/ktav/large` | ~970 µs   | 973 µs   | ≈        | unchanged        |
+
+Criterion reports "no change in performance detected" for all three
+rows; `String::with_capacity` was not the dominant cost. The render
+hot path is already paying most of its allocation cost via
+`push_indent`'s `out.reserve(remaining)`, which amortises growth
+across the run. The post-opt rendering is correct and slightly
+defensive against future changes that add larger per-pair output;
+the perf win is invisible at this size.
+
+`parse_synth` re-measured on the same host showed parse_synth/medium
+702 µs and parse_synth/large 9.66 ms — both within ±5 % of 0.2.x,
+confirming the render change has zero impact on the parse path.
+
+### `build_symbols` (`ktav-lsp`)
+
+Same session, the much bigger win — recorded in
+`editor/lsp/bench-baseline.md` for completeness. `build_symbols` was
+rewritten to do a single text scan instead of `locate_key`'s
+per-key full-text walk:
+
+| size       | pre        | post     | speed-up |
+|------------|------------|----------|----------|
+| small_1k   | ~73 µs     | 20.9 µs  | 3.5×     |
+| medium_50k | 108 ms     | 927 µs   | 117×     |
+| large_500k | 11.5 s     | 13.4 ms  | **858×** |
+
+This is the user-visible win — outline-aware editors (JB, VSCode)
+will no longer hang for seconds on large config files.
+
+
+## Final post-optimisation reference baseline (2026-05-08, full)
+
+Captured with **full** Criterion (no `--quick`, 100 samples, 5s
+warm-up) on a quieter Win10 host with IDE / language servers closed
+during the run. Reproduce with:
+
+From the `rust/` crate root:
+
+```sh
+cargo bench --bench parse
+cargo bench --bench vs_json
+```
+
+These numbers are the new reference for regression detection. Past
+sections (`Post-0.1.5`, `Post-0.2.x`, the `--quick` post-opt entries
+above) used `--quick` and noisy-host runs — kept for historical
+trail but not directly comparable.
+
+### `parse_synth` — success path
+
+| Bench                     | Median    | Throughput     |
+|---------------------------|-----------|----------------|
+| `parse_synth/small_1k`    | 15.6 µs   | ~66 MiB/s      |
+| `parse_synth/medium_50k`  | 836 µs    | ~58 MiB/s      |
+| `parse_synth/large_500k`  | 7.44 ms   | ~67 MiB/s      |
+
+### `parse_synth_error` — error path
+
+| Bench                          | Median    | Throughput     |
+|--------------------------------|-----------|----------------|
+| `parse_synth_error/small_1k`   | 8.84 µs   | ~117 MiB/s     |
+| `parse_synth_error/medium_50k` | 436 µs    | ~112 MiB/s     |
+| `parse_synth_error/large_500k` | 4.15 ms   | ~118 MiB/s     |
+
+### `vs_json` — render and parse vs `serde_json`
+
+`render/`:
+
+| Workload | ktav    | json    | Δ        |
+|----------|---------|---------|----------|
+| small    | 2.60 µs | 3.47 µs | ktav 25 % faster |
+| medium   | 43.2 µs | 37.0 µs | json 14 % faster |
+| large    | 476 µs  | 363 µs  | json 24 % faster |
+
+`parse_to_value/` (parse → `Value` / `serde_json::Value`):
+
+| Workload | ktav    | json    | Δ                 |
+|----------|---------|---------|-------------------|
+| small    | 15.9 µs | 30.0 µs | **ktav 1.9× faster** |
+| medium   | 304 µs  | 604 µs  | **ktav 2.0× faster** |
+| large    | 3.95 ms | 6.55 ms | **ktav 1.7× faster** |
+
+`parse_to_struct/` (typed `serde::Deserialize`, ktav uses thin event
+deserializer; json uses `serde_json::from_str`):
+
+| Workload | ktav    | json    | Δ                |
+|----------|---------|---------|------------------|
+| small    | 15.2 µs | 8.60 µs | json 1.8× faster |
+| medium   | 293 µs  | 166 µs  | json 1.8× faster |
+| large    | 2.38 ms | 1.29 ms | json 1.8× faster |
+
+`json::from_str` is faster on the typed-deserialize path because
+`serde_json` has been micro-tuned over a decade and ktav's thin
+deserializer still allocates a `Vec<Event>` for the whole document.
+This is a known optimisation target — the event vec could be
+streamed instead, eliminating the second pass.
+
+Other one-off scenarios from `vs_json`:
+
+| Bench                                | Median  |
+|--------------------------------------|---------|
+| `parse_to_value/small_real_config`   | 5.98 µs |
+| `parse_to_value/10_upstreams/2KB`    | 46.8 µs |
+| `parse_to_value/100_upstreams/22KB`  | 441 µs  |
+| `parse_to_value/1000_upstreams/197KB`| 4.38 ms |
+| `parse_to_struct/100_upstreams_typed`| 326 µs  |
+| `render/100_upstreams_typed`         | 50.2 µs |
+| `roundtrip/100_upstreams_typed`      | 351 µs  |
+| `multiline_dedent/lines/10`          | 2.92 µs |
+| `multiline_dedent/lines/100`         | 10.5 µs |
+| `multiline_dedent/lines/1000`        | 80.0 µs |
+
+
+## Hot-path micro-optimisations + streaming experiment (2026-05-08)
+
+### Applied
+
+These three changes survived the streaming experiment below and ship
+in the current code:
+
+1. **`EventCursor::peek/next` use `unsafe get_unchecked`** — bounds-
+   elision protected by the parser's well-formed-stream invariant.
+   The cursor still gracefully returns `None` when `pos >= len`, so
+   malformed input from a future codepath remains safe; the unsafe
+   path is a pure branch elision win.
+2. **`MapAccess::next_key_seed` folds `peek + next` into one `next`**
+   — both branches (EndObject vs Key) advance the cursor anyway, so
+   the prior peek was redundant.
+3. **Capacity hint `text.len() / 4 + 64` for the event `BumpVec`** —
+   the previous `text.len() / 8 + 16` underestimated the typical
+   ~1-event-per-5-bytes density on synth fixtures, triggering 8–10
+   `BumpVec` realloc-copy steps inside the bump arena on a 500 KiB
+   doc. The new hint over-estimates by a small margin (the arena
+   drops on scope exit, so wasted bytes cost nothing).
+
+Net effect on `parse_to_struct` vs JSON:
+
+| size   | before ratio | after ratio | gap closed |
+|--------|--------------|-------------|------------|
+| small  | 1.77×        | ~1.55–1.77× | up to 14 % |
+| medium | 1.77×        | ~1.65×      | ~7 %       |
+| large  | 1.85×        | ~1.95×      | within noise |
+
+`parse_to_value` ratios are unchanged — ktav already wins 1.7–2.0×
+across all sizes there, optimisation didn't shift it because the
+hot path is `BumpVec::push` which is already minimal.
+
+### Streaming experiment — REVERTED
+
+Hypothesis: collapse `parse → Vec<Event> → walk` into a single
+streaming pass (parser advances one line at a time, deserializer
+pulls events on demand from a small reusable per-line queue).
+Architecturally cleaner; theoretically should match JSON's inline
+deserializer.
+
+Implementation:
+- Generic `EventSink<'a>` trait so the parser state machine could
+  emit into either a `BumpVec` (full mode) or a small `Vec` (queue).
+- `StreamingParser<'a>` driving the parser line-by-line with a
+  reusable 8-event queue and a `cold` slow-path for refill.
+- `EventDeserializer` re-targeted at the streaming source.
+
+All 404 tests passed. **Performance regressed 15–60 %** vs. the
+existing `Vec<Event>` cursor:
+
+| size   | Vec<Event> cursor | streaming  | Δ      |
+|--------|-------------------|------------|--------|
+| small  | 13.3 µs           | 17.8 µs    | +34 %  |
+| medium | 298 µs            | 363 µs     | +22 %  |
+| large  | 3.05 ms           | 3.65 ms    | +20 %  |
+
+Why (post-mortem):
+- `Vec<Event>` walked sequentially is **pure cache-line streaming**
+  with one monotonic branch the predictor nails 100 % of the time.
+- The streaming path interleaves parser state-machine work with
+  deserializer work — same total instruction count, far worse
+  branch-predictor accuracy on the i7-11800H. Lots of conditional
+  control flow inside `ensure_event` / `process_next_line` /
+  parser dispatch competing for predictor entries.
+
+The streaming code was reverted; the `EventSink<'a>` trait survives
+in `event.rs` as harmless generic infrastructure (zero monomorph
+cost when used only with `BumpVec`). Re-attempting streaming on
+different hardware (Apple Silicon, server-class Xeon) might be
+worth a separate investigation — the win on memory-bandwidth-bound
+hardware could differ — but on this dev host the cursor wins.

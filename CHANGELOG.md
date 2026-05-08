@@ -9,6 +9,69 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## Unreleased
+
+Pending changes — version not yet decided.
+
+### Fixed
+
+- `ErrorKind::DuplicateKey` and `ErrorKind::KeyPathConflict` now carry
+  the span of the **offending key**, not the closing `}` / `]` of the
+  compound that would have been assigned to it. Previously, when the
+  conflict was detected on `attach_child_value` (e.g. `value: { ... }`
+  duplicating an earlier `value: ...`), the saved span pointed at the
+  closing brace because that's the position the parser had at hand at
+  the moment of detection.
+
+  The parser now stores the key's own span (`pending_key_span`) on the
+  parent frame when a compound is opened, and reuses it when the
+  compound closes and the value is attached. Editors / IDEs that draw
+  diagnostic underlines from `Span` now point at the key.
+
+  This is a fix for a span value, not an API change — `ErrorKind`
+  shape is unchanged.
+
+### Changed (breaking — parser strictness)
+
+- `key: (value)` and `key: ((value))` now error with
+  `ErrorKind::InlineNonEmptyCompound { body: "paren-string" }`.
+  These shapes used to be accepted as plain string scalars `(value)`,
+  but they are visually indistinguishable from multi-line openers and
+  would confuse readers. The raw-marker form `key:: (value)` remains
+  valid and is the canonical way to encode such literals. The
+  ktav-lsp formatter auto-rewrites the legacy form on save.
+
+### Optimised (no API change)
+
+- `render::render` pre-sizes the output `String` with a recursive
+  `estimate_size(value)` to skip the doubling reallocations that
+  `push_str` chains would otherwise trigger on multi-KiB outputs.
+- `EventCursor::peek` / `next` use `unsafe get_unchecked` for
+  bounds-elision on the hot path; the parser's well-formed-stream
+  invariant guarantees `pos < len()` on every call. Falls back to
+  `None` when the invariant is violated, so malformed inputs remain
+  safe — the unsafe path is a pure branch elision win.
+- `MapAccess::next_key_seed` folds redundant `peek + next` into a
+  single `next` (both branches consume the cursor anyway).
+- Event `BumpVec` capacity hint raised from `text.len() / 8 + 16`
+  to `text.len() / 4 + 64`. The previous hint underestimated the
+  ~1-event-per-5-bytes density on synth fixtures and triggered
+  8–10 realloc-copy steps inside the bump arena on a 500 KiB doc.
+
+### Experiment (reverted)
+
+- A streaming-deserializer refactor (parse on demand, no whole-doc
+  `Vec<Event>`) was implemented and tested — all 404 tests passed,
+  but parse_to_struct regressed 15–60 % vs. the existing cursor on
+  this hardware. Cause: the cursor walks a contiguous slice with
+  one monotonic branch the predictor nails 100 %, while streaming
+  interleaves parser state-machine work with deserializer work and
+  blows the predictor. The streaming code was removed; the
+  `EventSink<'a>` trait introduced for the experiment survives in
+  `event.rs` as harmless generic infrastructure (zero cost when
+  used only with `BumpVec`).
+
+
 ## [0.2.0] — 2026-05-07
 
 Minor release with two breaking output / validation changes:
