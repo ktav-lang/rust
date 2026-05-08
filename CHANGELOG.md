@@ -9,9 +9,11 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
-## Unreleased
+## [0.3.0] — 2026-05-08
 
-Pending changes — version not yet decided.
+Minor release with one breaking parser strictness change, a
+diagnostic-range fix, and hot-path micro-optimisations on the
+typed-deserialize path.
 
 ### Fixed
 
