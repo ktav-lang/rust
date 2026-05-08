@@ -56,6 +56,21 @@ pub(super) fn classify_value_start(
         _ => {}
     }
 
+    // Inline paren-string — visually ambiguous with multi-line openers.
+    // `(value)`, `((value))`, and unclosed `(value` / `((value` all start
+    // with `(` but aren't multi-line openers (those are exact tokens
+    // matched above). Per spec § 5.2 + § 5.6, a string literal whose
+    // first character is `(` MUST be marked raw with `::`. Reject the
+    // `:`-form so users surface ambiguity at parse time rather than
+    // silently storing a confusing scalar.
+    if trimmed.starts_with('(') {
+        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+            body: "paren-string".to_string(),
+        }));
+    }
+
     // JSON keywords
     match trimmed {
         "null" => return Ok(ValueStart::Null),

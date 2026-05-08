@@ -122,7 +122,11 @@ impl<'a> Parser<'a> {
         line_start: u32,
     ) -> Result<(), Error> {
         match self.stack.last_mut().unwrap() {
-            Frame::Object { pairs, pending_key } => {
+            Frame::Object {
+                pairs,
+                pending_key,
+                pending_key_span,
+            } => {
                 let key = pending_key.take().ok_or_else(|| {
                     Error::Structured(ErrorKind::Other {
                         line: Some(line_num as u32),
@@ -133,13 +137,13 @@ impl<'a> Parser<'a> {
                         span: Span::new(line_start, line_start),
                     })
                 })?;
-                insert_value(
-                    pairs,
-                    key,
-                    value,
-                    line_num,
-                    Span::new(line_start, line_start),
-                )
+                // Use the saved key span (set when the pair was opened)
+                // so a duplicate-key / conflict error highlights the
+                // offending key, not the location of its closing token.
+                let key_span = pending_key_span
+                    .take()
+                    .unwrap_or_else(|| Span::new(line_start, line_start));
+                insert_value(pairs, key, value, line_num, key_span)
             }
             Frame::Array { items } => {
                 items.push(value);
@@ -264,26 +268,26 @@ impl<'a> Parser<'a> {
                         self.insert_object_pair(key, Value::Array(Vec::new()), line_num, key_span)
                     }
                     ValueStart::OpenObject => {
-                        self.set_pending_key(key, line_num, line_start)?;
+                        self.set_pending_key(key, line_num, line_start, key_span)?;
                         self.stack.push(Frame::new_object());
                         // The opener is the trailing '{' on the line.
                         self.opener_offsets.push(trimmed_span.end - 1);
                         Ok(())
                     }
                     ValueStart::OpenArray => {
-                        self.set_pending_key(key, line_num, line_start)?;
+                        self.set_pending_key(key, line_num, line_start, key_span)?;
                         self.stack.push(Frame::new_array());
                         self.opener_offsets.push(trimmed_span.end - 1);
                         Ok(())
                     }
                     ValueStart::OpenMultilineStripped => {
-                        self.set_pending_key(key, line_num, line_start)?;
+                        self.set_pending_key(key, line_num, line_start, key_span)?;
                         self.collecting = Some(Collecting::new(MultilineMode::Stripped));
                         self.multiline_opener = Some(trimmed_span.end - 1);
                         Ok(())
                     }
                     ValueStart::OpenMultilineVerbatim => {
-                        self.set_pending_key(key, line_num, line_start)?;
+                        self.set_pending_key(key, line_num, line_start, key_span)?;
                         self.collecting = Some(Collecting::new(MultilineMode::Verbatim));
                         self.multiline_opener = Some(trimmed_span.end - 2);
                         Ok(())
@@ -384,9 +388,14 @@ impl<'a> Parser<'a> {
         key: &'a str,
         line_num: usize,
         line_start: u32,
+        key_span: Span,
     ) -> Result<(), Error> {
         match self.stack.last_mut().unwrap() {
-            Frame::Object { pending_key, .. } => {
+            Frame::Object {
+                pending_key,
+                pending_key_span,
+                ..
+            } => {
                 if pending_key.is_some() {
                     return Err(Error::Structured(ErrorKind::Other {
                         line: Some(line_num as u32),
@@ -398,6 +407,7 @@ impl<'a> Parser<'a> {
                     }));
                 }
                 *pending_key = Some(key);
+                *pending_key_span = Some(key_span);
                 Ok(())
             }
             _ => unreachable!(),
@@ -448,7 +458,11 @@ impl<'a> Parser<'a> {
         trimmed_span: Span,
     ) -> Result<(), Error> {
         match self.stack.last_mut().unwrap() {
-            Frame::Object { pairs, pending_key } => {
+            Frame::Object {
+                pairs,
+                pending_key,
+                pending_key_span,
+            } => {
                 let key = pending_key.take().ok_or_else(|| {
                     Error::Structured(ErrorKind::Other {
                         line: Some(line_num as u32),
@@ -459,7 +473,11 @@ impl<'a> Parser<'a> {
                         span: trimmed_span,
                     })
                 })?;
-                insert_value(pairs, key, value, line_num, trimmed_span)
+                // Prefer the key's own span (saved when the pair was
+                // opened) so duplicate-key errors point at the key
+                // instead of the closing brace.
+                let key_span = pending_key_span.take().unwrap_or(trimmed_span);
+                insert_value(pairs, key, value, line_num, key_span)
             }
             Frame::Array { items } => {
                 items.push(value);

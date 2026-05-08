@@ -3,6 +3,7 @@
 
 use rustc_hash::FxBuildHasher;
 
+use crate::error::Span;
 use crate::value::{ObjectMap, Value};
 
 pub(super) enum Frame<'a> {
@@ -12,6 +13,11 @@ pub(super) enum Frame<'a> {
         /// being filled in a pushed child frame. Cleared when the child
         /// closes and its value is inserted here.
         pending_key: Option<&'a str>,
+        /// Span of the key that opened the pending compound — points at
+        /// the key text (e.g. `value`), not the closing `}`. Used for
+        /// diagnostic ranges so a duplicate-key / conflict error
+        /// highlights the offending key, not its trailing brace.
+        pending_key_span: Option<Span>,
     },
     Array {
         items: Vec<Value>,
@@ -27,6 +33,7 @@ impl<'a> Frame<'a> {
         Frame::Object {
             pairs: ObjectMap::with_capacity_and_hasher(8, FxBuildHasher),
             pending_key: None,
+            pending_key_span: None,
         }
     }
 
