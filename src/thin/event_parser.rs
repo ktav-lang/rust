@@ -155,7 +155,11 @@ pub(crate) struct Collecting<'a> {
 // ---------------------------------------------------------------------------
 
 impl<'a> EventParser<'a> {
-    pub(crate) fn finish<S: EventSink<'a>>(&mut self, eof_offset: u32, events: &mut S) -> Result<()> {
+    pub(crate) fn finish<S: EventSink<'a>>(
+        &mut self,
+        eof_offset: u32,
+        events: &mut S,
+    ) -> Result<()> {
         if let Some(c) = &self.collecting {
             let kind = match c.mode {
                 MultilineMode::Stripped => CompoundKind::MultilineStripped,

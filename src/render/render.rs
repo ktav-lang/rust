@@ -30,8 +30,8 @@ pub fn render(value: &Value) -> Result<String> {
 /// so under-estimates by ~10–20 % — that's fine; growth covers the gap.
 fn estimate_size(value: &Value) -> usize {
     match value {
-        Value::Null => 5,                // `null\n`
-        Value::Bool(_) => 6,             // `false\n`
+        Value::Null => 5,    // `null\n`
+        Value::Bool(_) => 6, // `false\n`
         Value::Integer(s) | Value::Float(s) | Value::String(s) => s.len() + 4,
         Value::Array(items) => 4 + items.iter().map(estimate_size).sum::<usize>(),
         Value::Object(obj) => obj
