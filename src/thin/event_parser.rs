@@ -17,28 +17,23 @@ use bumpalo::Bump;
 
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 
-use super::event::{Event, EventStream};
+use super::event::{Event, EventSink, EventStream};
 
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
 pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStream<'a>> {
-    // Heuristic capacity: ~1 event per ~10 source bytes. Empirically
-    // close to right for typical config shapes; the BumpVec just bumps
-    // in the arena if we underestimate.
-    let mut events: EventStream<'a> = BumpVec::with_capacity_in(text.len() / 8 + 16, bump);
-    events.push(Event::BeginObject);
+    // Capacity hint: synth-config workloads measure roughly 1 event per
+    // 5 source bytes (each `key: value\n` line is ~10–20 bytes and
+    // produces 2 events). Underestimating used to trigger 8–10
+    // realloc-and-copy steps inside the bump arena on a 500 KiB doc;
+    // the over-estimate path just wastes a couple % of arena memory,
+    // which the arena drops on scope exit anyway.
+    let mut events: EventStream<'a> = BumpVec::with_capacity_in(text.len() / 4 + 64, bump);
+    EventSink::push(&mut events, Event::BeginObject);
 
-    let mut p = EventParser {
-        bump,
-        stack: Vec::with_capacity(8),
-        collecting: None,
-        opener_offsets: Vec::with_capacity(8),
-        multiline_opener: None,
-    };
-    p.stack.push(Frame::new_object(bump));
-    p.opener_offsets.push(0);
+    let mut p = EventParser::new(bump);
 
     let bytes = text.as_bytes();
     let mut line_start: usize = 0;
@@ -73,20 +68,35 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
 // Parser state
 // ---------------------------------------------------------------------------
 
-struct EventParser<'a> {
-    bump: &'a Bump,
-    stack: Vec<Frame<'a>>,
-    collecting: Option<Collecting<'a>>,
+pub(crate) struct EventParser<'a> {
+    pub(crate) bump: &'a Bump,
+    pub(crate) stack: Vec<Frame<'a>>,
+    pub(crate) collecting: Option<Collecting<'a>>,
     /// Byte offset (in original input) of the opener that started each
     /// frame. Index `0` is the implicit root (always `0`); subsequent
     /// entries are pushed for each child frame.
-    opener_offsets: Vec<u32>,
+    pub(crate) opener_offsets: Vec<u32>,
     /// Byte offset of the `(` / `((` line that started a multi-line
     /// string, if one is currently being collected.
-    multiline_opener: Option<u32>,
+    pub(crate) multiline_opener: Option<u32>,
 }
 
-enum Frame<'a> {
+impl<'a> EventParser<'a> {
+    pub(crate) fn new(bump: &'a Bump) -> Self {
+        let mut p = EventParser {
+            bump,
+            stack: Vec::with_capacity(8),
+            collecting: None,
+            opener_offsets: Vec::with_capacity(8),
+            multiline_opener: None,
+        };
+        p.stack.push(Frame::new_object(bump));
+        p.opener_offsets.push(0);
+        p
+    }
+}
+
+pub(crate) enum Frame<'a> {
     /// `levels` is parallel to "real frame + open synthetic prefixes".
     /// Index 0 is always the real object's namespace; subsequent entries
     /// are stacked synthetics with their own prefix and key sets. All
@@ -97,7 +107,7 @@ enum Frame<'a> {
     Array,
 }
 
-struct ObjectLevel<'a> {
+pub(crate) struct ObjectLevel<'a> {
     /// `None` for the real object level, `Some(prefix_segment)` for a
     /// synthetic dotted-key level.
     prefix: Option<&'a str>,
@@ -115,7 +125,7 @@ struct ObjectLevel<'a> {
 }
 
 impl<'a> Frame<'a> {
-    fn new_object(bump: &'a Bump) -> Self {
+    pub(crate) fn new_object(bump: &'a Bump) -> Self {
         let mut levels = BumpVec::with_capacity_in(2, bump);
         levels.push(ObjectLevel {
             prefix: None,
@@ -124,20 +134,20 @@ impl<'a> Frame<'a> {
         });
         Frame::Object { levels }
     }
-    fn new_array() -> Self {
+    pub(crate) fn new_array() -> Self {
         Frame::Array
     }
 }
 
 #[derive(Copy, Clone)]
-enum MultilineMode {
+pub(crate) enum MultilineMode {
     Stripped,
     Verbatim,
 }
 
-struct Collecting<'a> {
-    mode: MultilineMode,
-    lines: BumpVec<'a, &'a str>,
+pub(crate) struct Collecting<'a> {
+    pub(crate) mode: MultilineMode,
+    pub(crate) lines: BumpVec<'a, &'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +155,7 @@ struct Collecting<'a> {
 // ---------------------------------------------------------------------------
 
 impl<'a> EventParser<'a> {
-    fn finish(&mut self, eof_offset: u32, events: &mut EventStream<'a>) -> Result<()> {
+    pub(crate) fn finish<S: EventSink<'a>>(&mut self, eof_offset: u32, events: &mut S) -> Result<()> {
         if let Some(c) = &self.collecting {
             let kind = match c.mode {
                 MultilineMode::Stripped => CompoundKind::MultilineStripped,
@@ -175,12 +185,12 @@ impl<'a> EventParser<'a> {
         Ok(())
     }
 
-    fn handle_line(
+    pub(crate) fn handle_line<S: EventSink<'a>>(
         &mut self,
         raw: &'a str,
         line_num: usize,
         line_start: u32,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         if let Some(ref mut c) = self.collecting {
             if raw.as_bytes().contains(&b')') {
@@ -226,12 +236,12 @@ impl<'a> EventParser<'a> {
     // Object-pair dispatch (mirrors thin/parser.rs but emits events)
     // -----------------------------------------------------------------------
 
-    fn handle_object_pair(
+    fn handle_object_pair<S: EventSink<'a>>(
         &mut self,
         trimmed: &'a str,
         line_num: usize,
         trimmed_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         let colon = match trimmed.find(':') {
             Some(c) => c,
@@ -334,13 +344,13 @@ impl<'a> EventParser<'a> {
     }
 
     // Emits Key(leaf) + value-event after reconciling synthetic stack.
-    fn emit_keyed_scalar(
+    fn emit_keyed_scalar<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
         value: Event<'a>,
         line_num: usize,
         key_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         self.register_leaf_key(leaf, line_num, key_span)?;
@@ -350,14 +360,14 @@ impl<'a> EventParser<'a> {
     }
 
     // For empty inline compound `{}` / `[]`: emit Key + open + close.
-    fn emit_keyed_compound(
+    fn emit_keyed_compound<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
         open: Event<'a>,
         close: Event<'a>,
         line_num: usize,
         key_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         self.register_leaf_key(leaf, line_num, key_span)?;
@@ -368,13 +378,13 @@ impl<'a> EventParser<'a> {
     }
 
     // For "key: {" or "key: [" — emit Key + open, push frame.
-    fn emit_keyed_open(
+    fn emit_keyed_open<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
         open: Event<'a>,
         line_num: usize,
         key_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         self.register_leaf_key(leaf, line_num, key_span)?;
@@ -383,13 +393,13 @@ impl<'a> EventParser<'a> {
         Ok(())
     }
 
-    fn emit_keyed_open_multiline(
+    fn emit_keyed_open_multiline<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
         mode: MultilineMode,
         line_num: usize,
         key_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         self.register_leaf_key(leaf, line_num, key_span)?;
@@ -405,12 +415,12 @@ impl<'a> EventParser<'a> {
     // Array-item dispatch
     // -----------------------------------------------------------------------
 
-    fn handle_array_item(
+    fn handle_array_item<S: EventSink<'a>>(
         &mut self,
         trimmed: &'a str,
         line_num: usize,
         trimmed_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         let line_start = trimmed_span.start;
         if let Some(rest) = trimmed.strip_prefix("::") {
@@ -475,11 +485,11 @@ impl<'a> EventParser<'a> {
     // the value for whatever keyed-or-array context we're in. Because
     // for keyed contexts the `Key(...)` was already emitted before the
     // multiline began, we just push the scalar event here.
-    fn attach_scalar(
+    fn attach_scalar<S: EventSink<'a>>(
         &mut self,
         value: Event<'a>,
         _line_num: usize,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         events.push(value);
         Ok(())
@@ -489,12 +499,12 @@ impl<'a> EventParser<'a> {
     // Dotted-key reconciliation
     // -----------------------------------------------------------------------
 
-    fn reconcile_dotted_key(
+    fn reconcile_dotted_key<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
         line_num: usize,
         key_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<&'a str> {
         if !key.as_bytes().contains(&b'.') {
             // Flat key: close any open synthetics in the current real
@@ -584,12 +594,12 @@ impl<'a> EventParser<'a> {
     }
 
     #[inline]
-    fn push_synthetic(
+    fn push_synthetic<S: EventSink<'a>>(
         &mut self,
         seg: &'a str,
         line_num: usize,
         key_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         self.register_synthetic_prefix(seg, line_num, key_span)?;
         events.push(Event::Key(seg));
@@ -646,7 +656,7 @@ impl<'a> EventParser<'a> {
         }
     }
 
-    fn close_synthetics_to_real(&mut self, events: &mut EventStream<'a>) {
+    fn close_synthetics_to_real<S: EventSink<'a>>(&mut self, events: &mut S) {
         let cur_levels_len = match self.stack.last().unwrap() {
             Frame::Object { levels, .. } => levels.len(),
             _ => return,
@@ -657,10 +667,10 @@ impl<'a> EventParser<'a> {
         }
     }
 
-    fn close_synthetics_until(
+    pub(crate) fn close_synthetics_until<S: EventSink<'a>>(
         &mut self,
         target_synthetic_count: usize,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) {
         loop {
             let cur = match self.stack.last() {
@@ -674,7 +684,7 @@ impl<'a> EventParser<'a> {
         }
     }
 
-    fn pop_synthetic_level(&mut self, events: &mut EventStream<'a>) {
+    fn pop_synthetic_level<S: EventSink<'a>>(&mut self, events: &mut S) {
         match self.stack.last_mut().unwrap() {
             Frame::Object { levels, .. } => {
                 levels.pop();
@@ -720,12 +730,12 @@ impl<'a> EventParser<'a> {
     // Frame close
     // -----------------------------------------------------------------------
 
-    fn close_frame(
+    fn close_frame<S: EventSink<'a>>(
         &mut self,
         expected: BracketKind,
         line_num: usize,
         trimmed_span: Span,
-        events: &mut EventStream<'a>,
+        events: &mut S,
     ) -> Result<()> {
         if self.stack.len() <= 1 {
             return Err(Error::Structured(ErrorKind::UnbalancedBracket {

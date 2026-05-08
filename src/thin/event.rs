@@ -38,3 +38,31 @@ pub(crate) enum Event<'a> {
 }
 
 pub(crate) type EventStream<'a> = BumpVec<'a, Event<'a>>;
+
+/// Abstracts where a parser state machine emits events.
+///
+/// Two real implementations: `BumpVec<Event<'a>>` for the callback-
+/// style public API (full document tokenized into one slab, then
+/// iterated), and `Vec<Event<'a>>` for the streaming deserializer
+/// (small reusable per-line queue, no whole-document buffer).
+///
+/// Generifying the parser over this trait keeps a single state-machine
+/// implementation serving both modes. Monomorphisation specialises
+/// each call site, so dispatch is free.
+pub(crate) trait EventSink<'a> {
+    fn push(&mut self, event: Event<'a>);
+}
+
+impl<'a> EventSink<'a> for BumpVec<'a, Event<'a>> {
+    #[inline(always)]
+    fn push(&mut self, event: Event<'a>) {
+        BumpVec::push(self, event);
+    }
+}
+
+impl<'a> EventSink<'a> for Vec<Event<'a>> {
+    #[inline(always)]
+    fn push(&mut self, event: Event<'a>) {
+        Vec::push(self, event);
+    }
+}

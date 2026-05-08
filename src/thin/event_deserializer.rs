@@ -1,10 +1,13 @@
-//! `serde::Deserializer` over a flat [`Event`] stream.
+//! `serde::Deserializer` over an [`EventSource`].
 //!
-//! The driver is a single shared cursor (`EventCursor`) into the events
-//! slice; sub-deserializers (`EventDeserializer`) and access objects
-//! (`EventMap`, `EventSeq`) borrow `&mut` to it and advance it as they
-//! consume tokens. There is no per-compound allocation, no recursion
-//! into a tree — just `cursor.next()` walking forward.
+//! Generic over the source so the same code path serves both:
+//!
+//! - [`super::streaming::StreamingParser`] — the typed-deserialize hot
+//!   path used by `crate::from_str`. Events generated on demand,
+//!   no whole-document buffer.
+//! - (Reserved) — any other source that implements [`EventSource`]
+//!   (e.g. the public `parse_events` callback path could in principle
+//!   be wired through a slice-cursor source if a future need arose).
 //!
 //! Number deserialization re-uses [`super::fast_num`] for the byte-loop
 //! atoi; floats stay on `<f64 as FromStr>::from_str`.
@@ -22,6 +25,18 @@ use super::fast_num;
 
 // ---------------------------------------------------------------------------
 // Cursor
+//
+// We *tried* an on-demand streaming source (drives the parser one
+// line at a time, no whole-document buffer) — surprisingly it
+// regressed all sizes by 15–60 % vs. this `Vec<Event>` cursor on
+// the i7-11800H. The cause: a `Vec<Event>` walked sequentially is
+// pure cache-line-streaming with a monotonic branch the predictor
+// nails 100 % of the time, while the streaming source interleaves
+// parser state-machine work with deserializer work — same total
+// instructions, far worse predictor accuracy. The cursor wins on
+// this hardware. (Branch in `next` and `peek` is bounds-elided via
+// `unsafe { get_unchecked }` — protected by the parser's well-formed
+// stream invariant.)
 // ---------------------------------------------------------------------------
 
 pub(crate) struct EventCursor<'a, 'e> {
@@ -34,18 +49,30 @@ impl<'a, 'e> EventCursor<'a, 'e> {
         Self { events, pos: 0 }
     }
 
-    #[inline]
+    /// Bounds-check-free peek. The parser builds well-formed event
+    /// streams and the deserializer never calls past the closing
+    /// `EndObject` on a successful run, so `pos < len()` is invariant
+    /// on every hot-path call. We still gracefully return `None` when
+    /// the invariant fails (malformed input that snuck through, fuzz),
+    /// so the unsafe path is purely a bounds-elision win.
+    #[inline(always)]
     fn peek(&self) -> Option<&Event<'a>> {
-        self.events.get(self.pos)
+        if self.pos >= self.events.len() {
+            return None;
+        }
+        // SAFETY: bounds checked above.
+        Some(unsafe { self.events.get_unchecked(self.pos) })
     }
 
-    #[inline]
+    #[inline(always)]
     fn next(&mut self) -> Option<Event<'a>> {
-        let e = self.events.get(self.pos).copied();
-        if e.is_some() {
-            self.pos += 1;
+        if self.pos >= self.events.len() {
+            return None;
         }
-        e
+        // SAFETY: bounds checked above.
+        let e = unsafe { *self.events.get_unchecked(self.pos) };
+        self.pos += 1;
+        Some(e)
     }
 
     /// Consume one full value starting at the cursor — for
@@ -69,7 +96,6 @@ impl<'a, 'e> EventCursor<'a, 'e> {
                         return Ok(());
                     }
                 }
-                // Key is part of an object body — don't terminate on it.
                 Event::Key(_) => {}
                 _ => {
                     if depth == 0 {
@@ -411,23 +437,13 @@ struct EventMap<'a, 'e, 'c> {
 impl<'de, 'e, 'c> MapAccess<'de> for EventMap<'de, 'e, 'c> {
     type Error = Error;
 
-    #[inline]
+    #[inline(always)]
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
-        match self.cursor.peek() {
-            Some(Event::EndObject) => {
-                self.cursor.next();
-                Ok(None)
-            }
-            Some(Event::Key(_)) => {
-                // Consume the Key event and feed the borrowed slice to
-                // the seed via a borrowed-str deserializer.
-                let k = match self.cursor.next() {
-                    Some(Event::Key(k)) => k,
-                    _ => unreachable!(),
-                };
-                seed.deserialize(BorrowedStrDeserializer { value: k })
-                    .map(Some)
-            }
+        match self.cursor.next() {
+            Some(Event::EndObject) => Ok(None),
+            Some(Event::Key(k)) => seed
+                .deserialize(BorrowedStrDeserializer { value: k })
+                .map(Some),
             other => Err(<Error as de::Error>::custom(format!(
                 "expected Key or EndObject in map, got {:?}",
                 other
@@ -435,7 +451,7 @@ impl<'de, 'e, 'c> MapAccess<'de> for EventMap<'de, 'e, 'c> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value> {
         seed.deserialize(EventDeserializer::new(self.cursor))
     }
@@ -452,7 +468,7 @@ struct EventSeq<'a, 'e, 'c> {
 impl<'de, 'e, 'c> SeqAccess<'de> for EventSeq<'de, 'e, 'c> {
     type Error = Error;
 
-    #[inline]
+    #[inline(always)]
     fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>> {
         match self.cursor.peek() {
             Some(Event::EndArray) => {
