@@ -9,6 +9,45 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.3.1] — 2026-05-10
+
+Backward-compatible feature release tracking spec 0.1.1.
+
+### Added
+
+- **Top-level Array support** (spec § 5.0.1, added in spec 0.1.1) —
+  a document whose first content line has an array-item shape
+  (bare scalar, `:: text`, `:i 42`, `:f 3.14`, lone `{` / `[`, or a
+  multi-line opener `(` / `((`) is now parsed as a root-level
+  `Value::Array`. Previously the root was always `Value::Object`,
+  so a bare scalar at line 1 errored as `MissingSeparator`.
+  Empty / comments-only documents still default to an empty Object
+  (preserves 0.3.0 behaviour).
+- **`ktav::to_string_force_strings(value)`** — render any `Value`
+  with every scalar coerced to a String. Typed integers (`:i`),
+  typed floats (`:f`), booleans, and null are flattened to their
+  textual form; compounds preserve their structure. The output
+  round-trips back through the parser as the same set of String
+  scalars. Useful for "everything is a string" dumps for downstream
+  consumers that don't understand typed markers, or for diff-
+  friendly canonical text.
+- New `Render` exit point: `render` accepts both Object and Array
+  top-level values (top-level Arrays render as bare item-per-line,
+  no `[...]` brackets).
+
+### Compatibility
+
+Strictly additive. Every document valid under 0.3.0 stays valid
+under 0.3.1 and produces the same `Value`. Only inputs 0.3.0
+rejected as `MissingSeparator` (bare-scalar first lines) are now
+accepted as Arrays. The error variants and their spans are
+unchanged for the Object path.
+
+The parser, render, thin event-parser, and thin event-deserializer
+all honour spec § 5.0.1 consistently — `parse`, `parse_events`, and
+`from_str` agree on the root kind for any given input.
+
+
 ## [0.3.0] — 2026-05-08
 
 Minor release with one breaking parser strictness change, a
