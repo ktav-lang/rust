@@ -24,18 +24,22 @@ use super::event::{Event, EventSink, EventStream};
 // ---------------------------------------------------------------------------
 
 pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStream<'a>> {
-    // Capacity hint: synth-config workloads measure roughly 1 event per
-    // 5 source bytes (each `key: value\n` line is ~10–20 bytes and
-    // produces 2 events). Underestimating used to trigger 8–10
-    // realloc-and-copy steps inside the bump arena on a 500 KiB doc;
-    // the over-estimate path just wastes a couple % of arena memory,
-    // which the arena drops on scope exit anyway.
     let mut events: EventStream<'a> = BumpVec::with_capacity_in(text.len() / 4 + 64, bump);
-    EventSink::push(&mut events, Event::BeginObject);
 
-    let mut p = EventParser::new(bump);
-
+    // Spec § 5.0.1 (added in 0.1.1): scan ahead to the first content
+    // line, classify it, push the matching root opener event, and
+    // initialize the parser stack with the matching root frame.
     let bytes = text.as_bytes();
+    let root_kind = detect_root_kind(text, bytes);
+    EventSink::push(
+        &mut events,
+        match root_kind {
+            RootKind::Object => Event::BeginObject,
+            RootKind::Array => Event::BeginArray,
+        },
+    );
+    let mut p = EventParser::new(bump, root_kind);
+
     let mut line_start: usize = 0;
     let mut line_num: usize = 0;
     while line_start <= bytes.len() {
@@ -64,6 +68,74 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     Ok(events)
 }
 
+/// Per spec § 5.0.1: scan forward to the first non-blank, non-comment
+/// line and classify it as Object (pair shape) or Array (anything
+/// else). Empty / comments-only documents default to Object.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum RootKind {
+    Object,
+    Array,
+}
+
+fn detect_root_kind(text: &str, bytes: &[u8]) -> RootKind {
+    let mut i = 0;
+    while i < bytes.len() {
+        let line_start = i;
+        let nl = bytes[i..].iter().position(|&b| b == b'\n');
+        let end = match nl {
+            Some(rel) => i + rel,
+            None => bytes.len(),
+        };
+        let content_end = if end > line_start && bytes[end - 1] == b'\r' {
+            end - 1
+        } else {
+            end
+        };
+        let line = &text[line_start..content_end];
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            // First content line — classify (mirrors parser.rs::
+            // classify_root_kind, kept local so the modules don't
+            // cross-depend).
+            if trimmed == "}" || trimmed == "]" {
+                return RootKind::Object; // bare closer → main loop emits error
+            }
+            return classify_first_line_root_kind(trimmed);
+        }
+        i = match nl {
+            Some(_) => end + 1,
+            None => bytes.len(),
+        };
+    }
+    RootKind::Object // empty or comments-only
+}
+
+fn classify_first_line_root_kind(trimmed: &str) -> RootKind {
+    let bytes = trimmed.as_bytes();
+    let Some(colon_idx) = bytes.iter().position(|&b| b == b':') else {
+        return RootKind::Array;
+    };
+    let key_part = trimmed[..colon_idx].trim_end();
+    if key_part.is_empty() {
+        return RootKind::Array;
+    }
+    let after = &trimmed[colon_idx + 1..];
+    let after_bytes = after.as_bytes();
+    if after_bytes.first() == Some(&b':') {
+        return RootKind::Object;
+    }
+    if matches!(after_bytes.first(), Some(&b'i') | Some(&b'f')) {
+        match after_bytes.get(1) {
+            None | Some(b' ') | Some(b'\t') => return RootKind::Object,
+            _ => {}
+        }
+    }
+    if after.is_empty() || after.starts_with([' ', '\t']) {
+        return RootKind::Object;
+    }
+    RootKind::Array
+}
+
 // ---------------------------------------------------------------------------
 // Parser state
 // ---------------------------------------------------------------------------
@@ -82,7 +154,7 @@ pub(crate) struct EventParser<'a> {
 }
 
 impl<'a> EventParser<'a> {
-    pub(crate) fn new(bump: &'a Bump) -> Self {
+    pub(crate) fn new(bump: &'a Bump, root_kind: RootKind) -> Self {
         let mut p = EventParser {
             bump,
             stack: Vec::with_capacity(8),
@@ -90,7 +162,10 @@ impl<'a> EventParser<'a> {
             opener_offsets: Vec::with_capacity(8),
             multiline_opener: None,
         };
-        p.stack.push(Frame::new_object(bump));
+        match root_kind {
+            RootKind::Object => p.stack.push(Frame::new_object(bump)),
+            RootKind::Array => p.stack.push(Frame::new_array()),
+        }
         p.opener_offsets.push(0);
         p
     }
@@ -182,10 +257,19 @@ impl<'a> EventParser<'a> {
                 span: Span::new(start, eof_offset),
             }));
         }
-        // Close all synthetics still open in the root frame, then the
-        // root object itself.
-        self.close_synthetics_until(0, events);
-        events.push(Event::EndObject);
+        // Close all synthetics still open in the root frame (only
+        // applies to Object roots), then emit the matching close
+        // event for whichever kind the root was.
+        match self.stack.last() {
+            Some(Frame::Object { .. }) => {
+                self.close_synthetics_until(0, events);
+                events.push(Event::EndObject);
+            }
+            Some(Frame::Array) => {
+                events.push(Event::EndArray);
+            }
+            None => unreachable!("root frame is always present after construction"),
+        }
         Ok(())
     }
 

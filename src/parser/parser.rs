@@ -15,26 +15,32 @@ pub(super) struct Parser<'a> {
     collecting: Option<Collecting<'a>>,
     /// Byte offset of the unclosed-compound's opener inside the
     /// original input, parallel to `stack`. Index `0` is unused (the
-    /// implicit root object has no opener); each pushed child frame
-    /// records its opener offset here so that an EOF-detected
+    /// implicit root object/array has no opener); each pushed child
+    /// frame records its opener offset here so that an EOF-detected
     /// `UnclosedCompound` can produce a `Span` covering opener..EOF.
     opener_offsets: Vec<u32>,
     /// Byte offset of the multi-line opener (the line that began with
     /// `(` / `((`). Used by the EOF-detected unclosed-multiline span.
     multiline_opener: Option<u32>,
+    /// `false` until the first content line (non-blank, non-comment)
+    /// has been classified and the root frame pushed. Spec § 5.0.1
+    /// (added in 0.1.1) determines the root kind from the first
+    /// content line: pair-shape → Object, array-item-shape → Array.
+    root_initialized: bool,
 }
 
 impl<'a> Parser<'a> {
     pub(super) fn new() -> Self {
-        let mut stack = Vec::with_capacity(8);
-        stack.push(Frame::new_object());
-        let mut opener_offsets = Vec::with_capacity(8);
-        opener_offsets.push(0);
+        // Defer root frame construction until the first content line
+        // is classified. `finish` falls back to an empty Object root
+        // if no content line was ever encountered (preserves 0.3.0
+        // behaviour on empty / comments-only docs).
         Self {
-            stack,
+            stack: Vec::with_capacity(8),
             collecting: None,
-            opener_offsets,
+            opener_offsets: Vec::with_capacity(8),
             multiline_opener: None,
+            root_initialized: false,
         }
     }
 
@@ -60,6 +66,11 @@ impl<'a> Parser<'a> {
                 kind,
                 span: Span::new(start, eof_offset),
             }));
+        }
+        // Empty / comments-only document — root was never initialized;
+        // fall back to an empty Object (spec § 5.0.1 rule 1).
+        if self.stack.is_empty() {
+            return Ok(Value::Object(crate::value::ObjectMap::default()));
         }
         Ok(self.stack.pop().unwrap().into_value())
     }
@@ -97,6 +108,26 @@ impl<'a> Parser<'a> {
         // in `raw`, end at the last non-ws byte). This is reused for
         // a few categories that span the whole logical line.
         let trimmed_span = trimmed_span_in(raw, trimmed, line_start);
+
+        // Spec § 5.0.1 — first content line establishes the root kind.
+        // A pair-shape (`key: …` / `key:: …` / `key:i …` / `key:f …`)
+        // means root is Object; otherwise root is Array. Bare close
+        // tokens `}` / `]` as first content line are errors (handled
+        // below by the unbalanced-bracket check).
+        if !self.root_initialized {
+            self.root_initialized = true;
+            // `}` / `]` first content line — not a valid root kind;
+            // fall through to the close-frame branch which will raise
+            // UnbalancedBracket against the empty stack.
+            if trimmed != "}" && trimmed != "]" {
+                if classify_root_kind(trimmed) == RootKind::Object {
+                    self.stack.push(Frame::new_object());
+                } else {
+                    self.stack.push(Frame::new_array());
+                }
+                self.opener_offsets.push(0);
+            }
+        }
 
         if trimmed == "}" {
             return self.close_frame(Bracket::Object, line_num, trimmed_span);
@@ -583,6 +614,59 @@ fn require_sep_end(
             span,
         }))
     }
+}
+
+/// Top-level kind detection (spec § 5.0.1, added in 0.1.1).
+///
+/// Looks at a trimmed first-content-line and decides whether the
+/// document's root is an Object (pair-shape) or an Array (anything
+/// else, including bare scalars, typed/raw markers, and lone
+/// compound openers). The classification is **conservative on the
+/// pair side**: if the line plausibly looks like a pair attempt
+/// (has a `:` separator with a non-empty key), Object is chosen
+/// even if the pair turns out malformed — the pair handler will
+/// raise the precise error (`MissingSeparatorSpace`, `EmptyKey`,
+/// etc.) downstream. This matches how 0.3.0 behaved on those
+/// inputs (always tried pair, always erred), so the new code path
+/// is invisible to 0.3.0-conforming documents.
+#[derive(PartialEq)]
+pub(super) enum RootKind {
+    Object,
+    Array,
+}
+
+pub(super) fn classify_root_kind(trimmed: &str) -> RootKind {
+    let bytes = trimmed.as_bytes();
+    let Some(colon_idx) = bytes.iter().position(|&b| b == b':') else {
+        return RootKind::Array;
+    };
+    // Empty prefix before `:` (e.g. `:value`, `:: lit`, `:i 42`,
+    // `:f 3.14`) — these are array-item shapes, not pair lines.
+    let key_part = trimmed[..colon_idx].trim_end();
+    if key_part.is_empty() {
+        return RootKind::Array;
+    }
+    let after = &trimmed[colon_idx + 1..];
+    let after_bytes = after.as_bytes();
+    // `key::` (raw marker) — pair shape.
+    if after_bytes.first() == Some(&b':') {
+        return RootKind::Object;
+    }
+    // `key:i ` / `key:f ` (typed marker) — pair shape iff the marker
+    // letter is followed by whitespace / EOL.
+    if matches!(after_bytes.first(), Some(&b'i') | Some(&b'f')) {
+        match after_bytes.get(1) {
+            None | Some(b' ') | Some(b'\t') => return RootKind::Object,
+            _ => {}
+        }
+    }
+    // Plain `key: ` separator — body must start with whitespace or
+    // be empty. Anything else (e.g. `http://...`) means the `:` is
+    // part of a value and there's no real key/value pair.
+    if after.is_empty() || after.starts_with([' ', '\t']) {
+        return RootKind::Object;
+    }
+    RootKind::Array
 }
 
 fn classify_separator(after_colon: &str) -> Separator<'_> {

@@ -6,7 +6,7 @@ mod object;
 mod pair;
 mod render;
 
-pub use render::render;
+pub use render::{render, to_string_force_strings};
 
 #[cfg(test)]
 mod tests;

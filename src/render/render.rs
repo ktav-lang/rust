@@ -1,17 +1,16 @@
 //! Top-level entry: render a [`Value`] into a Ktav text document.
 
 use crate::error::{Error, Result};
-use crate::value::Value;
+use crate::value::{ObjectMap, Value};
 
+use super::array_item::render_array_item;
 use super::object::render_object_body;
 
-/// Serializes `value` as a top-level Ktav document. The top-level value
-/// must be an object.
+/// Serializes `value` as a top-level Ktav document. The top-level
+/// value must be an Object or an Array (spec § 5.0.1, added 0.1.1).
+/// Top-level Arrays render as bare item-per-line — no surrounding
+/// `[...]` brackets.
 pub fn render(value: &Value) -> Result<String> {
-    let obj = match value {
-        Value::Object(o) => o,
-        _ => return Err(Error::Message("top-level value must be an object".into())),
-    };
     // Pre-size the output buffer so renders of medium-large documents
     // don't trigger 4–6 String reallocations on the way to their final
     // size. The estimate is a lower bound (it omits indentation and
@@ -19,8 +18,56 @@ pub fn render(value: &Value) -> Result<String> {
     // in for larger-than-expected outputs, but the common case skips
     // every realloc.
     let mut out = String::with_capacity(estimate_size(value));
-    render_object_body(obj, 0, &mut out)?;
+    match value {
+        Value::Object(o) => render_object_body(o, 0, &mut out)?,
+        Value::Array(items) => {
+            for item in items {
+                render_array_item(item, 0, &mut out)?;
+            }
+        }
+        _ => {
+            return Err(Error::Message(
+                "top-level value must be an Object or an Array".into(),
+            ))
+        }
+    }
     Ok(out)
+}
+
+/// Render `value` with **every scalar coerced to a String**: typed
+/// integers, typed floats, booleans, and null are flattened to their
+/// textual form and emitted via the raw-marker `::` so the output
+/// round-trips back through the parser as the same string scalars.
+///
+/// Useful for dumping configuration in a "everything is a string"
+/// shape — e.g. for environments or downstream consumers that don't
+/// understand the `:i` / `:f` typed markers, or for diffs where you
+/// want the textual form to be the canonical source of truth.
+///
+/// Compounds (Object / Array) preserve their structure; only leaf
+/// scalars are coerced.
+pub fn to_string_force_strings(value: &Value) -> Result<String> {
+    let coerced = coerce_scalars_to_strings(value);
+    render(&coerced)
+}
+
+fn coerce_scalars_to_strings(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::String("null".into()),
+        Value::Bool(true) => Value::String("true".into()),
+        Value::Bool(false) => Value::String("false".into()),
+        Value::Integer(s) => Value::String(s.clone()),
+        Value::Float(s) => Value::String(s.clone()),
+        Value::String(s) => Value::String(s.clone()),
+        Value::Array(items) => Value::Array(items.iter().map(coerce_scalars_to_strings).collect()),
+        Value::Object(obj) => {
+            let mut out = ObjectMap::with_capacity_and_hasher(obj.len(), Default::default());
+            for (k, v) in obj {
+                out.insert(k.clone(), coerce_scalars_to_strings(v));
+            }
+            Value::Object(out)
+        }
+    }
 }
 
 /// Rough byte-size estimate for a rendered `Value`, used to pre-size

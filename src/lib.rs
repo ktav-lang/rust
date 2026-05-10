@@ -26,11 +26,15 @@
 //! ```
 //! use ktav::{parse, Error, ErrorKind};
 //!
-//! let src = "port:8080\n";
+//! // The first line anchors the document as an Object; the malformed
+//! // `port:8080` on line 2 then errors with a `MissingSeparatorSpace`
+//! // (a first-line `port:8080` would now be a top-level Array
+//! // bare-scalar item — spec § 5.0.1).
+//! let src = "anchor: ok\nport:8080\n";
 //! match parse(src) {
 //!     Ok(_) => unreachable!(),
 //!     Err(Error::Structured(ErrorKind::MissingSeparatorSpace { line, span, .. })) => {
-//!         assert_eq!(line, 1);
+//!         assert_eq!(line, 2);
 //!         // The span covers the offending body chunk glued to the marker.
 //!         assert_eq!(span.slice(src), Some("8080"));
 //!     }
@@ -139,4 +143,18 @@ pub fn to_file<T: ?Sized + Serialize, P: AsRef<Path>>(value: &T, path: P) -> Res
     let text = to_string(value)?;
     fs::write(path, text)?;
     Ok(())
+}
+
+/// Render a [`Value`] with **every scalar coerced to a String** —
+/// typed integers (`:i`), typed floats (`:f`), booleans, and null
+/// are flattened to their textual form and emitted via the raw-
+/// marker `::`. Compounds (Object / Array) preserve their structure;
+/// only leaf scalars are coerced. The output round-trips back
+/// through the parser as the same set of String scalars.
+///
+/// Useful for "everything is a string" dumps — e.g. for downstream
+/// consumers that don't understand typed markers, or for diff-
+/// friendly canonical text.
+pub fn to_string_force_strings(value: &Value) -> Result<String> {
+    render::to_string_force_strings(value)
 }
