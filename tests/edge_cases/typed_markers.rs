@@ -234,10 +234,11 @@ fn float_marker_in_array_invalid_body_is_rejected() {
 fn info_colon_is_not_a_typed_integer_marker() {
     // `:info ...` has no whitespace between the `:` and `info` (after the
     // key), so under the mandatory-space rule (spec § 5.3 + § 6.10) this
-    // is a MissingSeparatorSpace error. It's neither a typed-integer
-    // marker (no `:i` + ws form matches) nor a plain-`:` fallback (the
-    // plain `:` separator also requires ws-or-EOL now).
-    let err = parse("x:info rest\n").unwrap_err().to_string();
+    // is a MissingSeparatorSpace error inside an Object context. We
+    // anchor with a leading pair so root resolves to Object (spec
+    // § 5.0.1 — first-line malformed pairs would otherwise be parsed
+    // as bare-scalar Array items).
+    let err = parse("anchor: ok\nx:info rest\n").unwrap_err().to_string();
     assert!(
         err.contains("MissingSeparatorSpace"),
         "expected MissingSeparatorSpace, got: {err}"
@@ -246,10 +247,9 @@ fn info_colon_is_not_a_typed_integer_marker() {
 
 #[test]
 fn func_colon_is_not_a_typed_float_marker() {
-    // Same reasoning as `info_colon_*` above — `:func` is ambiguous
-    // against `:f` + body, the plain `:` also lacks the required ws,
-    // so the tightened grammar rejects it with MissingSeparatorSpace.
-    let err = parse("x:func rest\n").unwrap_err().to_string();
+    // Same reasoning as `info_colon_*` above. Anchored with a leading
+    // pair to force Object root.
+    let err = parse("anchor: ok\nx:func rest\n").unwrap_err().to_string();
     assert!(
         err.contains("MissingSeparatorSpace"),
         "expected MissingSeparatorSpace, got: {err}"

@@ -41,8 +41,11 @@ fn message_error_has_no_line_or_span() {
 
 #[test]
 fn missing_separator_space_has_line_and_span() {
-    let e = parse_err("port:8080\n");
-    assert_eq!(e.line(), Some(1));
+    // Anchor with a known-Object pair so the test exercises pair-line
+    // grammar (spec § 5.3 + § 6.10), not top-level Array root
+    // (§ 5.0.1) where colon-bearing scalars are valid items.
+    let e = parse_err("anchor: ok\nport:8080\n");
+    assert_eq!(e.line(), Some(2));
     let s = e.span().expect("span");
     assert!(s.end > s.start);
 }
@@ -70,8 +73,11 @@ fn key_path_conflict_has_line_and_span() {
 
 #[test]
 fn empty_key_has_line_and_span() {
-    let e = parse_err(": value\n");
-    assert_eq!(e.line(), Some(1));
+    // Anchor with a known-Object pair so empty-key error exercises
+    // pair-line grammar instead of top-level Array root (§ 5.0.1
+    // would treat `: value` as a bare-scalar Array item).
+    let e = parse_err("anchor: ok\n: value\n");
+    assert_eq!(e.line(), Some(2));
     assert!(e.span().is_some());
 }
 
@@ -112,9 +118,13 @@ fn inline_nonempty_compound_has_line_and_span() {
 
 #[test]
 fn missing_separator_has_line_and_span() {
-    let e = parse_err("just-some-text\n");
-    assert_eq!(e.line(), Some(1));
-    assert_eq!(e.span(), Some(Span::new(0, 14)));
+    // Anchor with a known-Object pair so a colon-less line errors
+    // as MissingSeparator inside an Object instead of being parsed
+    // as a top-level Array bare-scalar (§ 5.0.1).
+    let e = parse_err("anchor: ok\njust-some-text\n");
+    assert_eq!(e.line(), Some(2));
+    let s = e.span().expect("span");
+    assert!(s.end > s.start);
 }
 
 // ---------------------------------------------------------------------------

@@ -30,17 +30,19 @@ fn structured_string(e: &Error) -> String {
 
 #[test]
 fn pin_missing_separator_space() {
-    let e = err("key:value\n");
+    // Anchor with a known-Object pair — first-line `key:value` would
+    // otherwise be a top-level Array bare-scalar (spec § 5.0.1).
+    let e = err("anchor: ok\nkey:value\n");
     assert!(
         matches!(
             e,
-            Error::Structured(ErrorKind::MissingSeparatorSpace { line: 1, .. })
+            Error::Structured(ErrorKind::MissingSeparatorSpace { line: 2, .. })
         ),
         "got: {e:?}"
     );
     assert_eq!(
         structured_string(&e),
-        "Line 1: MissingSeparatorSpace: separator must be followed by whitespace or end of line"
+        "Line 2: MissingSeparatorSpace: separator must be followed by whitespace or end of line"
     );
 }
 
@@ -96,12 +98,13 @@ fn pin_key_path_conflict() {
 
 #[test]
 fn pin_empty_key() {
-    let e = err(": value\n");
+    // Anchor with a known-Object pair (spec § 5.0.1).
+    let e = err("anchor: ok\n: value\n");
     assert!(
-        matches!(e, Error::Structured(ErrorKind::EmptyKey { line: 1, .. })),
+        matches!(e, Error::Structured(ErrorKind::EmptyKey { line: 2, .. })),
         "got: {e:?}"
     );
-    assert_eq!(structured_string(&e), "Empty key at line 1");
+    assert_eq!(structured_string(&e), "Empty key at line 2");
 }
 
 #[test]
@@ -236,17 +239,19 @@ fn pin_inline_nonempty_array() {
 
 #[test]
 fn pin_missing_separator() {
-    let e = err("just-some-text\n");
+    // Anchor with a known-Object pair — colon-less first line would
+    // otherwise be a top-level Array bare-scalar (spec § 5.0.1).
+    let e = err("anchor: ok\njust-some-text\n");
     assert!(
         matches!(
             e,
-            Error::Structured(ErrorKind::MissingSeparator { line: 1, .. })
+            Error::Structured(ErrorKind::MissingSeparator { line: 2, .. })
         ),
         "got: {e:?}"
     );
     assert_eq!(
         structured_string(&e),
-        "Line 1: MissingSeparator: object entries must be 'key: value' pairs"
+        "Line 2: MissingSeparator: object entries must be 'key: value' pairs"
     );
 }
 
@@ -256,11 +261,15 @@ fn parser_no_longer_emits_legacy_syntax_variant() {
     // (or the unrelated Io/Message). If anything routes back through
     // `Error::Syntax(_)`, this test catches it.
     let cases = [
-        "key:value\n",
+        // Inputs whose first content line would otherwise be parsed
+        // as a top-level Array bare-scalar (spec § 5.0.1) are
+        // anchored with a known-Object pair to keep them in pair-
+        // line dispatch where the error originates.
+        "anchor: ok\nkey:value\n",
         "port:i abc\n",
         "port: 80\nport: 443\n",
         "db: 1\ndb.x: 2\n",
-        ": value\n",
+        "anchor: ok\n: value\n",
         "a.: 1\n",
         "obj: {\n  a: 1\n",
         "arr: [\n  1\n",

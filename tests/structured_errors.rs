@@ -281,12 +281,16 @@ fn inline_nonempty_compound_array_trigger() {
 
 #[test]
 fn missing_separator_trigger() {
-    let src = "just-some-text\n";
+    // Anchor with a known-Object pair — colon-less first line would
+    // otherwise be a top-level Array bare-scalar (spec § 5.0.1).
+    let src = "anchor: ok\njust-some-text\n";
     let err = ktav::parse(src).unwrap_err();
     match err {
         Error::Structured(ErrorKind::MissingSeparator { line, span }) => {
-            assert_eq!(line, 1);
-            assert_eq!(span, Span::new(0, 14));
+            assert_eq!(line, 2);
+            // Span covers the offending line `just-some-text` —
+            // bytes 11..25 in the anchored source.
+            assert_eq!(span, Span::new(11, 25));
         }
         other => panic!("expected MissingSeparator, got {other:?}"),
     }

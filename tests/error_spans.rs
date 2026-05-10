@@ -28,8 +28,10 @@ fn span_of(text: &str) -> (ErrorKind, String) {
 
 #[test]
 fn span_missing_separator_space() {
-    // `key:value` — body offset 4..9 ("value")
-    let text = "key:value\n";
+    // `key:value` — body slice "value". Anchor with a known-Object
+    // pair so first-line `key:value` doesn't get parsed as a top-
+    // level Array bare-scalar (spec § 5.0.1).
+    let text = "anchor: ok\nkey:value\n";
     let (k, slice) = span_of(text);
     assert!(matches!(k, ErrorKind::MissingSeparatorSpace { .. }));
     assert_eq!(slice, "value");
@@ -67,10 +69,11 @@ fn span_key_path_conflict() {
 
 #[test]
 fn span_empty_key() {
-    let text = ": value\n";
+    // Anchor with a known-Object pair (spec § 5.0.1).
+    let text = "anchor: ok\n: value\n";
     let (k, slice) = span_of(text);
     assert!(matches!(k, ErrorKind::EmptyKey { .. }));
-    // Span points at the leading `:` byte.
+    // Span points at the leading `:` byte (relative slice still ":").
     assert_eq!(slice, ":");
 }
 
@@ -120,7 +123,8 @@ fn span_inline_nonempty_compound() {
 
 #[test]
 fn span_missing_separator() {
-    let text = "just-some-text\n";
+    // Anchor with a known-Object pair (spec § 5.0.1).
+    let text = "anchor: ok\njust-some-text\n";
     let (k, slice) = span_of(text);
     assert!(matches!(k, ErrorKind::MissingSeparator { .. }));
     assert_eq!(slice, "just-some-text");

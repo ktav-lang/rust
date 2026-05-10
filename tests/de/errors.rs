@@ -165,7 +165,10 @@ fn empty_key() {
     struct Cfg {
         _x: String,
     }
-    let err = from_str::<Cfg>(": value\n").unwrap_err();
+    // Anchor with a known-Object pair (spec § 5.0.1 — first-line
+    // `: value` would otherwise be parsed as a top-level Array
+    // bare-scalar item).
+    let err = from_str::<Cfg>("anchor: ok\n: value\n").unwrap_err();
     assert!(syntax_msg(&err).contains("Empty key"), "got: {:?}", err);
 }
 
@@ -185,7 +188,8 @@ fn line_without_colon_in_object() {
     struct Cfg {
         _x: String,
     }
-    let err = from_str::<Cfg>("just-some-text\n").unwrap_err();
+    // Anchor with a known-Object pair (spec § 5.0.1).
+    let err = from_str::<Cfg>("anchor: ok\njust-some-text\n").unwrap_err();
     // 0.1.6: the bare-word case now surfaces as `MissingSeparator` with
     // the pinned `'key: value' pairs` Display string.
     assert!(

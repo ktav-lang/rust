@@ -101,7 +101,10 @@ fn array_with_marker_items() {
 fn invalid_input_returns_structured_error_matching_parse() {
     // Same input fed through `ktav::parse` and through `parse_events`
     // must surface the same `ErrorKind` variant.
-    let src = "port:8080\n"; // missing space after the marker
+    // Anchor with a known-Object pair — first-line `port:8080`
+    // would otherwise be a top-level Array bare-scalar (spec
+    // § 5.0.1) and parse cleanly.
+    let src = "anchor: ok\nport:8080\n"; // missing space after the marker on line 2
 
     let parse_err = ktav::parse(src).expect_err("must error");
     let callback_err = parse_events(src, |_| {
