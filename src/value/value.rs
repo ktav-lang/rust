@@ -24,20 +24,21 @@ pub enum Value {
     Null,
     /// The `true` / `false` keywords.
     Bool(bool),
-    /// A typed integer scalar — emitted/parsed with the `:i` marker. Held
-    /// as a text form so arbitrary precision (digits beyond any fixed-width
-    /// Rust integer) round-trips byte-for-byte. Leading `+` is stripped at
-    /// parse time; leading `-` is preserved.
+    /// An integer scalar. Under spec 0.5.0 the parser infers Integer
+    /// from the scalar body's lexical form (§ 3.6). The `Scalar` stores
+    /// the **canonical** base-10 decimal form (no underscores, no leading
+    /// zeros except `0` itself, no leading `+`). Leading `-` is preserved
+    /// for negative values; `-0` normalises to `0`.
     Integer(Scalar),
-    /// A typed floating-point scalar — emitted/parsed with the `:f` marker.
-    /// Held as the textual form (mantissa with a decimal point, optional
-    /// scientific exponent) so precision round-trips exactly. Leading `+`
-    /// on the mantissa is stripped at parse time; signs in the exponent
-    /// are preserved verbatim.
+    /// A floating-point scalar. Under spec 0.5.0 the parser infers Float
+    /// from the scalar body's lexical form (§ 3.6). The `Scalar` stores
+    /// the **canonical** shortest-decimal form computed via the `ryu` crate
+    /// — deterministic for a given `f64` bit-pattern.
     Float(Scalar),
-    /// A scalar string leaf. Numbers written without a type marker are
-    /// held here too; conversion to `u16` / `f64` / … happens through
-    /// serde on deserialization.
+    /// A scalar string leaf. Under spec 0.5.0, bodies that do not match
+    /// any number, keyword, or compound form are String. Use the raw
+    /// marker `::` to force a String when the body would otherwise be
+    /// inferred as a number or keyword.
     String(Scalar),
     /// A multi-line `[ ... ]` array. Items may be any variant.
     Array(Vec<Value>),
@@ -69,9 +70,9 @@ impl Value {
         }
     }
 
-    /// Returns the digit form of a `Value::Integer` (leading `-` preserved,
-    /// leading `+` already stripped). `None` for any other variant — notably
-    /// a numeric `Value::String` is NOT promoted.
+    /// Returns the canonical base-10 decimal form of a `Value::Integer`.
+    /// `None` for any other variant — notably a numeric `Value::String`
+    /// is NOT promoted.
     pub fn as_integer(&self) -> Option<&str> {
         if let Value::Integer(s) = self {
             Some(s)
@@ -80,8 +81,8 @@ impl Value {
         }
     }
 
-    /// Returns the text form of a `Value::Float` (mantissa with decimal
-    /// point, optional `e±N` exponent). `None` for any other variant.
+    /// Returns the canonical form of a `Value::Float` (shortest decimal
+    /// via `ryu`). `None` for any other variant.
     pub fn as_float(&self) -> Option<&str> {
         if let Value::Float(s) = self {
             Some(s)

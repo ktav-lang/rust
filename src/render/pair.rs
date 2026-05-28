@@ -1,5 +1,6 @@
-//! Render a `key: value` (or `key:: value` / `key:i value` / `key:f value` /
-//! `key: { ... }` / `key: [ ... ]`) line.
+//! Render a `key: value` (or `key:: value` / `key: { ... }` / `key: [ ... ]`)
+//! line. Under spec 0.5.0, integers and floats are emitted with plain `:`
+//! (no `:i` / `:f` markers).
 
 use crate::error::{Error, Result};
 use crate::value::Value;
@@ -31,12 +32,12 @@ pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut Str
             out.push('\n');
         }
         Value::Integer(s) => {
-            out.push_str(":i ");
+            out.push_str(": ");
             out.push_str(s);
             out.push('\n');
         }
         Value::Float(s) => {
-            out.push_str(":f ");
+            out.push_str(": ");
             out.push_str(s);
             out.push('\n');
         }

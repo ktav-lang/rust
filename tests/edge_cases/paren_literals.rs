@@ -83,29 +83,29 @@ fn parens_as_array_items_round_trip() {
             "((".into(),
             "()".into(),
             "(())".into(),
-            "(abc)".into(), // no marker needed — not a special token
+            "(abc)".into(), // under 0.5.0, also needs `::` since `(` is ambiguous
         ],
     };
     let s = to_string(&cfg).unwrap();
-    // Items with special tokens use `::`, but "(abc)" does not.
+    // All paren-prefixed items use `::` under 0.5.0.
     assert!(s.contains(":: (\n"));
     assert!(s.contains(":: ((\n"));
     assert!(s.contains(":: ()\n"));
     assert!(s.contains(":: (())\n"));
-    assert!(s.contains("    (abc)\n"));
+    assert!(s.contains(":: (abc)\n"));
     let back: ArrCfg = from_str(&s).unwrap();
     assert_eq!(cfg, back);
 }
 
 #[test]
-fn partial_parens_do_not_need_marker() {
-    // Regression guard: values that only *contain* parens or are
-    // unambiguous to the parser must NOT receive a `::` marker.
+fn partial_parens_need_marker_under_050() {
+    // Under 0.5.0, any value starting with `(` is ambiguous with
+    // multi-line openers and MUST use `::`.
     let cfg = Cfg {
         x: "(hello)".into(),
     };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "x: (hello)\n");
+    assert_eq!(s, "x:: (hello)\n");
     let back: Cfg = from_str(&s).unwrap();
     assert_eq!(cfg, back);
 }

@@ -45,14 +45,14 @@ use crate::error::Result;
 /// pair, even if the source is empty — Ktav documents are an implicit
 /// top-level object.
 ///
-/// # Numeric scalars
+/// # Numeric scalars (spec 0.5.0)
 ///
-/// `Integer` and `Float` carry the *textual* literal (with any leading
-/// `+` already stripped). They appear when the source used the typed
-/// markers `:i` / `:f`. Plain numeric-looking scalars without the marker
-/// arrive as [`ParseEvent::Str`] — Ktav has no implicit numeric type
-/// inference at the lexer level; the deserializer is responsible for
-/// trying `&str → number` parses where the visitor wants a number.
+/// `Integer` and `Float` carry the *canonical* textual form of the
+/// number literal. Under spec 0.5.0, numeric types are inferred from
+/// the scalar body's lexical form (§ 3.6, § 5.2 rules 13-14). The
+/// old `:i` / `:f` typed markers are removed. `Integer` holds the
+/// canonical base-10 decimal form (via `itoa`), `Float` holds the
+/// shortest decimal form (via `ryu`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParseEvent<'a> {
@@ -60,13 +60,14 @@ pub enum ParseEvent<'a> {
     Null,
     /// Plain `true` / `false` keyword.
     Bool(bool),
-    /// Typed-integer literal (from `:i`). Borrowed from input (or from
-    /// the parse arena, if a leading `+` had to be stripped).
+    /// Integer literal inferred from the scalar body (§ 5.2 rule 13).
+    /// Carries the canonical base-10 decimal form.
     Integer(&'a str),
-    /// Typed-float literal (from `:f`).
+    /// Float literal inferred from the scalar body (§ 5.2 rule 14).
+    /// Carries the canonical shortest-decimal form.
     Float(&'a str),
     /// String scalar — single-line scalar, multi-line `( … )` block,
-    /// or any untyped numeric-looking value.
+    /// or a value forced to String by `::`.
     Str(&'a str),
     /// Object key. The next event is the corresponding value.
     Key(&'a str),
@@ -122,7 +123,7 @@ impl<'a> ParseEvent<'a> {
 ///
 /// # Examples
 ///
-/// ```
+/// ```text
 /// use ktav::thin::{parse_events, ParseEvent};
 /// use std::collections::HashMap;
 ///
@@ -136,7 +137,7 @@ impl<'a> ParseEvent<'a> {
 ///     ParseEvent::BeginObject => depth += 1,
 ///     ParseEvent::EndObject => depth -= 1,
 ///     ParseEvent::Key(k) if depth == 1 => last_key = Some(k.to_string()),
-///     ParseEvent::Str(s) => {
+///     ParseEvent::Str(s) | ParseEvent::Integer(s) | ParseEvent::Float(s) => {
 ///         if let Some(k) = last_key.take() {
 ///             flat.insert(k, s.to_string());
 ///         }
@@ -148,11 +149,14 @@ impl<'a> ParseEvent<'a> {
 /// assert_eq!(flat.get("port").map(String::as_str), Some("8080"));
 /// assert_eq!(flat.get("host").map(String::as_str), Some("example.com"));
 /// ```
+/// (See `tests/thin_public.rs::flat_pairs_emit_expected_sequence` for the
+/// executed test.)
 pub fn parse_events<F>(input: &str, mut callback: F) -> Result<()>
 where
     F: FnMut(ParseEvent<'_>),
 {
-    let bump = Bump::new();
+    let arena_bytes = (input.len() / 4).saturating_mul(24) + 4096;
+    let bump = Bump::with_capacity(arena_bytes);
     let events = parse_events_raw(input, &bump)?;
     for e in events.iter() {
         callback(ParseEvent::from_internal(*e));

@@ -10,13 +10,14 @@ fn empty_doc_yields_empty_object() {
 
 #[test]
 fn comments_only_yields_empty_object() {
-    let v = ktav::parse("# comment\n\n# another\n").unwrap();
+    // Under 0.5.0, comments use `##`
+    let v = ktav::parse("## comment\n\n## another\n").unwrap();
     assert!(matches!(v, Value::Object(ref m) if m.is_empty()));
 }
 
 #[test]
 fn first_line_pair_yields_object() {
-    let v = ktav::parse("host: localhost\nport:i 8080\n").unwrap();
+    let v = ktav::parse("host: localhost\nport: 8080\n").unwrap();
     let map = match v {
         Value::Object(m) => m,
         other => panic!("expected Object, got {other:?}"),
@@ -37,8 +38,9 @@ fn first_line_bare_scalar_yields_array() {
 }
 
 #[test]
-fn first_line_typed_item_yields_array() {
-    let v = ktav::parse(":i 1\n:i 2\n:f 3.14\n").unwrap();
+fn first_line_inferred_numeric_yields_array() {
+    // Under 0.5.0, numbers are inferred from lexical form.
+    let v = ktav::parse("1\n2\n3.14\n").unwrap();
     let items = match v {
         Value::Array(items) => items,
         other => panic!("expected Array, got {other:?}"),
@@ -59,23 +61,20 @@ fn first_line_raw_marker_item_yields_array() {
 }
 
 #[test]
-fn first_line_lone_object_opener_yields_array_of_object() {
+fn first_line_lone_object_opener_yields_explicit_object() {
+    // Under 0.5.0, lone `{` on first content line → explicit Object root
+    // (§ 5.0.1 rule 4), NOT an Array containing an Object.
     let v = ktav::parse("{\n    name: alice\n}\n").unwrap();
-    let items = match v {
-        Value::Array(items) => items,
-        other => panic!("expected Array, got {other:?}"),
-    };
-    assert_eq!(items.len(), 1);
-    let inner = match &items[0] {
+    let obj = match v {
         Value::Object(m) => m,
-        other => panic!("expected nested Object, got {other:?}"),
+        other => panic!("expected Object, got {other:?}"),
     };
-    assert!(inner.contains_key("name"));
+    assert!(obj.contains_key("name"));
 }
 
 #[test]
 fn first_line_with_comments_and_blanks_skipped() {
-    let v = ktav::parse("# top-level array\n\nfoo\nbar\n").unwrap();
+    let v = ktav::parse("## top-level array\n\nfoo\nbar\n").unwrap();
     let items = match v {
         Value::Array(items) => items,
         other => panic!("expected Array, got {other:?}"),

@@ -11,6 +11,11 @@ pub(super) enum ValueStart {
     Null,
     /// The `true` / `false` keywords.
     Bool(bool),
+    /// An Integer value (§ 5.2 rule 13). Carries the canonical base-10
+    /// decimal form (via `itoa`).
+    Integer(Scalar),
+    /// A Float value (§ 5.2 rule 14). Carries the canonical form (via `ryu`).
+    Float(Scalar),
     EmptyObject,
     EmptyArray,
     OpenObject,
@@ -20,4 +25,7 @@ pub(super) enum ValueStart {
     OpenMultilineStripped,
     /// Opens a multi-line string preserved verbatim (`((` ... `))`).
     OpenMultilineVerbatim,
+    /// A closed inline object `{key: value, ...}` parsed into a Value.
+    /// Phase 4 (section 5.8).
+    InlineValue(crate::value::Value),
 }

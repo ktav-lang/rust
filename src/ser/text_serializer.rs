@@ -50,24 +50,7 @@ fn write_indent(out: &mut String, level: usize) {
 }
 
 fn needs_raw_marker(s: &str) -> bool {
-    // Fast path: most scalars don't start with whitespace, so we can check
-    // the first byte directly and skip `trim_start`'s whole-string scan.
-    match s.as_bytes().first() {
-        None => false,
-        Some(&b' ') | Some(&b'\t') => needs_raw_marker_slow(s.trim_start()),
-        Some(&b'{') | Some(&b'[') => true,
-        Some(_) => {
-            matches!(s, "null" | "true" | "false" | "(" | "((" | "()" | "(())")
-        }
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn needs_raw_marker_slow(t: &str) -> bool {
-    t.starts_with('{')
-        || t.starts_with('[')
-        || matches!(t, "null" | "true" | "false" | "(" | "((" | "()" | "(())")
+    crate::render::helpers::needs_raw_marker(s)
 }
 
 fn top_err() -> Error {
@@ -112,13 +95,12 @@ fn push_float_body(out: &mut String, s: &str) {
     }
 }
 
-/// Produce the textual form of an `f64` value suitable for the `:f`
-/// marker: always contains a decimal point. NaN / ±Infinity return an
-/// error — Ktav 0.1.0 does not represent them.
+/// Produce the textual form of an `f64` value suitable for Ktav output:
+/// always contains a decimal point. NaN / ±Infinity return an error.
 pub(crate) fn format_f64(v: f64) -> Result<String> {
     if v.is_nan() || v.is_infinite() {
         return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav 0.1.0",
+            "NaN / Infinity is not representable in Ktav",
         ));
     }
     let mut buf = ryu::Buffer::new();
@@ -127,11 +109,11 @@ pub(crate) fn format_f64(v: f64) -> Result<String> {
     Ok(out)
 }
 
-/// Produce the textual form of an `f32` value suitable for the `:f` marker.
+/// Produce the textual form of an `f32` value suitable for Ktav output.
 pub(crate) fn format_f32(v: f32) -> Result<String> {
     if v.is_nan() || v.is_infinite() {
         return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav 0.1.0",
+            "NaN / Infinity is not representable in Ktav",
         ));
     }
     let mut buf = ryu::Buffer::new();
@@ -140,33 +122,33 @@ pub(crate) fn format_f32(v: f32) -> Result<String> {
     Ok(out)
 }
 
-/// Fast path for pair-position integer emission: `:i <digits>\n`.
+/// Fast path for pair-position integer emission: `: <digits>\n`.
+/// Under spec 0.5.0, integers use plain `:` (no `:i` marker).
 /// `itoa` avoids `fmt::Formatter` overhead.
 fn push_int_pair<I: itoa::Integer>(out: &mut String, v: I) {
-    out.push_str(":i ");
+    out.push_str(": ");
     let mut buf = itoa::Buffer::new();
     out.push_str(buf.format(v));
     out.push('\n');
 }
 
-/// Same, but for array-item position (no leading `: ` since that's only
-/// in pair position; this helper is called after the indent prefix is
-/// already written).
+/// Same, but for array-item position: bare `<digits>\n`.
+/// Under spec 0.5.0, integer items are inferred from the lexical form.
 fn push_int_item<I: itoa::Integer>(out: &mut String, v: I) {
-    out.push_str(":i ");
     let mut buf = itoa::Buffer::new();
     out.push_str(buf.format(v));
     out.push('\n');
 }
 
 /// Fast path for pair-position float emission via `ryu`.
+/// Under spec 0.5.0, floats use plain `: ` (no `:f` marker).
 fn push_f64_pair(out: &mut String, v: f64) -> Result<()> {
     if v.is_nan() || v.is_infinite() {
         return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav 0.1.0",
+            "NaN / Infinity is not representable in Ktav",
         ));
     }
-    out.push_str(":f ");
+    out.push_str(": ");
     let mut buf = ryu::Buffer::new();
     push_float_body(out, buf.format(v));
     out.push('\n');
@@ -176,10 +158,36 @@ fn push_f64_pair(out: &mut String, v: f64) -> Result<()> {
 fn push_f32_pair(out: &mut String, v: f32) -> Result<()> {
     if v.is_nan() || v.is_infinite() {
         return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav 0.1.0",
+            "NaN / Infinity is not representable in Ktav",
         ));
     }
-    out.push_str(":f ");
+    out.push_str(": ");
+    let mut buf = ryu::Buffer::new();
+    push_float_body(out, buf.format(v));
+    out.push('\n');
+    Ok(())
+}
+
+/// Bare float item emission (no pair prefix). Under spec 0.5.0,
+/// float items are inferred from the lexical form.
+fn push_f64_item(out: &mut String, v: f64) -> Result<()> {
+    if v.is_nan() || v.is_infinite() {
+        return Err(<Error as ser::Error>::custom(
+            "NaN / Infinity is not representable in Ktav",
+        ));
+    }
+    let mut buf = ryu::Buffer::new();
+    push_float_body(out, buf.format(v));
+    out.push('\n');
+    Ok(())
+}
+
+fn push_f32_item(out: &mut String, v: f32) -> Result<()> {
+    if v.is_nan() || v.is_infinite() {
+        return Err(<Error as ser::Error>::custom(
+            "NaN / Infinity is not representable in Ktav",
+        ));
+    }
     let mut buf = ryu::Buffer::new();
     push_float_body(out, buf.format(v));
     out.push('\n');
@@ -985,11 +993,11 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
     }
     fn serialize_f32(self, v: f32) -> Result<()> {
         write_indent(self.out, self.indent);
-        push_f32_pair(self.out, v)
+        push_f32_item(self.out, v)
     }
     fn serialize_f64(self, v: f64) -> Result<()> {
         write_indent(self.out, self.indent);
-        push_f64_pair(self.out, v)
+        push_f64_item(self.out, v)
     }
 
     fn serialize_char(self, v: char) -> Result<()> {

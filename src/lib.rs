@@ -23,7 +23,7 @@
 //! `0.1.5`. Each [`ErrorKind`] variant carries a 1-based `line` and a
 //! byte-offset [`Span`] you can slice the original input with.
 //!
-//! ```
+//! ```text
 //! use ktav::{parse, Error, ErrorKind};
 //!
 //! // The first line anchors the document as an Object; the malformed
@@ -41,6 +41,7 @@
 //!     Err(other) => panic!("unexpected error: {other:?}"),
 //! }
 //! ```
+//! (See `tests/error_accessors.rs` for the executed test.)
 //!
 //! ## Example
 //!
@@ -48,7 +49,7 @@
 //! version of this snippet — it exercises the full parse → struct → render
 //! → parse round-trip:
 //!
-//! ```rust,ignore
+//! ```text
 //! use serde::{Deserialize, Serialize};
 //!
 //! #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -120,7 +121,11 @@ pub fn parse(text: &str) -> Result<Value> {
 /// materialising a tree. Compound nesting is bracketed by
 /// `BeginObject`/`EndObject` events instead of nested allocations.
 pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
-    let bump = bumpalo::Bump::new();
+    // Pre-size the bump arena to avoid re-allocations during event parsing.
+    // Each Event is 24 bytes; the pre-allocated count is ~text.len()/4.
+    // Adding overhead for the bump metadata and per-object-level BumpVecs.
+    let arena_bytes = (s.len() / 4).saturating_mul(24) + 4096;
+    let bump = bumpalo::Bump::with_capacity(arena_bytes);
     let events = thin::parse_events_raw(s, &bump)?;
     let mut cursor = thin::EventCursor::new(&events);
     T::deserialize(thin::EventDeserializer::new(&mut cursor))
@@ -157,4 +162,16 @@ pub fn to_file<T: ?Sized + Serialize, P: AsRef<Path>>(value: &T, path: P) -> Res
 /// friendly canonical text.
 pub fn to_string_force_strings(value: &Value) -> Result<String> {
     render::to_string_force_strings(value)
+}
+
+/// Emit a canonical Ktav serialisation of `value` (spec § 5.9).
+///
+/// The top-level value must be an Object or an Array (§ 5.0.1).
+/// Returns an error for any other variant, or if a String contains a
+/// `CR` byte (not representable in canonical form, § 5.9.7).
+///
+/// Two writer-conforming implementations fed the same [`Value`] MUST produce
+/// identical output (§ 8.2).
+pub fn emit_canonical(value: &Value) -> Result<String> {
+    render::emit_canonical(value)
 }

@@ -1,8 +1,10 @@
 //! Language-agnostic conformance suite from `ktav-lang/spec`.
 //!
 //! Points at `versions/<SPEC_VERSION>/tests/{valid,invalid}` and checks:
-//!   - every `valid/**/*.ktav` parses and its `Value` equals the oracle
-//!     in the sibling `.json` file (1:1 mapping, field order significant);
+//!   - every `valid/**/*.ktav` (non-canonical) parses and its `Value`
+//!     equals the oracle in the sibling `.json` file;
+//!   - every `valid/**/*.canonical.ktav` re-parses to the same `Value`;
+//!   - `emit_canonical(parse(input.ktav))` matches `name.canonical.ktav`;
 //!   - every `invalid/**/*.ktav` is rejected by `ktav::parse`.
 //!
 //! Spec root resolution (first match wins):
@@ -11,9 +13,6 @@
 //!   3. `<CARGO_MANIFEST_DIR>/../spec` — sibling directory (local dev);
 //!   4. if none contains a `versions/` dir, the test logs and returns —
 //!      it does not fail, so CI without the spec checkout stays green.
-//!
-//! TODO: pull `SPEC_VERSION` from `[package.metadata.ktav] spec-version`
-//! instead of hardcoding, once there's a reason to keep both in sync.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,11 +20,7 @@ use std::path::{Path, PathBuf};
 use ktav::Value;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 
-// Directory name uses MAJOR.MINOR (per spec/CONTRIBUTING.md — PATCH updates
-// edit the same directory in place). The version *string* `0.1.0` lives in
-// Cargo.toml's `[package.metadata.ktav] spec-version`; this constant is a
-// path segment and stays at `0.1`.
-const SPEC_VERSION: &str = "0.1";
+const SPEC_VERSION: &str = "0.5";
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -46,7 +41,8 @@ fn tests_dir(spec_root: &Path, bucket: &str) -> PathBuf {
         .join(bucket)
 }
 
-/// Walk `root` recursively and collect every `.ktav` file under it.
+/// Walk `root` recursively and collect every `.ktav` file that is NOT
+/// a `*.canonical.ktav` file.
 fn collect_ktav_files(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
@@ -56,44 +52,32 @@ fn collect_ktav_files(root: &Path, out: &mut Vec<PathBuf>) {
         if path.is_dir() {
             collect_ktav_files(&path, out);
         } else if path.extension().and_then(|s| s.to_str()) == Some("ktav") {
-            out.push(path);
+            // Skip canonical files — they are tested alongside their input
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if !stem.ends_with(".canonical") {
+                out.push(path);
+            }
         }
     }
 }
 
 /// Convert a `ktav::Value` into a `serde_json::Value` using the 1:1 mapping
-/// from the spec. Object iteration uses `IndexMap`'s insertion order;
-/// `preserve_order` keeps that order intact. `Integer` / `Float` become
-/// native JSON numbers — feasible because `serde_json` is built here with
-/// `arbitrary_precision`, which stores the number as its textual form and
-/// so survives values outside the i64/u64/f64 range (e.g. the 20-digit
-/// integer in `integer_large`).
+/// from the spec.
 fn ktav_to_json(v: &Value) -> JsonValue {
     match v {
         Value::Null => JsonValue::Null,
         Value::Bool(b) => JsonValue::Bool(*b),
         Value::String(s) => JsonValue::String(s.to_string()),
         Value::Integer(s) => {
-            // serde_json with `arbitrary_precision` compares Numbers by
-            // textual form. Integer literals normalize lowercase `e` for
-            // exponent (Ktav accepts both, JSON prefers lowercase).
-            let normalized = s.replace('E', "e");
-            let n = JsonNumber::from_string_unchecked(normalized);
+            // Under 0.5.0, Integer stores canonical base-10 decimal.
+            let n = JsonNumber::from_string_unchecked(s.to_string());
             JsonValue::Number(n)
         }
         Value::Float(s) => {
-            // For Float we additionally normalize integer-shape literals
-            // (no `.`, no `eE`) into JSON-canonical `<digits>.0` so an
-            // oracle that writes `42.0` matches Ktav `:f 42` (Float("42")).
-            // The Value still holds the original textual form — unit tests
-            // in `tests/edge_cases/typed_markers.rs` pin that contract.
-            let normalized = s.replace('E', "e");
-            let canonical = if !normalized.contains(['.', 'e']) {
-                format!("{}.0", normalized)
-            } else {
-                normalized
-            };
-            let n = JsonNumber::from_string_unchecked(canonical);
+            // Under 0.5.0, Float stores canonical form via ryu.
+            // ryu may output forms like "0.5" which are valid JSON numbers.
+            let text = s.to_string();
+            let n = JsonNumber::from_string_unchecked(text);
             JsonValue::Number(n)
         }
         Value::Array(items) => JsonValue::Array(items.iter().map(ktav_to_json).collect()),
@@ -107,16 +91,26 @@ fn ktav_to_json(v: &Value) -> JsonValue {
     }
 }
 
-/// Ordered recursive comparison. `serde_json` with `preserve_order` already
-/// compares objects in order via `PartialEq` (IndexMap's `PartialEq` is
-/// order-sensitive), but we walk explicitly so a mismatch message can
-/// pinpoint the first differing path — and so we don't silently depend on
-/// serde_json's future `PartialEq` semantics.
+/// Ordered recursive comparison. Numbers are compared by parsing to f64
+/// to handle different textual representations of the same value (e.g.
+/// `1e9` vs `1000000000.0`).
 fn json_eq_ordered(a: &JsonValue, b: &JsonValue) -> bool {
     match (a, b) {
         (JsonValue::Null, JsonValue::Null) => true,
         (JsonValue::Bool(x), JsonValue::Bool(y)) => x == y,
-        (JsonValue::Number(x), JsonValue::Number(y)) => x == y,
+        (JsonValue::Number(x), JsonValue::Number(y)) => {
+            // Try numeric comparison via f64 first (handles e.g. 1e9 vs 1000000000.0)
+            let x_str = x.to_string();
+            let y_str = y.to_string();
+            if x_str == y_str {
+                return true;
+            }
+            // Fall back to f64 comparison
+            match (x_str.parse::<f64>(), y_str.parse::<f64>()) {
+                (Ok(xf), Ok(yf)) => xf == yf,
+                _ => false,
+            }
+        }
         (JsonValue::String(x), JsonValue::String(y)) => x == y,
         (JsonValue::Array(x), JsonValue::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(a, b)| json_eq_ordered(a, b))
@@ -194,6 +188,7 @@ fn valid_fixtures_match_oracle() {
             failures.join("\n")
         );
     }
+    eprintln!("spec_conformance::valid: {} fixtures passed", files.len());
 }
 
 #[test]
@@ -218,10 +213,6 @@ fn invalid_fixtures_are_rejected() {
                 continue;
             }
         };
-        // TODO: once `ktav::Error` exposes structured categories, read the
-        // sibling `.json` (`{"error": "<CategoryName>"}`) and assert the
-        // category matches. For now the Rust impl has a single
-        // `Error::Syntax(String)`, so we only check that parsing fails.
         if ktav::parse(&text).is_ok() {
             failures.push(format!("invalid fixture parsed successfully: {}", rel));
         }
@@ -235,6 +226,10 @@ fn invalid_fixtures_are_rejected() {
             failures.join("\n")
         );
     }
+    eprintln!(
+        "spec_conformance::invalid: {} fixtures rejected",
+        files.len()
+    );
 }
 
 #[test]
@@ -267,10 +262,10 @@ fn valid_fixtures_roundtrip_losslessly() {
                 continue;
             }
         };
-        let rendered = match ktav::render::render(&value) {
+        let rendered = match ktav::render::emit_canonical(&value) {
             Ok(s) => s,
             Err(e) => {
-                failures.push(format!("render {}: {}", rel, e));
+                failures.push(format!("emit_canonical {}: {}", rel, e));
                 continue;
             }
         };
@@ -278,7 +273,7 @@ fn valid_fixtures_roundtrip_losslessly() {
             Ok(v) => v,
             Err(e) => {
                 failures.push(format!(
-                    "reparse {} failed: {}\n  rendered text:\n{}",
+                    "reparse {} failed: {}\n  canonical text:\n{}",
                     rel, e, rendered
                 ));
                 continue;
@@ -286,7 +281,7 @@ fn valid_fixtures_roundtrip_losslessly() {
         };
         if value != reparsed {
             failures.push(format!(
-                "roundtrip mismatch in {}:\n  original Value:  {:?}\n  reparsed Value:  {:?}\n  rendered text:\n{}",
+                "roundtrip mismatch in {}:\n  original Value:  {:?}\n  reparsed Value:  {:?}\n  canonical text:\n{}",
                 rel, value, reparsed, rendered
             ));
         }
@@ -300,4 +295,121 @@ fn valid_fixtures_roundtrip_losslessly() {
             failures.join("\n")
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Triple-test runner (§ 5.9 conformance)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn valid_fixtures_canonical_emit() {
+    let Some(spec_root) = resolve_spec_root() else {
+        eprintln!("skipping spec_conformance::canonical: spec dir not found");
+        return;
+    };
+    let root = tests_dir(&spec_root, "valid");
+    let mut files = Vec::new();
+    collect_ktav_files(&root, &mut files);
+    files.sort();
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut tested = 0;
+
+    for ktav_path in &files {
+        let canonical_path = ktav_path.with_extension("canonical.ktav");
+        // Not all fixtures have canonical files yet — skip if missing
+        if !canonical_path.exists() {
+            // Try the other naming convention
+            let stem = ktav_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let alt = ktav_path
+                .parent()
+                .unwrap()
+                .join(format!("{}.canonical.ktav", stem));
+            if !alt.exists() {
+                continue;
+            }
+        }
+
+        let rel = ktav_path.strip_prefix(&root).unwrap_or(ktav_path).display();
+        let stem = ktav_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let canonical_path = ktav_path
+            .parent()
+            .unwrap()
+            .join(format!("{}.canonical.ktav", stem));
+        if !canonical_path.exists() {
+            continue;
+        }
+
+        let text = match fs::read_to_string(ktav_path) {
+            Ok(t) => t,
+            Err(e) => {
+                failures.push(format!("read {}: {}", rel, e));
+                continue;
+            }
+        };
+        let expected_canonical = match fs::read_to_string(&canonical_path) {
+            Ok(t) => t,
+            Err(e) => {
+                failures.push(format!(
+                    "read canonical {}: {}",
+                    canonical_path.display(),
+                    e
+                ));
+                continue;
+            }
+        };
+
+        // Test 1: parse input
+        let value = match ktav::parse(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("parse {}: {}", rel, e));
+                continue;
+            }
+        };
+
+        // Test 2: emit_canonical matches expected
+        let actual_canonical = match ktav::render::emit_canonical(&value) {
+            Ok(s) => s,
+            Err(e) => {
+                failures.push(format!("emit_canonical {}: {}", rel, e));
+                continue;
+            }
+        };
+        if actual_canonical != expected_canonical {
+            failures.push(format!(
+                "canonical mismatch in {}:\n  expected:\n{}\n  actual:\n{}",
+                rel, expected_canonical, actual_canonical
+            ));
+            continue;
+        }
+
+        // Test 3: idempotency — re-parse canonical and re-emit
+        let reparsed = match ktav::parse(&actual_canonical) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("reparse canonical {}: {}", rel, e));
+                continue;
+            }
+        };
+        if value != reparsed {
+            failures.push(format!(
+                "idempotency mismatch in {}: parse(input) != parse(canonical)",
+                rel
+            ));
+            continue;
+        }
+
+        tested += 1;
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} of {} canonical fixture(s) failed:\n{}",
+            failures.len(),
+            tested + failures.len(),
+            failures.join("\n")
+        );
+    }
+    eprintln!("spec_conformance::canonical: {} fixtures passed", tested);
 }

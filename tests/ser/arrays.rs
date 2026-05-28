@@ -36,7 +36,7 @@ fn array_of_integers_multiline() {
         ports: vec![80, 443],
     })
     .unwrap();
-    assert_eq!(s, "ports: [\n    :i 80\n    :i 443\n]\n");
+    assert_eq!(s, "ports: [\n    80\n    443\n]\n");
 }
 
 #[test]
@@ -71,6 +71,6 @@ fn nested_array_multiline() {
     .unwrap();
     assert_eq!(
         s,
-        "outer: [\n    [\n        :i 1\n        :i 2\n    ]\n    [\n        :i 3\n    ]\n]\n"
+        "outer: [\n    [\n        1\n        2\n    ]\n    [\n        3\n    ]\n]\n"
     );
 }

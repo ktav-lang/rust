@@ -51,9 +51,11 @@ fn missing_separator_space_has_line_and_span() {
 }
 
 #[test]
-fn invalid_typed_scalar_has_line_and_span() {
-    let e = parse_err("port:i abc\n");
-    assert_eq!(e.line(), Some(1));
+fn missing_separator_space_old_typed_marker() {
+    // Under 0.5.0, `port:i abc` needs anchoring since it would otherwise
+    // be a top-level array bare-scalar. Anchor with a pair.
+    let e = parse_err("anchor: ok\nport:i abc\n");
+    assert_eq!(e.line(), Some(2));
     assert!(e.span().is_some());
 }
 
@@ -110,8 +112,9 @@ fn unbalanced_bracket_has_line_and_span() {
 }
 
 #[test]
-fn inline_nonempty_compound_has_line_and_span() {
-    let e = parse_err("server: { a: 1 }\n");
+fn unterminated_inline_compound_has_line_and_span() {
+    // Under 0.5.0, inline objects are valid. Use unterminated instead.
+    let e = parse_err("server: { a: 1\n");
     assert_eq!(e.line(), Some(1));
     assert!(e.span().is_some());
 }

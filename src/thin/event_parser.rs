@@ -16,6 +16,7 @@ use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
 
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
+use crate::parser::classify::{is_float_literal, try_parse_integer};
 
 use super::event::{Event, EventSink, EventStream};
 
@@ -26,9 +27,8 @@ use super::event::{Event, EventSink, EventStream};
 pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStream<'a>> {
     let mut events: EventStream<'a> = BumpVec::with_capacity_in(text.len() / 4 + 64, bump);
 
-    // Spec § 5.0.1 (added in 0.1.1): scan ahead to the first content
-    // line, classify it, push the matching root opener event, and
-    // initialize the parser stack with the matching root frame.
+    // Spec § 5.0.1 (0.5.0): scan ahead to the first content line,
+    // classify it per the 8 rules.
     let bytes = text.as_bytes();
     let root_kind = detect_root_kind(text, bytes);
     EventSink::push(
@@ -40,28 +40,43 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     );
     let mut p = EventParser::new(bump, root_kind);
 
-    let mut line_start: usize = 0;
-    let mut line_num: usize = 0;
-    while line_start <= bytes.len() {
-        let nl = bytes[line_start..].iter().position(|&b| b == b'\n');
-        let (end, next_start) = match nl {
-            Some(rel) => (line_start + rel, line_start + rel + 1),
-            None => {
-                if line_start == bytes.len() {
-                    break;
-                }
-                (bytes.len(), bytes.len() + 1)
+    // Line splitting: handle CR / CR LF / LF (spec § 3.2)
+    //
+    // Fast path for the overwhelmingly common case: LF-only input
+    // (no CR bytes).  This avoids the per-byte branch on `\r` in the
+    // inner scan loop and lets the compiler emit a tighter scan.
+    if !bytes.contains(&b'\r') {
+        let mut line_num: usize = 0;
+        let mut offset: usize = 0;
+        for line in text.split('\n') {
+            line_num += 1;
+            let line_start = offset;
+            offset += line.len() + 1; // +1 for the consumed '\n'
+            p.handle_line(line, line_num, line_start as u32, &mut events)?;
+        }
+    } else {
+        let mut line_start: usize = 0;
+        let mut line_num: usize = 0;
+        while line_start < bytes.len() {
+            let mut end = line_start;
+            while end < bytes.len() && bytes[end] != b'\n' && bytes[end] != b'\r' {
+                end += 1;
             }
-        };
-        let content_end = if end > line_start && bytes[end - 1] == b'\r' {
-            end - 1
-        } else {
-            end
-        };
-        let line: &'a str = &text[line_start..content_end];
-        line_num += 1;
-        p.handle_line(line, line_num, line_start as u32, &mut events)?;
-        line_start = next_start;
+            let content_end = end;
+            let next_start = if end < bytes.len() {
+                if bytes[end] == b'\r' && end + 1 < bytes.len() && bytes[end + 1] == b'\n' {
+                    end + 2 // CR LF
+                } else {
+                    end + 1 // CR or LF alone
+                }
+            } else {
+                end // EOF
+            };
+            let line: &'a str = &text[line_start..content_end];
+            line_num += 1;
+            p.handle_line(line, line_num, line_start as u32, &mut events)?;
+            line_start = next_start;
+        }
     }
 
     p.finish(bytes.len() as u32, &mut events)?;
@@ -81,59 +96,72 @@ fn detect_root_kind(text: &str, bytes: &[u8]) -> RootKind {
     let mut i = 0;
     while i < bytes.len() {
         let line_start = i;
-        let nl = bytes[i..].iter().position(|&b| b == b'\n');
-        let end = match nl {
-            Some(rel) => i + rel,
-            None => bytes.len(),
-        };
-        let content_end = if end > line_start && bytes[end - 1] == b'\r' {
-            end - 1
-        } else {
-            end
-        };
+        // Find next line terminator (CR / LF / CR LF)
+        while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+            i += 1;
+        }
+        let content_end = i;
+        // Skip terminator
+        if i < bytes.len() {
+            if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
         let line = &text[line_start..content_end];
         let trimmed = line.trim();
-        if !trimmed.is_empty() && !trimmed.starts_with('#') {
-            // First content line — classify (mirrors parser.rs::
-            // classify_root_kind, kept local so the modules don't
-            // cross-depend).
+        if !trimmed.is_empty() && !trimmed.starts_with("##") {
+            // First content line — classify (mirrors parser.rs)
             if trimmed == "}" || trimmed == "]" {
                 return RootKind::Object; // bare closer → main loop emits error
             }
             return classify_first_line_root_kind(trimmed);
         }
-        i = match nl {
-            Some(_) => end + 1,
-            None => bytes.len(),
-        };
     }
     RootKind::Object // empty or comments-only
 }
 
 fn classify_first_line_root_kind(trimmed: &str) -> RootKind {
+    // § 5.0.1 rule 4: lone `{`
+    if trimmed == "{" {
+        return RootKind::Object;
+    }
+    // § 5.0.1 rule 5: lone `[`
+    if trimmed == "[" {
+        return RootKind::Array;
+    }
+    // § 5.0.1 rule 2: closed inline object
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return RootKind::Object;
+    }
+    // § 5.0.1 rule 3: closed inline array
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        return RootKind::Array;
+    }
+    // § 5.0.1 rules 6/7: pair shape vs array item
+    if is_pair_shape(trimmed) {
+        RootKind::Object
+    } else {
+        RootKind::Array
+    }
+}
+
+/// Check if the trimmed line looks like a pair shape.
+fn is_pair_shape(trimmed: &str) -> bool {
     let bytes = trimmed.as_bytes();
     let Some(colon_idx) = bytes.iter().position(|&b| b == b':') else {
-        return RootKind::Array;
+        return false;
     };
     let key_part = trimmed[..colon_idx].trim_end();
     if key_part.is_empty() {
-        return RootKind::Array;
+        return false;
     }
     let after = &trimmed[colon_idx + 1..];
-    let after_bytes = after.as_bytes();
-    if after_bytes.first() == Some(&b':') {
-        return RootKind::Object;
+    if after.starts_with(':') {
+        return true;
     }
-    if matches!(after_bytes.first(), Some(&b'i') | Some(&b'f')) {
-        match after_bytes.get(1) {
-            None | Some(b' ') | Some(b'\t') => return RootKind::Object,
-            _ => {}
-        }
-    }
-    if after.is_empty() || after.starts_with([' ', '\t']) {
-        return RootKind::Object;
-    }
-    RootKind::Array
+    after.is_empty() || after.starts_with([' ', '\t'])
 }
 
 // ---------------------------------------------------------------------------
@@ -186,16 +214,9 @@ pub(crate) struct ObjectLevel<'a> {
     /// `None` for the real object level, `Some(prefix_segment)` for a
     /// synthetic dotted-key level.
     prefix: Option<&'a str>,
-    /// Keys registered as plain scalars/compounds at this level. Linear
-    /// scan dedup — fast for typical config shapes (K < ~20). Wider
-    /// objects could justify a hash set, but the arena allocations
-    /// would have to live in the arena too (FxHashSet doesn't), and
-    /// the linear scan stays cache-friendly.
+    /// Keys registered as plain scalars/compounds at this level.
     leaf_keys: BumpVec<'a, &'a str>,
-    /// Keys registered as a synthetic dotted-key prefix. May be re-
-    /// opened later (a `prefix.x` line that pops back to this level
-    /// can extend the same synthetic); cannot be re-used as a plain
-    /// leaf.
+    /// Keys registered as a synthetic dotted-key prefix.
     synthetic_keys: BumpVec<'a, &'a str>,
 }
 
@@ -281,18 +302,20 @@ impl<'a> EventParser<'a> {
         events: &mut S,
     ) -> Result<()> {
         if let Some(ref mut c) = self.collecting {
-            if raw.as_bytes().contains(&b')') {
-                let trimmed = raw.trim();
-                let term = match c.mode {
-                    MultilineMode::Stripped => ")",
-                    MultilineMode::Verbatim => "))",
-                };
-                if trimmed == term {
-                    let collecting = self.collecting.take().unwrap();
-                    let s = finalize_multiline(collecting, self.bump);
-                    self.multiline_opener = None;
-                    return self.attach_scalar(Event::Str(s), line_num, events);
-                }
+            let trimmed = raw.trim();
+            let term = match c.mode {
+                MultilineMode::Stripped => ")",
+                MultilineMode::Verbatim => "))",
+            };
+            // Fast reject: terminator must equal the trimmed line.
+            // Most collection-body lines are NOT the terminator, so
+            // the length check eliminates the vast majority before
+            // the byte-comparison.
+            if trimmed.len() <= 2 && trimmed == term {
+                let collecting = self.collecting.take().unwrap();
+                let s = finalize_multiline(collecting, self.bump);
+                self.multiline_opener = None;
+                return self.attach_scalar(Event::Str(s), line_num, events);
             }
             c.lines.push(raw);
             return Ok(());
@@ -300,7 +323,8 @@ impl<'a> EventParser<'a> {
 
         let trimmed = raw.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        // Under 0.5.0: comments use `##` (not single `#`)
+        if trimmed.is_empty() || trimmed.starts_with("##") {
             return Ok(());
         }
 
@@ -321,7 +345,7 @@ impl<'a> EventParser<'a> {
     }
 
     // -----------------------------------------------------------------------
-    // Object-pair dispatch (mirrors thin/parser.rs but emits events)
+    // Object-pair dispatch
     // -----------------------------------------------------------------------
 
     fn handle_object_pair<S: EventSink<'a>>(
@@ -360,21 +384,24 @@ impl<'a> EventParser<'a> {
                 require_sep_end(rest, line_num, after_colon_off + 1, trimmed_span)?;
                 self.emit_keyed_scalar(key, Event::Str(rest.trim()), line_num, key_span, events)
             }
-            Separator::TypedInteger(body) => {
-                let body_span = body_span_for(body, after_colon, after_colon_off, trimmed_span);
-                let normalized = validate_typed_integer(body, line_num, self.bump, body_span)?;
-                self.emit_keyed_scalar(key, Event::Integer(normalized), line_num, key_span, events)
-            }
-            Separator::TypedFloat(body) => {
-                let body_span = body_span_for(body, after_colon, after_colon_off, trimmed_span);
-                let normalized = validate_typed_float(body, line_num, self.bump, body_span)?;
-                self.emit_keyed_scalar(key, Event::Float(normalized), line_num, key_span, events)
-            }
             Separator::Plain => {
                 require_sep_end(after_colon, line_num, after_colon_off, trimmed_span)?;
-                match classify(after_colon.trim_start(), line_num, trimmed_span)? {
+                let body = after_colon.trim_start();
+                match classify(body, line_num, trimmed_span, self.bump)? {
                     ValueStart::Scalar(s) => {
-                        self.emit_keyed_scalar(key, scalar_to_event(s), line_num, key_span, events)
+                        self.emit_keyed_scalar(key, Event::Str(s), line_num, key_span, events)
+                    }
+                    ValueStart::Integer(s) => {
+                        self.emit_keyed_scalar(key, Event::Integer(s), line_num, key_span, events)
+                    }
+                    ValueStart::Float(s) => {
+                        self.emit_keyed_scalar(key, Event::Float(s), line_num, key_span, events)
+                    }
+                    ValueStart::Null => {
+                        self.emit_keyed_scalar(key, Event::Null, line_num, key_span, events)
+                    }
+                    ValueStart::Bool(b) => {
+                        self.emit_keyed_scalar(key, Event::Bool(b), line_num, key_span, events)
                     }
                     ValueStart::EmptyObject => self.emit_keyed_compound(
                         key,
@@ -425,6 +452,15 @@ impl<'a> EventParser<'a> {
                         );
                         self.multiline_opener = Some(trimmed_span.end - 2);
                         r
+                    }
+                    ValueStart::InlineEvents(inline_events) => {
+                        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+                        self.register_leaf_key(leaf, line_num, key_span)?;
+                        events.push(Event::Key(leaf));
+                        for ev in inline_events {
+                            events.push(ev);
+                        }
+                        Ok(())
                     }
                 }
             }
@@ -511,28 +547,20 @@ impl<'a> EventParser<'a> {
         events: &mut S,
     ) -> Result<()> {
         let line_start = trimmed_span.start;
+
+        // Under 0.5.0: only `::` raw marker for arrays. No `:i`/`:f`.
         if let Some(rest) = trimmed.strip_prefix("::") {
             require_sep_end(rest, line_num, line_start + 2, trimmed_span)?;
             events.push(Event::Str(rest.trim_start()));
             return Ok(());
         }
-        if let Some(rest) = trimmed.strip_prefix(":i") {
-            require_sep_end(rest, line_num, line_start + 2, trimmed_span)?;
-            let body_span = Span::new(line_start + 2, trimmed_span.end);
-            let normalized = validate_typed_integer(rest, line_num, self.bump, body_span)?;
-            events.push(Event::Integer(normalized));
-            return Ok(());
-        }
-        if let Some(rest) = trimmed.strip_prefix(":f") {
-            require_sep_end(rest, line_num, line_start + 2, trimmed_span)?;
-            let body_span = Span::new(line_start + 2, trimmed_span.end);
-            let normalized = validate_typed_float(rest, line_num, self.bump, body_span)?;
-            events.push(Event::Float(normalized));
-            return Ok(());
-        }
 
-        match classify(trimmed, line_num, trimmed_span)? {
-            ValueStart::Scalar(s) => events.push(scalar_to_event(s)),
+        match classify(trimmed, line_num, trimmed_span, self.bump)? {
+            ValueStart::Scalar(s) => events.push(Event::Str(s)),
+            ValueStart::Integer(s) => events.push(Event::Integer(s)),
+            ValueStart::Float(s) => events.push(Event::Float(s)),
+            ValueStart::Null => events.push(Event::Null),
+            ValueStart::Bool(b) => events.push(Event::Bool(b)),
             ValueStart::EmptyObject => {
                 events.push(Event::BeginObject);
                 events.push(Event::EndObject);
@@ -565,14 +593,16 @@ impl<'a> EventParser<'a> {
                 });
                 self.multiline_opener = Some(trimmed_span.end - 2);
             }
+            ValueStart::InlineEvents(inline_events) => {
+                for ev in inline_events {
+                    events.push(ev);
+                }
+            }
         }
         Ok(())
     }
 
-    // Multi-line / compound-child completion path: scalar attached as
-    // the value for whatever keyed-or-array context we're in. Because
-    // for keyed contexts the `Key(...)` was already emitted before the
-    // multiline began, we just push the scalar event here.
+    // Multi-line / compound-child completion path
     fn attach_scalar<S: EventSink<'a>>(
         &mut self,
         value: Event<'a>,
@@ -595,8 +625,6 @@ impl<'a> EventParser<'a> {
         events: &mut S,
     ) -> Result<&'a str> {
         if !key.as_bytes().contains(&b'.') {
-            // Flat key: close any open synthetics in the current real
-            // frame, then the leaf is just `key`.
             self.close_synthetics_to_real(events);
             if !is_valid_key(key) {
                 return Err(Error::Structured(ErrorKind::InvalidKey {
@@ -608,10 +636,6 @@ impl<'a> EventParser<'a> {
             return Ok(key);
         }
 
-        // Split off the leaf (the segment after the last dot). Don't
-        // pre-collect the prefix segments — walk them lazily, comparing
-        // against the current synthetic stack as we go (LCP fold). That
-        // saves the heap-allocated `Vec<&str>` per dotted line.
         let (prefix_str, leaf) = key.rsplit_once('.').unwrap();
         if leaf.is_empty() || !is_valid_key(leaf) {
             return Err(Error::Structured(ErrorKind::InvalidKey {
@@ -626,9 +650,6 @@ impl<'a> EventParser<'a> {
             _ => unreachable!("dispatched as object"),
         };
 
-        // Stage 1: walk new prefix segments and the current synthetic
-        // stack in lockstep, advancing the LCP cursor. Stop at the
-        // first mismatch.
         let mut new_iter = prefix_str.split('.');
         let mut lcp_count: usize = 0;
         let mut next_seg: Option<&'a str> = None;
@@ -656,14 +677,11 @@ impl<'a> EventParser<'a> {
             lcp_count += 1;
         }
 
-        // Stage 2: pop synthetic levels beyond LCP.
         let pops = cur_levels_len - 1 - lcp_count;
         for _ in 0..pops {
             self.pop_synthetic_level(events);
         }
 
-        // Stage 3: emit Key + BeginObject + push level for the carry-
-        // over segment (if any), then for the rest of `new_iter`.
         if let Some(seg) = next_seg {
             self.push_synthetic(seg, line_num, key_span, events)?;
         }
@@ -704,14 +722,6 @@ impl<'a> EventParser<'a> {
         Ok(())
     }
 
-    /// Mark a path segment as a synthetic dotted-key prefix at the
-    /// current top level. Errors on:
-    /// - existing leaf at the same name (existing scalar blocks the path)
-    /// - existing synthetic at the same name (re-open after the
-    ///   synthetic was closed by an intervening different prefix would
-    ///   require buffering the whole document, which the event-stream
-    ///   path explicitly avoids — group lines with the same prefix
-    ///   together to keep them in one synthetic block)
     fn register_synthetic_prefix(
         &mut self,
         seg: &'a str,
@@ -782,11 +792,6 @@ impl<'a> EventParser<'a> {
         }
     }
 
-    /// Register a plain leaf key at the top-most open object level.
-    /// Conflicts with both an existing leaf (duplicate) and an existing
-    /// synthetic prefix (a sub-object would have to vanish to make room
-    /// for the scalar). Linear scan — fine for K < ~20; worse for very
-    /// wide objects, but those are rare in real configs.
     #[inline]
     fn register_leaf_key(&mut self, leaf: &'a str, line_num: usize, key_span: Span) -> Result<()> {
         match self.stack.last_mut().unwrap() {
@@ -833,8 +838,6 @@ impl<'a> EventParser<'a> {
                 found: expected.close(),
             }));
         }
-        // Close any open synthetics in the current frame first (if it's
-        // an object), then close the frame itself.
         if matches!(self.stack.last(), Some(Frame::Object { .. })) {
             self.close_synthetics_to_real(events);
         }
@@ -861,8 +864,7 @@ impl<'a> EventParser<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// Bracket kind (same shape as the tree-builder's, deliberately repeated to
-// keep the modules independently rip-out-able).
+// Bracket kind
 // ---------------------------------------------------------------------------
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -888,23 +890,27 @@ impl BracketKind {
 }
 
 // ---------------------------------------------------------------------------
-// Value-start classification (mirrors thin/parser.rs)
+// Value-start classification (mirrors parser/classify.rs for 0.5.0)
 // ---------------------------------------------------------------------------
 
 enum ValueStart<'a> {
     Scalar(&'a str),
+    Integer(&'a str),
+    Float(&'a str),
+    Null,
+    Bool(bool),
     EmptyObject,
     EmptyArray,
     OpenObject,
     OpenArray,
     OpenMultilineStripped,
     OpenMultilineVerbatim,
+    /// Inline compound parsed into a sequence of events
+    InlineEvents(Vec<Event<'a>>),
 }
 
 enum Separator<'a> {
     Raw(&'a str),
-    TypedInteger(&'a str),
-    TypedFloat(&'a str),
     Plain,
 }
 
@@ -935,190 +941,23 @@ fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span {
     Span::new(start, start + trimmed.len() as u32)
 }
 
-fn body_span_for(body: &str, after_colon: &str, after_colon_off: u32, fallback: Span) -> Span {
-    if body.is_empty() {
-        let p = after_colon_off + after_colon.len() as u32;
-        return Span::new(p, p);
-    }
-    let after_ptr = after_colon.as_ptr() as usize;
-    let body_ptr = body.as_ptr() as usize;
-    if body_ptr >= after_ptr && body_ptr - after_ptr <= after_colon.len() {
-        let off = (body_ptr - after_ptr) as u32;
-        Span::new(
-            after_colon_off + off,
-            after_colon_off + off + body.len() as u32,
-        )
-    } else {
-        fallback
-    }
-}
-
 #[inline]
 fn classify_separator<'a>(after_colon: &'a str) -> Separator<'a> {
     if let Some(rest) = after_colon.strip_prefix(':') {
         return Separator::Raw(rest);
     }
-    if let Some(rest) = after_colon.strip_prefix('i') {
-        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-            return Separator::TypedInteger(rest);
-        }
-    }
-    if let Some(rest) = after_colon.strip_prefix('f') {
-        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-            return Separator::TypedFloat(rest);
-        }
-    }
+    // Under spec 0.5.0, `:i` and `:f` typed markers are removed.
     Separator::Plain
 }
 
-fn validate_typed_integer<'a>(
-    body: &'a str,
+/// Classify a value body per § 5.2 rules 1-15 (0.5.0).
+#[inline]
+fn classify<'a>(
+    trimmed: &'a str,
     line_num: usize,
+    trimmed_span: Span,
     bump: &'a Bump,
-    span: Span,
-) -> Result<&'a str> {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Err(invalid_typed_scalar(
-            line_num,
-            'i',
-            "integer body is empty",
-            span,
-        ));
-    }
-    if opens_compound_or_multiline(trimmed) {
-        return Err(invalid_typed_scalar(
-            line_num,
-            'i',
-            "typed marker `:i` cannot open a compound or multi-line value",
-            span,
-        ));
-    }
-    if !is_integer_literal(trimmed) {
-        return Err(invalid_typed_scalar(
-            line_num,
-            'i',
-            &format!("'{}' is not a valid integer literal for `:i`", trimmed),
-            span,
-        ));
-    }
-    Ok(strip_leading_plus(trimmed, bump))
-}
-
-fn validate_typed_float<'a>(
-    body: &'a str,
-    line_num: usize,
-    bump: &'a Bump,
-    span: Span,
-) -> Result<&'a str> {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Err(invalid_typed_scalar(
-            line_num,
-            'f',
-            "float body is empty",
-            span,
-        ));
-    }
-    if opens_compound_or_multiline(trimmed) {
-        return Err(invalid_typed_scalar(
-            line_num,
-            'f',
-            "typed marker `:f` cannot open a compound or multi-line value",
-            span,
-        ));
-    }
-    if !is_float_literal(trimmed) {
-        return Err(invalid_typed_scalar(
-            line_num,
-            'f',
-            &format!("'{}' is not a valid float literal for `:f`", trimmed),
-            span,
-        ));
-    }
-    Ok(strip_leading_plus(trimmed, bump))
-}
-
-fn invalid_typed_scalar(line_num: usize, marker: char, detail: &str, span: Span) -> Error {
-    Error::Structured(ErrorKind::InvalidTypedScalar {
-        line: line_num as u32,
-        marker,
-        body: detail.to_string(),
-        span,
-    })
-}
-
-fn opens_compound_or_multiline(s: &str) -> bool {
-    s.starts_with('{') || s.starts_with('[') || s.starts_with('(')
-}
-
-fn strip_leading_plus<'a>(s: &'a str, bump: &'a Bump) -> &'a str {
-    if let Some(stripped) = s.strip_prefix('+') {
-        bump.alloc_str(stripped)
-    } else {
-        s
-    }
-}
-
-fn is_integer_literal(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-        i += 1;
-    }
-    if i == bytes.len() {
-        return false;
-    }
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_digit() {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
-fn is_float_literal(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-        i += 1;
-    }
-    let digits_before = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == digits_before {
-        return false;
-    }
-    if i == bytes.len() || bytes[i] != b'.' {
-        return false;
-    }
-    i += 1;
-    let digits_after = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == digits_after {
-        return false;
-    }
-    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
-        i += 1;
-        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-            i += 1;
-        }
-        let exp_digits = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i == exp_digits {
-            return false;
-        }
-    }
-    i == bytes.len()
-}
-
-fn classify<'a>(trimmed: &'a str, line_num: usize, trimmed_span: Span) -> Result<ValueStart<'a>> {
+) -> Result<ValueStart<'a>> {
     if trimmed == "{" {
         return Ok(ValueStart::OpenObject);
     }
@@ -1126,14 +965,22 @@ fn classify<'a>(trimmed: &'a str, line_num: usize, trimmed_span: Span) -> Result
         return Ok(ValueStart::OpenArray);
     }
 
+    // § 5.2 rules 6-9: inline compounds
     if trimmed.starts_with('{') {
         if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyObject);
         }
-        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+        if trimmed.ends_with('}') {
+            // Try to parse inline object → emit as events
+            let value =
+                crate::parser::inline::parse_inline_object(trimmed, line_num, trimmed_span)?;
+            let events = value_to_events(&value, bump);
+            return Ok(ValueStart::InlineEvents(events));
+        }
+        // Unterminated inline compound
+        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
             line: line_num as u32,
             span: trimmed_span,
-            body: "object".to_string(),
         }));
     }
 
@@ -1141,13 +988,18 @@ fn classify<'a>(trimmed: &'a str, line_num: usize, trimmed_span: Span) -> Result
         if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyArray);
         }
-        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+        if trimmed.ends_with(']') {
+            let value = crate::parser::inline::parse_inline_array(trimmed, line_num, trimmed_span)?;
+            let events = value_to_events(&value, bump);
+            return Ok(ValueStart::InlineEvents(events));
+        }
+        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
             line: line_num as u32,
             span: trimmed_span,
-            body: "array".to_string(),
         }));
     }
 
+    // Multi-line string openers
     match trimmed {
         "(" => return Ok(ValueStart::OpenMultilineStripped),
         "((" => return Ok(ValueStart::OpenMultilineVerbatim),
@@ -1155,25 +1007,168 @@ fn classify<'a>(trimmed: &'a str, line_num: usize, trimmed_span: Span) -> Result
         _ => {}
     }
 
+    // Paren-prefixed text — under 0.5.0, `(` starts a multiline opener,
+    // so a string starting with `(` that isn't one of the exact openers
+    // above is an error (parser rejects it via InlineNonEmptyCompound).
+    if trimmed.starts_with('(') {
+        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+            body: "paren-string".to_string(),
+        }));
+    }
+
+    // § 5.2 rules 10-12: keywords
+    match trimmed {
+        "null" => return Ok(ValueStart::Null),
+        "true" => return Ok(ValueStart::Bool(true)),
+        "false" => return Ok(ValueStart::Bool(false)),
+        _ => {}
+    }
+
+    // § 5.2 rule 13: integer literal
+    // Fast path for plain decimal (most common case in configs): ASCII
+    // digits only, no sign / underscore / base prefix. The input is
+    // already canonical — skip itoa formatting and bump allocation.
+    if let Some(_val) = fast_plain_decimal_i64(trimmed) {
+        return Ok(ValueStart::Integer(trimmed));
+    }
+    // General path: prefixed, signed, or underscored literals.
+    if let Some(val) = try_parse_integer(trimmed) {
+        let mut buf = itoa::Buffer::new();
+        let canonical = buf.format(val);
+        let s = bump.alloc_str(canonical);
+        return Ok(ValueStart::Integer(s));
+    }
+
+    // § 5.2 rule 14: float literal
+    if is_float_literal(trimmed) {
+        // If the literal has no underscores we can parse it directly
+        // without allocating a cleaned String.
+        let has_underscore = trimmed.as_bytes().contains(&b'_');
+        if has_underscore {
+            let cleaned: String = trimmed.chars().filter(|&c| c != '_').collect();
+            if let Ok(val) = cleaned.parse::<f64>() {
+                if !val.is_nan() && !val.is_infinite() {
+                    let mut buf = ryu::Buffer::new();
+                    let canonical = buf.format(val);
+                    let s = bump.alloc_str(canonical);
+                    return Ok(ValueStart::Float(s));
+                }
+            }
+        } else if let Ok(val) = trimmed.parse::<f64>() {
+            if !val.is_nan() && !val.is_infinite() {
+                let mut buf = ryu::Buffer::new();
+                let canonical = buf.format(val);
+                // If ryu reproduces the input, the original slice is
+                // canonical — skip the bump allocation.
+                if canonical == trimmed {
+                    return Ok(ValueStart::Float(trimmed));
+                }
+                let s = bump.alloc_str(canonical);
+                return Ok(ValueStart::Float(s));
+            }
+        }
+    }
+
+    // § 5.2 rule 15: String
     Ok(ValueStart::Scalar(trimmed))
 }
 
-#[inline]
-fn scalar_to_event(s: &str) -> Event<'_> {
-    match s {
-        "null" => Event::Null,
-        "true" => Event::Bool(true),
-        "false" => Event::Bool(false),
-        _ => Event::Str(s),
+/// Convert a `Value` to a flat sequence of events (for inline compounds).
+fn value_to_events<'a>(value: &crate::value::Value, bump: &'a Bump) -> Vec<Event<'a>> {
+    let mut events = Vec::new();
+    value_to_events_inner(value, bump, &mut events);
+    events
+}
+
+fn value_to_events_inner<'a>(
+    value: &crate::value::Value,
+    bump: &'a Bump,
+    events: &mut Vec<Event<'a>>,
+) {
+    use crate::value::Value;
+    match value {
+        Value::Null => events.push(Event::Null),
+        Value::Bool(b) => events.push(Event::Bool(*b)),
+        Value::Integer(s) => {
+            let s = bump.alloc_str(s.as_str());
+            events.push(Event::Integer(s));
+        }
+        Value::Float(s) => {
+            let s = bump.alloc_str(s.as_str());
+            events.push(Event::Float(s));
+        }
+        Value::String(s) => {
+            let s = bump.alloc_str(s.as_str());
+            events.push(Event::Str(s));
+        }
+        Value::Object(obj) => {
+            events.push(Event::BeginObject);
+            for (k, v) in obj {
+                let k = bump.alloc_str(k.as_str());
+                events.push(Event::Key(k));
+                value_to_events_inner(v, bump, events);
+            }
+            events.push(Event::EndObject);
+        }
+        Value::Array(items) => {
+            events.push(Event::BeginArray);
+            for item in items {
+                value_to_events_inner(item, bump, events);
+            }
+            events.push(Event::EndArray);
+        }
     }
 }
 
 #[inline]
 fn is_valid_key(k: &str) -> bool {
-    !k.is_empty()
-        && !k.as_bytes().iter().any(|&b| {
-            b.is_ascii_whitespace() || matches!(b, b'[' | b']' | b'{' | b'}' | b':' | b'#')
-        })
+    let k = k.trim();
+    if k.is_empty() {
+        return false;
+    }
+    let bytes = k.as_bytes();
+    // Scalar-first loop: branch predictor learns quickly that most bytes
+    // are valid. A single mis-predict on the rare invalid byte is cheaper
+    // than the per-byte closure overhead of `.any(|&b| …)`.
+    for &b in bytes {
+        if matches!(b, b'[' | b']' | b'{' | b'}' | b':' | b',' | b'(' | b')') {
+            return false;
+        }
+    }
+    true
+}
+
+/// Fast-path check: plain ASCII decimal integer (no sign, underscore, or
+/// base prefix) that fits in i64. Returns `Some(val)` if `s` is a
+/// canonical decimal integer, `None` otherwise. The caller can use the
+/// original `s` directly as the canonical string, avoiding itoa + bump
+/// allocation.
+#[inline]
+fn fast_plain_decimal_i64(s: &str) -> Option<i64> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    // Leading zero is only valid for "0" itself.
+    let first = bytes[0];
+    if first == b'0' {
+        return if bytes.len() == 1 { Some(0) } else { None };
+    }
+    if !(b'1'..=b'9').contains(&first) {
+        return None;
+    }
+    // All remaining bytes must be digits; accumulate value.
+    let mut acc: i64 = (first - b'0') as i64;
+    for &b in &bytes[1..] {
+        let d = b.wrapping_sub(b'0');
+        if d > 9 {
+            return None;
+        }
+        acc = acc.checked_mul(10)?.checked_add(d as i64)?;
+    }
+    Some(acc)
 }
 
 // ---------------------------------------------------------------------------

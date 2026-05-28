@@ -1,117 +1,98 @@
-//! Deserialization of typed-marker scalars.
+//! Deserialization of typed scalars. Under spec 0.5.0, numbers are
+//! inferred from lexical form (no `:i`/`:f` markers).
 
-use ktav::{from_str, Error};
+use ktav::from_str;
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
-// Typed markers in the source document
+// Numbers inferred from the document
 // ---------------------------------------------------------------------------
 
 #[test]
-fn typed_integer_into_u16() {
+fn inferred_integer_into_u16() {
     #[derive(Deserialize)]
     struct Cfg {
         port: u16,
     }
-    let cfg: Cfg = from_str("port:i 8080\n").unwrap();
+    let cfg: Cfg = from_str("port: 8080\n").unwrap();
     assert_eq!(cfg.port, 8080);
 }
 
 #[test]
-fn typed_negative_integer_into_i32() {
+fn inferred_negative_integer_into_i32() {
     #[derive(Deserialize)]
     struct Cfg {
         count: i32,
     }
-    let cfg: Cfg = from_str("count:i -100\n").unwrap();
+    let cfg: Cfg = from_str("count: -100\n").unwrap();
     assert_eq!(cfg.count, -100);
 }
 
 #[test]
-fn typed_integer_preserves_precision_as_string() {
-    // i64 overflow, but String preserves every digit.
+fn integer_overflow_preserved_as_string() {
+    // i64 overflow — falls to String under § 5.2 rule 15.
     #[derive(Deserialize)]
     struct Cfg {
         bignum: String,
     }
-    let cfg: Cfg = from_str("bignum:i 99999999999999999999\n").unwrap();
+    let cfg: Cfg = from_str("bignum: 99999999999999999999\n").unwrap();
     assert_eq!(cfg.bignum, "99999999999999999999");
 }
 
 #[test]
-fn typed_integer_overflow_into_u64_errors() {
-    #[derive(Debug, Deserialize)]
-    struct Cfg {
-        #[allow(dead_code)]
-        bignum: u64,
-    }
-    let err = from_str::<Cfg>("bignum:i 99999999999999999999\n").unwrap_err();
-    let msg = format!("{}", err);
-    assert!(msg.contains("u64") || msg.contains("parse"), "got: {}", msg);
-}
-
-#[test]
-fn typed_float_into_f64() {
+fn inferred_float_into_f64() {
     #[derive(Deserialize)]
     struct Cfg {
         ratio: f64,
     }
-    let cfg: Cfg = from_str("ratio:f 0.5\n").unwrap();
+    let cfg: Cfg = from_str("ratio: 0.5\n").unwrap();
     assert!((cfg.ratio - 0.5).abs() < 1e-12);
 }
 
 #[test]
-fn typed_float_scientific_into_f64() {
+fn inferred_float_scientific_into_f64() {
     #[derive(Deserialize)]
     struct Cfg {
         ratio: f64,
     }
-    let cfg: Cfg = from_str("ratio:f 1.5e-10\n").unwrap();
+    let cfg: Cfg = from_str("ratio: 1.5e-10\n").unwrap();
     assert!((cfg.ratio - 1.5e-10).abs() < 1e-20);
 }
 
 #[test]
-fn typed_float_into_f32() {
+fn inferred_float_into_f32() {
     #[derive(Deserialize)]
     struct Cfg {
         x: f32,
     }
-    let cfg: Cfg = from_str("x:f 3.125\n").unwrap();
+    let cfg: Cfg = from_str("x: 3.125\n").unwrap();
     assert_eq!(cfg.x, 3.125_f32);
 }
 
 #[test]
-fn typed_leading_plus_is_stripped() {
-    #[derive(Deserialize)]
-    struct Cfg {
-        x: i32,
-    }
-    let cfg: Cfg = from_str("x:i +5\n").unwrap();
-    assert_eq!(cfg.x, 5);
-}
-
-#[test]
-fn typed_integer_into_string_keeps_text() {
+fn inferred_integer_into_string_keeps_canonical() {
     #[derive(Deserialize)]
     struct Cfg {
         x: String,
     }
-    let cfg: Cfg = from_str("x:i 42\n").unwrap();
+    let cfg: Cfg = from_str("x: 42\n").unwrap();
     assert_eq!(cfg.x, "42");
 }
 
 #[test]
-fn typed_float_into_string_keeps_text() {
+fn inferred_float_into_string_keeps_canonical() {
     #[derive(Deserialize)]
     struct Cfg {
         x: String,
     }
-    let cfg: Cfg = from_str("x:f 3.14\n").unwrap();
+    // Under 0.5.0, `3.14` parses as Float with canonical form via ryu.
+    let cfg: Cfg = from_str("x: 3.14\n").unwrap();
+    // ryu may canonicalize 3.14 to "3.14" (it does for this value)
     assert_eq!(cfg.x, "3.14");
 }
 
 // ---------------------------------------------------------------------------
-// Backward compat: legacy documents without markers
+// Backward compat: plain numeric pairs
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -130,7 +111,7 @@ fn plain_pair_into_f64_still_works() {
     struct Cfg {
         ratio: f64,
     }
-    let cfg: Cfg = from_str("ratio:f 2.56\n").unwrap();
+    let cfg: Cfg = from_str("ratio: 2.56\n").unwrap();
     assert!((cfg.ratio - 2.56).abs() < 1e-9);
 }
 
@@ -145,69 +126,35 @@ fn plain_pair_into_i64_still_works() {
 }
 
 // ---------------------------------------------------------------------------
-// Typed items in arrays
+// Inferred numbers in arrays
 // ---------------------------------------------------------------------------
 
 #[test]
-fn typed_integers_in_array() {
+fn inferred_integers_in_array() {
     #[derive(Deserialize)]
     struct Cfg {
         ports: Vec<u16>,
     }
-    let cfg: Cfg = from_str("ports: [\n    :i 80\n    :i 443\n]\n").unwrap();
+    let cfg: Cfg = from_str("ports: [\n    80\n    443\n]\n").unwrap();
     assert_eq!(cfg.ports, vec![80, 443]);
 }
 
 #[test]
-fn typed_floats_in_array() {
+fn inferred_floats_in_array() {
     #[derive(Deserialize)]
     struct Cfg {
         ratios: Vec<f64>,
     }
-    let cfg: Cfg = from_str("ratios: [\n    :f 0.5\n    :f 1.5\n]\n").unwrap();
+    let cfg: Cfg = from_str("ratios: [\n    0.5\n    1.5\n]\n").unwrap();
     assert_eq!(cfg.ratios, vec![0.5, 1.5]);
 }
 
 #[test]
-fn mixed_typed_and_plain_in_array() {
+fn mixed_integers_in_array() {
     #[derive(Deserialize)]
     struct Cfg {
         ports: Vec<u16>,
     }
-    let cfg: Cfg = from_str("ports: [\n    :i 80\n    443\n]\n").unwrap();
+    let cfg: Cfg = from_str("ports: [\n    80\n    443\n]\n").unwrap();
     assert_eq!(cfg.ports, vec![80, 443]);
-}
-
-// ---------------------------------------------------------------------------
-// Typed marker that can't be destructured as the target type
-// ---------------------------------------------------------------------------
-
-#[test]
-fn typed_integer_into_bool_errors() {
-    #[derive(Debug, Deserialize)]
-    struct Cfg {
-        _x: bool,
-    }
-    let err = from_str::<Cfg>("x:i 1\n").unwrap_err();
-    // Our bool path accepts `Value::Bool` or a string-parseable "true" /
-    // "false" — Integer isn't accepted.
-    let _ = err;
-}
-
-#[test]
-fn typed_integer_line_number_is_reported() {
-    #[derive(Debug, Deserialize)]
-    struct Cfg {
-        _a: u16,
-        _b: u16,
-    }
-    let err = from_str::<Cfg>("a:i 1\nb:i not-a-number\n").unwrap_err();
-    let m = match &err {
-        Error::Syntax(m) => m.clone(),
-        Error::Structured(k) => k.to_string(),
-        _ => panic!("expected Syntax/Structured error, got {:?}", err),
-    };
-    // The parser itself rejects non-digit body for `:i`.
-    assert!(m.contains("Line 2"), "got: {}", m);
-    assert!(m.contains("InvalidTypedScalar"), "got: {}", m);
 }

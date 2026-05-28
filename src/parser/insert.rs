@@ -20,14 +20,23 @@ pub(super) fn insert_value(
     // `entry()` call collapses the old `contains_key` + `insert` into one
     // hash lookup.
     if !path.as_bytes().contains(&b'.') {
-        if !is_valid_key(path) {
+        // § 4: trim the single key segment of leading/trailing whitespace
+        // before validation. Empty-after-trim → EmptyKey.
+        let trimmed_key = path.trim();
+        if trimmed_key.is_empty() {
+            return Err(Error::Structured(ErrorKind::EmptyKey {
+                line: line_num as u32,
+                span,
+            }));
+        }
+        if !is_valid_key(trimmed_key) {
             return Err(Error::Structured(ErrorKind::InvalidKey {
                 line: line_num as u32,
                 key: path.to_string(),
                 span,
             }));
         }
-        return match table.entry(path.into()) {
+        return match table.entry(trimmed_key.into()) {
             Entry::Occupied(e) => {
                 let existing = e.get();
                 if matches!(existing, Value::Object(_)) && !matches!(value, Value::Object(_))
@@ -69,7 +78,15 @@ fn insert_dotted(
     let mut rest = full_path;
     loop {
         if let Some((part, tail)) = rest.split_once('.') {
-            if !is_valid_key(part) {
+            // § 4: trim each segment of leading/trailing whitespace.
+            let trimmed_part = part.trim();
+            if trimmed_part.is_empty() {
+                return Err(Error::Structured(ErrorKind::EmptyKey {
+                    line: line_num as u32,
+                    span,
+                }));
+            }
+            if !is_valid_key(trimmed_part) {
                 return Err(Error::Structured(ErrorKind::InvalidKey {
                     line: line_num as u32,
                     key: full_path.to_string(),
@@ -80,7 +97,7 @@ fn insert_dotted(
             // Object; if Occupied, it must already be an Object to
             // continue descending.
             let entry = table
-                .entry(part.into())
+                .entry(trimmed_part.into())
                 .or_insert_with(|| Value::Object(ObjectMap::default()));
             table = match entry {
                 Value::Object(sub) => sub,
@@ -95,15 +112,22 @@ fn insert_dotted(
             };
             rest = tail;
         } else {
-            // Leaf insert.
-            if !is_valid_key(rest) {
+            // Leaf insert — trim the final segment.
+            let trimmed_rest = rest.trim();
+            if trimmed_rest.is_empty() {
+                return Err(Error::Structured(ErrorKind::EmptyKey {
+                    line: line_num as u32,
+                    span,
+                }));
+            }
+            if !is_valid_key(trimmed_rest) {
                 return Err(Error::Structured(ErrorKind::InvalidKey {
                     line: line_num as u32,
                     key: full_path.to_string(),
                     span,
                 }));
             }
-            return match table.entry(rest.into()) {
+            return match table.entry(trimmed_rest.into()) {
                 Entry::Occupied(_) => Err(Error::Structured(ErrorKind::DuplicateKey {
                     line: line_num as u32,
                     key: full_path.to_string(),

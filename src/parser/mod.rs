@@ -1,9 +1,10 @@
 //! Line-oriented Ktav parser. See [`crate::parse`] for the public entry point.
 
 mod bracket;
-mod classify;
+pub(crate) mod classify;
 mod collecting;
 mod frame;
+pub(crate) mod inline;
 mod insert;
 mod parse_str;
 mod parser;

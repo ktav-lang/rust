@@ -5,41 +5,67 @@ use crate::value::Value;
 
 use super::parser::Parser;
 
-/// Parse Ktav text into a [`Value`]. Iterates the input via
-/// [`str::lines`] — each iteration yields a `&str` slice into the
-/// original buffer, so no per-line `String` allocation occurs.
+/// Parse Ktav text into a [`Value`]. Iterates the input via byte scanning
+/// — each iteration yields a `&str` slice into the original buffer, so no
+/// per-line `String` allocation occurs.
 ///
-/// In addition to the per-line pointer, we maintain a `cumulative_byte`
-/// counter that tracks the byte offset of the current line's first
-/// byte inside `text`. The parser uses this to compute byte-offset
-/// [`crate::error::Span`]s for every emitted [`crate::error::ErrorKind`].
+/// Per spec § 3.2, three line terminators are recognised:
+/// - `LF`   (`0x0A`)
+/// - `CR`   (`0x0D`)
+/// - `CR LF` (`0x0D 0x0A`)
+///
+/// A bare `CR` (not followed by `LF`) is its own terminator.
 pub(crate) fn parse_str(text: &str) -> Result<Value, Error> {
     let mut parser = Parser::new();
-    // Walk lines while tracking the byte offset of the line start. We
-    // can't use `str::lines()` here because it strips the terminator
-    // and we need to know the terminator width to advance the counter
-    // (LF = 1, CRLF = 2, none-at-EOF = 0).
     let bytes = text.as_bytes();
+
+    // Fast path for the overwhelmingly common case: LF-only input
+    // (no CR bytes). This avoids the per-byte branch on `\r` in the
+    // inner scan loop and lets the compiler emit a tighter scan.
+    if !bytes.contains(&b'\r') {
+        let mut line_start: usize = 0;
+        let mut line_num: usize = 0;
+        for line in text.split('\n') {
+            line_num += 1;
+            parser.handle_line(line, line_num, line_start as u32)?;
+            line_start += line.len() + 1; // +1 for the consumed '\n'
+        }
+        return parser.finish(bytes.len() as u32);
+    }
+
     let mut line_start: usize = 0;
     let mut line_num: usize = 0;
     while line_start <= bytes.len() {
-        // Find the next '\n' (if any).
-        let nl = bytes[line_start..].iter().position(|&b| b == b'\n');
-        let (end, next_start) = match nl {
-            Some(rel) => (line_start + rel, line_start + rel + 1),
-            None => {
-                if line_start == bytes.len() {
-                    break;
-                }
-                (bytes.len(), bytes.len() + 1) // sentinel to exit after this iteration
+        if line_start == bytes.len() {
+            break;
+        }
+        // Scan for the next line terminator: CR, LF, or CR LF.
+        let mut pos = line_start;
+        while pos < bytes.len() {
+            if bytes[pos] == b'\r' {
+                break;
             }
-        };
-        // Strip a trailing '\r' from the line content (so logical
-        // content matches `str::lines()` semantics).
-        let content_end = if end > line_start && bytes[end - 1] == b'\r' {
-            end - 1
+            if bytes[pos] == b'\n' {
+                break;
+            }
+            pos += 1;
+        }
+        let content_end = pos;
+        let next_start = if pos < bytes.len() {
+            if bytes[pos] == b'\r' {
+                // CR LF → one terminator; bare CR → one terminator.
+                if pos + 1 < bytes.len() && bytes[pos + 1] == b'\n' {
+                    pos + 2
+                } else {
+                    pos + 1
+                }
+            } else {
+                // LF
+                pos + 1
+            }
         } else {
-            end
+            // EOF without terminator — sentinel to exit after this iteration.
+            bytes.len() + 1
         };
         // SAFETY: the source is `&str`, and we sliced at byte boundaries
         // determined by ASCII separators (`\n` / `\r`), which are always

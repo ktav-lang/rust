@@ -1,4 +1,5 @@
-//! Round-trip of typed-marker scalars.
+//! Round-trip of typed scalars. Under spec 0.5.0, numbers are inferred
+//! from lexical form (no `:i`/`:f` markers).
 
 use ktav::{from_str, parse, render::render, to_string, Value};
 use serde::{Deserialize, Serialize};
@@ -17,8 +18,8 @@ fn struct_with_numeric_fields_roundtrips() {
         name: "demo".into(),
     };
     let text = to_string(&cfg).unwrap();
-    assert!(text.contains("port:i 8080"), "got: {}", text);
-    assert!(text.contains("ratio:f 0.5"), "got: {}", text);
+    assert!(text.contains("port: 8080"), "got: {}", text);
+    assert!(text.contains("ratio: 0.5"), "got: {}", text);
     assert!(text.contains("name: demo"), "got: {}", text);
     let back: Cfg = from_str(&text).unwrap();
     assert_eq!(cfg, back);
@@ -26,19 +27,19 @@ fn struct_with_numeric_fields_roundtrips() {
 
 #[test]
 fn value_level_roundtrip_integer() {
-    let text = "port:i 8080\n";
+    // Under 0.5.0, `port: 8080` is inferred as Integer
+    let text = "port: 8080\n";
     let v1 = parse(text).unwrap();
     let rendered = render(&v1).unwrap();
     let v2 = parse(&rendered).unwrap();
     assert_eq!(v1, v2);
-    // Confirm variant identity survives.
     let port = v2.as_object().unwrap().get("port").unwrap();
     assert_eq!(port, &Value::Integer("8080".into()));
 }
 
 #[test]
 fn value_level_roundtrip_float() {
-    let text = "ratio:f 0.5\n";
+    let text = "ratio: 0.5\n";
     let v1 = parse(text).unwrap();
     let rendered = render(&v1).unwrap();
     let v2 = parse(&rendered).unwrap();
@@ -49,18 +50,21 @@ fn value_level_roundtrip_float() {
 
 #[test]
 fn value_level_roundtrip_preserves_big_integer() {
-    let text = "id:i 99999999999999999999\n";
+    // Under 0.5.0, numbers that overflow i64 become String per § 5.2 rule 15.
+    let text = "id: 99999999999999999999\n";
     let v1 = parse(text).unwrap();
     let rendered = render(&v1).unwrap();
     let v2 = parse(&rendered).unwrap();
     assert_eq!(v1, v2);
     let id = v2.as_object().unwrap().get("id").unwrap();
-    assert_eq!(id, &Value::Integer("99999999999999999999".into()));
+    // Under 0.5.0, i64 overflow → String (not Integer)
+    assert_eq!(id, &Value::String("99999999999999999999".into()));
 }
 
 #[test]
-fn array_of_typed_roundtrips_via_value() {
-    let text = "xs: [\n    :i 1\n    :i -2\n    :i 3\n]\n";
+fn array_of_integers_roundtrips_via_value() {
+    // Under 0.5.0, integers are inferred from lexical form
+    let text = "xs: [\n    1\n    -2\n    3\n]\n";
     let v1 = parse(text).unwrap();
     let rendered = render(&v1).unwrap();
     let v2 = parse(&rendered).unwrap();

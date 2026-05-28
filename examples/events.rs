@@ -14,7 +14,7 @@ use ktav::{parse_events, ParseEvent};
 
 const SRC: &str = "\
 service: web
-port:i 8080
+port: 8080
 tls: true
 upstreams: [
     a.example
@@ -22,7 +22,7 @@ upstreams: [
 ]
 db: {
     host: primary.internal
-    timeout:i 30
+    timeout: 30
 }
 ";
 

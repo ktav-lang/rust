@@ -10,7 +10,7 @@ fn integer_scalar() {
         port: u16,
     }
     let s = to_string(&Cfg { port: 8080 }).unwrap();
-    assert_eq!(s, "port:i 8080\n");
+    assert_eq!(s, "port: 8080\n");
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn float_scalar() {
         ratio: f64,
     }
     let s = to_string(&Cfg { ratio: 0.5 }).unwrap();
-    assert_eq!(s, "ratio:f 0.5\n");
+    assert_eq!(s, "ratio: 0.5\n");
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn two_fields_keep_order() {
         name: "demo".into(),
     })
     .unwrap();
-    assert_eq!(s, "port:i 8080\nname: demo\n");
+    assert_eq!(s, "port: 8080\nname: demo\n");
 }
 
 #[test]
@@ -58,5 +58,5 @@ fn negative_integer() {
         x: i32,
     }
     let s = to_string(&Cfg { x: -42 }).unwrap();
-    assert_eq!(s, "x:i -42\n");
+    assert_eq!(s, "x: -42\n");
 }

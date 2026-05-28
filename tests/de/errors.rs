@@ -200,41 +200,43 @@ fn line_without_colon_in_object() {
 }
 
 #[test]
-fn inline_nonempty_object() {
+fn inline_object_is_valid_under_050() {
+    // Under 0.5.0, `{ a: 1 }` is a valid inline object.
+    #[derive(Debug, Deserialize)]
+    struct Inner {
+        a: u32,
+    }
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        x: Inner,
+    }
+    let cfg: Cfg = from_str("x: { a: 1 }\n").unwrap();
+    assert_eq!(cfg.x.a, 1);
+}
+
+#[test]
+fn inline_array_is_valid_under_050() {
+    // Under 0.5.0, `[a, b, c]` is a valid inline array.
+    #[derive(Debug, Deserialize)]
+    struct Cfg {
+        x: Vec<String>,
+    }
+    let cfg: Cfg = from_str("x: [a, b, c]\n").unwrap();
+    assert_eq!(cfg.x, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn unterminated_inline_bracket() {
     #[derive(Debug, Deserialize)]
     struct Cfg {
         _x: String,
     }
-    let err = from_str::<Cfg>("x: { a: 1 }\n").unwrap_err();
+    let err = from_str::<Cfg>("x: [a-z\n").unwrap_err();
     assert!(
-        syntax_msg(&err).contains("inline non-empty object"),
+        syntax_msg(&err).contains("Unterminated") || syntax_msg(&err).contains("nline"),
         "got: {:?}",
         err
     );
-}
-
-#[test]
-fn inline_nonempty_array() {
-    #[derive(Debug, Deserialize)]
-    struct Cfg {
-        _x: Vec<String>,
-    }
-    let err = from_str::<Cfg>("x: [a b c]\n").unwrap_err();
-    assert!(
-        syntax_msg(&err).contains("inline non-empty array"),
-        "got: {:?}",
-        err
-    );
-}
-
-#[test]
-fn bracket_value_without_double_colon() {
-    #[derive(Debug, Deserialize)]
-    struct Cfg {
-        _x: String,
-    }
-    let err = from_str::<Cfg>("x: [a-z]+\n").unwrap_err();
-    assert!(syntax_msg(&err).contains("inline"), "got: {:?}", err);
 }
 
 #[test]

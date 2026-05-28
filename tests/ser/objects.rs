@@ -33,7 +33,7 @@ fn nested_struct_multiline() {
         },
     })
     .unwrap();
-    assert_eq!(s, "timeouts: {\n    read:i 30\n    write:i 10\n}\n");
+    assert_eq!(s, "timeouts: {\n    read: 30\n    write: 10\n}\n");
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn deep_nested_struct() {
         },
     })
     .unwrap();
-    assert_eq!(s, "outer: {\n    inner: {\n        leaf:i 42\n    }\n}\n");
+    assert_eq!(s, "outer: {\n    inner: {\n        leaf: 42\n    }\n}\n");
 }
 
 #[test]
@@ -68,5 +68,5 @@ fn struct_field_order_is_preserved() {
         m: u16,
     }
     let s = to_string(&Cfg { z: 1, a: 2, m: 3 }).unwrap();
-    assert_eq!(s, "z:i 1\na:i 2\nm:i 3\n");
+    assert_eq!(s, "z: 1\na: 2\nm: 3\n");
 }

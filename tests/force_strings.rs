@@ -14,7 +14,7 @@ fn coerce_then_reparse(src: &str) -> Value {
 
 #[test]
 fn integer_becomes_string_after_round_trip() {
-    let v = coerce_then_reparse("port:i 8080\n");
+    let v = coerce_then_reparse("port: 8080\n");
     let map = match v {
         Value::Object(m) => m,
         _ => panic!("expected Object"),
@@ -25,7 +25,7 @@ fn integer_becomes_string_after_round_trip() {
 
 #[test]
 fn float_becomes_string_after_round_trip() {
-    let v = coerce_then_reparse("ratio:f 0.5\n");
+    let v = coerce_then_reparse("ratio: 0.5\n");
     let map = match v {
         Value::Object(m) => m,
         _ => panic!("expected Object"),
@@ -66,7 +66,7 @@ fn string_passes_through_unchanged() {
 
 #[test]
 fn nested_object_preserved() {
-    let v = coerce_then_reparse("server: {\n    host: localhost\n    port:i 8080\n}\n");
+    let v = coerce_then_reparse("server: {\n    host: localhost\n    port: 8080\n}\n");
     let map = match v {
         Value::Object(m) => m,
         _ => panic!("expected Object"),
@@ -81,7 +81,7 @@ fn nested_object_preserved() {
 
 #[test]
 fn nested_array_coerces_items() {
-    let v = coerce_then_reparse("items: [\n    :i 1\n    :i 2\n    :f 3.14\n]\n");
+    let v = coerce_then_reparse("items: [\n    1\n    2\n    3.14\n]\n");
     let map = match v {
         Value::Object(m) => m,
         _ => panic!("expected Object"),
@@ -96,7 +96,7 @@ fn nested_array_coerces_items() {
 
 #[test]
 fn top_level_array_force_strings() {
-    let v = coerce_then_reparse(":i 1\n:f 2.5\ntrue\nplain\n");
+    let v = coerce_then_reparse("1\n2.5\ntrue\nplain\n");
     let items = match v {
         Value::Array(a) => a,
         _ => panic!("expected top-level Array"),
@@ -107,7 +107,7 @@ fn top_level_array_force_strings() {
 
 #[test]
 fn idempotent_after_one_pass() {
-    let original = ktav::parse("port:i 8080\nflag: true\nname: alice\n").unwrap();
+    let original = ktav::parse("port: 8080\nflag: true\nname: alice\n").unwrap();
     let once = to_string_force_strings(&original).unwrap();
     let twice = to_string_force_strings(&ktav::parse(&once).unwrap()).unwrap();
     // Once-coerced text reparses to all-String; coercing again

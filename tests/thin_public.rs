@@ -52,7 +52,7 @@ fn flat_pairs_emit_expected_sequence() {
         vec![
             Owned::BeginObject,
             Owned::Key("port".into()),
-            Owned::Str("8080".into()),
+            Owned::Integer("8080".into()),
             Owned::Key("host".into()),
             Owned::Str("example.com".into()),
             Owned::EndObject,
@@ -71,7 +71,7 @@ fn nested_object_brackets_inner_pair() {
             Owned::Key("cfg".into()),
             Owned::BeginObject,
             Owned::Key("port".into()),
-            Owned::Str("8080".into()),
+            Owned::Integer("8080".into()),
             Owned::EndObject,
             Owned::EndObject,
         ]
@@ -80,7 +80,8 @@ fn nested_object_brackets_inner_pair() {
 
 #[test]
 fn array_with_marker_items() {
-    let src = "items: [\n  :: literal\n  :i 42\n  :f 3.14\n]\n";
+    // Under 0.5.0: no `:i`/`:f` markers. Numbers are inferred.
+    let src = "items: [\n  :: literal\n  42\n  3.14\n]\n";
     let events = collect(src);
     assert_eq!(
         events,
@@ -167,8 +168,9 @@ fn event_str_slices_borrow_from_input() {
     })
     .unwrap();
 
-    // 2 keys + 2 string values, all expected to be borrowed.
-    assert_eq!(borrowed_count, 4);
+    // 2 keys + 1 string value (`example.com`); `8080` is now inferred
+    // as `Integer` under 0.5.0 and not counted by the `Str | Key` match.
+    assert_eq!(borrowed_count, 3);
 }
 
 #[test]

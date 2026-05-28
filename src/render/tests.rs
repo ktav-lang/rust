@@ -5,9 +5,22 @@ use super::helpers::{needs_raw_marker, push_indent, INDENT};
 #[test]
 fn ordinary_strings_do_not_need_marker() {
     assert!(!needs_raw_marker("hello"));
-    assert!(!needs_raw_marker("8080"));
     assert!(!needs_raw_marker("a.b.c"));
     assert!(!needs_raw_marker(""));
+}
+
+#[test]
+fn numeric_strings_need_marker() {
+    // Under 0.5.0, numbers are inferred from the lexical form.
+    // A string that looks like a number needs `::` to stay a String.
+    assert!(needs_raw_marker("8080"));
+    assert!(needs_raw_marker("42"));
+    assert!(needs_raw_marker("-7"));
+    assert!(needs_raw_marker("+5"));
+    assert!(needs_raw_marker("0xFF"));
+    assert!(needs_raw_marker("3.14"));
+    assert!(needs_raw_marker("1e10"));
+    assert!(needs_raw_marker("1.5e-3"));
 }
 
 #[test]
@@ -41,11 +54,16 @@ fn multiline_open_tokens_need_marker() {
 }
 
 #[test]
-fn partial_paren_strings_do_not_need_marker() {
-    // Only the exact tokens are parser-significant; anything else is
-    // already a plain scalar to the parser.
-    assert!(!needs_raw_marker("(foo"));
-    assert!(!needs_raw_marker("(abc)"));
+fn paren_prefixed_strings_need_marker() {
+    // Under 0.5.0, any string starting with `(` is ambiguous with
+    // multi-line openers and must use `::`.
+    assert!(needs_raw_marker("(foo"));
+    assert!(needs_raw_marker("(abc)"));
+}
+
+#[test]
+fn non_paren_prefixed_strings() {
+    // `)` and `))` are not openers.
     assert!(!needs_raw_marker(")"));
     assert!(!needs_raw_marker("))"));
     assert!(!needs_raw_marker("a(b)c"));

@@ -4,9 +4,10 @@ use crate::error::{CompoundKind, Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
 
 use super::bracket::Bracket;
-use super::classify::{classify_value_start, validate_typed_float, validate_typed_integer};
+use super::classify::classify_value_start;
 use super::collecting::{Collecting, MultilineMode};
 use super::frame::Frame;
+use super::inline;
 use super::insert::insert_value;
 use super::value_start::ValueStart;
 
@@ -27,6 +28,18 @@ pub(super) struct Parser<'a> {
     /// (added in 0.1.1) determines the root kind from the first
     /// content line: pair-shape → Object, array-item-shape → Array.
     root_initialized: bool,
+    /// Set to `true` after a top-level inline compound (§ 5.0.1 rules 2-3)
+    /// or after the matching close of a top-level multi-line compound
+    /// (§ 5.0.1 rules 4-5) has been fully consumed. Any subsequent
+    /// non-blank, non-comment line is `OrphanLineAfterTopLevelInline`.
+    root_consumed: bool,
+    /// When the root is a top-level inline compound (§ 5.0.1 rules 2-3),
+    /// this stores the parsed Value so `finish()` can return it.
+    root_inline_value: Option<Value>,
+    /// True when the root was opened by a lone `{` or `[` (§ 5.0.1
+    /// rules 4-5). When the matching close is hit and the stack goes
+    /// back to depth 1, `root_consumed` is set.
+    root_is_explicit_compound: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -41,6 +54,9 @@ impl<'a> Parser<'a> {
             opener_offsets: Vec::with_capacity(8),
             multiline_opener: None,
             root_initialized: false,
+            root_consumed: false,
+            root_inline_value: None,
+            root_is_explicit_compound: false,
         }
     }
 
@@ -66,6 +82,10 @@ impl<'a> Parser<'a> {
                 kind,
                 span: Span::new(start, eof_offset),
             }));
+        }
+        // If root was a top-level inline compound, return the stored value.
+        if let Some(v) = self.root_inline_value {
+            return Ok(v);
         }
         // Empty / comments-only document — root was never initialized;
         // fall back to an empty Object (spec § 5.0.1 rule 1).
@@ -100,7 +120,7 @@ impl<'a> Parser<'a> {
 
         let trimmed = raw.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() || trimmed.starts_with("##") {
             return Ok(());
         }
 
@@ -109,23 +129,58 @@ impl<'a> Parser<'a> {
         // a few categories that span the whole logical line.
         let trimmed_span = trimmed_span_in(raw, trimmed, line_start);
 
+        // § 5.0.1 — if root is already consumed (inline compound or
+        // explicit-compound closed), any further content line is an
+        // orphan.
+        if self.root_consumed {
+            return Err(Error::Structured(
+                ErrorKind::OrphanLineAfterTopLevelInline {
+                    line: line_num as u32,
+                    span: trimmed_span,
+                },
+            ));
+        }
+
         // Spec § 5.0.1 — first content line establishes the root kind.
-        // A pair-shape (`key: …` / `key:: …` / `key:i …` / `key:f …`)
-        // means root is Object; otherwise root is Array. Bare close
-        // tokens `}` / `]` as first content line are errors (handled
-        // below by the unbalanced-bracket check).
         if !self.root_initialized {
             self.root_initialized = true;
+
             // `}` / `]` first content line — not a valid root kind;
             // fall through to the close-frame branch which will raise
             // UnbalancedBracket against the empty stack.
             if trimmed != "}" && trimmed != "]" {
-                if classify_root_kind(trimmed) == RootKind::Object {
-                    self.stack.push(Frame::new_object());
-                } else {
-                    self.stack.push(Frame::new_array());
+                match classify_root_kind_050(trimmed, line_num, trimmed_span)? {
+                    RootResult::InlineObject(value) => {
+                        self.root_consumed = true;
+                        self.root_inline_value = Some(value);
+                        return Ok(());
+                    }
+                    RootResult::InlineArray(value) => {
+                        self.root_consumed = true;
+                        self.root_inline_value = Some(value);
+                        return Ok(());
+                    }
+                    RootResult::ExplicitObject => {
+                        self.root_is_explicit_compound = true;
+                        self.stack.push(Frame::new_object());
+                        self.opener_offsets.push(trimmed_span.start);
+                        return Ok(());
+                    }
+                    RootResult::ExplicitArray => {
+                        self.root_is_explicit_compound = true;
+                        self.stack.push(Frame::new_array());
+                        self.opener_offsets.push(trimmed_span.start);
+                        return Ok(());
+                    }
+                    RootResult::Object => {
+                        self.stack.push(Frame::new_object());
+                        self.opener_offsets.push(0);
+                    }
+                    RootResult::Array => {
+                        self.stack.push(Frame::new_array());
+                        self.opener_offsets.push(0);
+                    }
                 }
-                self.opener_offsets.push(0);
             }
         }
 
@@ -221,11 +276,9 @@ impl<'a> Parser<'a> {
         // the path anyway while descending, so a pre-pass here would scan
         // the key twice.
 
-        // Separator analysis. The byte immediately after the first `:` may
-        // be `:` (raw marker), `i` / `f` followed by space or EOL (typed
-        // marker), or whitespace / EOL (ordinary pair). Anything else is
-        // the classic ordinary-pair case — the marker-looking prefix is
-        // simply the start of the value.
+        // Separator analysis. Under 0.5.0 the byte immediately after the
+        // first `:` may be `:` (raw marker `::`) or whitespace / EOL
+        // (ordinary pair). The old `:i`/`:f` typed markers are removed.
         let after_colon = &line[colon + 1..];
         let after_colon_off_in_line = colon + 1;
         let after_colon_off = line_start + (trimmed_off_in_raw + after_colon_off_in_line) as u32;
@@ -247,28 +300,6 @@ impl<'a> Parser<'a> {
                 let value = Value::String(after.trim().into());
                 self.insert_object_pair(key, value, line_num, Span::new(key_start, key_end))
             }
-            Separator::TypedInteger(body) => {
-                // `body` is already guaranteed to be empty or ws-started by
-                // `classify_separator`; no extra sep-end check here.
-                let body_span = body_span_for(body, after_colon, after_colon_off, trimmed_span);
-                let s = validate_typed_integer(body, line_num, body_span)?;
-                self.insert_object_pair(
-                    key,
-                    Value::Integer(s),
-                    line_num,
-                    Span::new(key_start, key_end),
-                )
-            }
-            Separator::TypedFloat(body) => {
-                let body_span = body_span_for(body, after_colon, after_colon_off, trimmed_span);
-                let s = validate_typed_float(body, line_num, body_span)?;
-                self.insert_object_pair(
-                    key,
-                    Value::Float(s),
-                    line_num,
-                    Span::new(key_start, key_end),
-                )
-            }
             Separator::Plain(after) => {
                 require_sep_end(
                     after,
@@ -288,6 +319,12 @@ impl<'a> Parser<'a> {
                     }
                     ValueStart::Bool(b) => {
                         self.insert_object_pair(key, Value::Bool(b), line_num, key_span)
+                    }
+                    ValueStart::Integer(s) => {
+                        self.insert_object_pair(key, Value::Integer(s), line_num, key_span)
+                    }
+                    ValueStart::Float(s) => {
+                        self.insert_object_pair(key, Value::Float(s), line_num, key_span)
                     }
                     ValueStart::EmptyObject => self.insert_object_pair(
                         key,
@@ -323,6 +360,9 @@ impl<'a> Parser<'a> {
                         self.multiline_opener = Some(trimmed_span.end - 2);
                         Ok(())
                     }
+                    ValueStart::InlineValue(v) => {
+                        self.insert_object_pair(key, v, line_num, key_span)
+                    }
                 }
             }
         }
@@ -334,13 +374,12 @@ impl<'a> Parser<'a> {
         line_num: usize,
         trimmed_span: Span,
     ) -> Result<(), Error> {
-        // Check typed-scalar prefixes before the general raw-string prefix.
-        // Order matters: `::` before `:i`/`:f`/`:` — the `::` has two
-        // colons, the others have one + letter / whitespace / EOL.
+        // Under 0.5.0, the only array-item prefix marker is `::` (raw
+        // string). The old `:i`/`:f` typed markers are removed.
         //
-        // Per spec § 5.4, every marker demands sep-end (whitespace or EOL);
-        // a glued form like `::value` / `:i42` / `:f0.5` is a
-        // MissingSeparatorSpace error (§ 6.10), not a String item.
+        // Per spec § 5.4, the `::` marker demands sep-end (whitespace or
+        // EOL); a glued form like `::value` is a MissingSeparatorSpace
+        // error (§ 6.10), not a String item.
         let line_start = trimmed_span.start; // for arrays the "trimmed line start"
 
         if let Some(rest) = line.strip_prefix("::") {
@@ -349,23 +388,12 @@ impl<'a> Parser<'a> {
             return self.push_array_item(value);
         }
 
-        if let Some(rest) = line.strip_prefix(":i") {
-            require_sep_end(rest, line_num, line_start, 0, line_start + 2, trimmed_span)?;
-            let body_span = Span::new(line_start + 2, trimmed_span.end);
-            let s = validate_typed_integer(rest, line_num, body_span)?;
-            return self.push_array_item(Value::Integer(s));
-        }
-        if let Some(rest) = line.strip_prefix(":f") {
-            require_sep_end(rest, line_num, line_start, 0, line_start + 2, trimmed_span)?;
-            let body_span = Span::new(line_start + 2, trimmed_span.end);
-            let s = validate_typed_float(rest, line_num, body_span)?;
-            return self.push_array_item(Value::Float(s));
-        }
-
         match classify_value_start(line, line_num, trimmed_span)? {
             ValueStart::Scalar(s) => self.push_array_item(Value::String(s)),
             ValueStart::Null => self.push_array_item(Value::Null),
             ValueStart::Bool(b) => self.push_array_item(Value::Bool(b)),
+            ValueStart::Integer(s) => self.push_array_item(Value::Integer(s)),
+            ValueStart::Float(s) => self.push_array_item(Value::Float(s)),
             ValueStart::EmptyObject => self.push_array_item(Value::Object(ObjectMap::default())),
             ValueStart::EmptyArray => self.push_array_item(Value::Array(Vec::new())),
             ValueStart::OpenObject => {
@@ -388,6 +416,7 @@ impl<'a> Parser<'a> {
                 self.multiline_opener = Some(trimmed_span.end - 2);
                 Ok(())
             }
+            ValueStart::InlineValue(v) => self.push_array_item(v),
         }
     }
 
@@ -452,6 +481,29 @@ impl<'a> Parser<'a> {
         trimmed_span: Span,
     ) -> Result<(), Error> {
         if self.stack.len() <= 1 {
+            // If the stack has exactly 1 frame and this is an explicit
+            // compound root (§ 5.0.1 rules 4-5), closing it is valid.
+            if self.stack.len() == 1 && self.root_is_explicit_compound {
+                let frame = self.stack.last().unwrap();
+                let frame_kind = match frame {
+                    Frame::Object { .. } => Bracket::Object,
+                    Frame::Array { .. } => Bracket::Array,
+                };
+                if !matches!(
+                    (frame_kind, expected),
+                    (Bracket::Object, Bracket::Object) | (Bracket::Array, Bracket::Array)
+                ) {
+                    return Err(Error::Structured(ErrorKind::UnbalancedBracket {
+                        line: line_num as u32,
+                        span: trimmed_span,
+                        expected: bracket_to_compound(frame_kind),
+                        found: expected.close(),
+                    }));
+                }
+                // Mark root as consumed — subsequent content lines are orphans.
+                self.root_consumed = true;
+                return Ok(());
+            }
             return Err(Error::Structured(ErrorKind::UnbalancedBracket {
                 line: line_num as u32,
                 span: trimmed_span,
@@ -542,48 +594,20 @@ fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span {
     Span::new(start, start + trimmed.len() as u32)
 }
 
-/// Span of the body following a typed-scalar marker.
-fn body_span_for(body: &str, after_colon: &str, after_colon_off: u32, fallback: Span) -> Span {
-    if body.is_empty() {
-        // Body is empty — point at the byte just past the marker.
-        let p = after_colon_off + after_colon.len() as u32;
-        return Span::new(p, p);
-    }
-    let after_ptr = after_colon.as_ptr() as usize;
-    let body_ptr = body.as_ptr() as usize;
-    if body_ptr >= after_ptr && body_ptr - after_ptr <= after_colon.len() {
-        let off = (body_ptr - after_ptr) as u32;
-        Span::new(
-            after_colon_off + off,
-            after_colon_off + off + body.len() as u32,
-        )
-    } else {
-        fallback
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Separator classification for pair-lines.
 //
-// After the first `:` of `key: value`, this slice can begin with:
+// Under 0.5.0, after the first `:` of `key: value`, the slice can begin
+// with:
 //   - `:` + whitespace/EOL   → raw-string marker `::`
-//   - `i` + whitespace/EOL   → typed integer `:i`
-//   - `f` + whitespace/EOL   → typed float   `:f`
 //   - anything else          → plain `:` separator; the rest is the body
 //
-// The "typed" variants require that whatever follows the letter be either
-// whitespace or end of line — so `:info: ...` stays a plain-`:` pair whose
-// value begins with `info: ...`.
+// The old `:i`/`:f` typed markers are removed in 0.5.0.
 // ---------------------------------------------------------------------------
 
 enum Separator<'a> {
     /// `::` followed by the body (leading whitespace not yet trimmed).
     Raw(&'a str),
-    /// `:i` followed by the body (starting with the whitespace separator
-    /// or empty → will be rejected downstream).
-    TypedInteger(&'a str),
-    /// `:f` followed by the body.
-    TypedFloat(&'a str),
     /// Plain `:` — body already lacks the leading separator char.
     Plain(&'a str),
 }
@@ -616,72 +640,114 @@ fn require_sep_end(
     }
 }
 
-/// Top-level kind detection (spec § 5.0.1, added in 0.1.1).
-///
-/// Looks at a trimmed first-content-line and decides whether the
-/// document's root is an Object (pair-shape) or an Array (anything
-/// else, including bare scalars, typed/raw markers, and lone
-/// compound openers). The classification is **conservative on the
-/// pair side**: if the line plausibly looks like a pair attempt
-/// (has a `:` separator with a non-empty key), Object is chosen
-/// even if the pair turns out malformed — the pair handler will
-/// raise the precise error (`MissingSeparatorSpace`, `EmptyKey`,
-/// etc.) downstream. This matches how 0.3.0 behaved on those
-/// inputs (always tried pair, always erred), so the new code path
-/// is invisible to 0.3.0-conforming documents.
-#[derive(PartialEq)]
-pub(super) enum RootKind {
+/// Result of top-level kind detection (§ 5.0.1).
+enum RootResult {
+    /// § 5.0.1 rule 2: first content line is a closed inline object.
+    InlineObject(Value),
+    /// § 5.0.1 rule 3: first content line is a closed inline array.
+    InlineArray(Value),
+    /// § 5.0.1 rule 4: first content line is a lone `{`.
+    ExplicitObject,
+    /// § 5.0.1 rule 5: first content line is a lone `[`.
+    ExplicitArray,
+    /// § 5.0.1 rule 6: pair-shape → implicit Object root.
     Object,
+    /// § 5.0.1 rule 7: array-item → implicit Array root.
     Array,
 }
 
-pub(super) fn classify_root_kind(trimmed: &str) -> RootKind {
+/// Top-level kind detection (spec § 5.0.1, 0.5.0).
+///
+/// Applies all 8 rules in order. Rules 1 (no content lines) and 8
+/// (bare `}` / `]`) are handled by the caller.
+fn classify_root_kind_050(
+    trimmed: &str,
+    line_num: usize,
+    trimmed_span: Span,
+) -> Result<RootResult, Error> {
+    // Rule 4: lone `{`
+    if trimmed == "{" {
+        return Ok(RootResult::ExplicitObject);
+    }
+    // Rule 5: lone `[`
+    if trimmed == "[" {
+        return Ok(RootResult::ExplicitArray);
+    }
+
+    // Rule 2: closed inline object `{ ... }` — ends with `}`
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        // Could be empty `{}` / `{ }`
+        if trimmed[1..trimmed.len() - 1].trim().is_empty() {
+            let value = Value::Object(crate::value::ObjectMap::default());
+            return Ok(RootResult::InlineObject(value));
+        }
+        let value = inline::parse_inline_object(trimmed, line_num, trimmed_span)?;
+        return Ok(RootResult::InlineObject(value));
+    }
+
+    // Rule 3: closed inline array `[ ... ]` — ends with `]`
+    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        if trimmed[1..trimmed.len() - 1].trim().is_empty() {
+            let value = Value::Array(Vec::new());
+            return Ok(RootResult::InlineArray(value));
+        }
+        let value = inline::parse_inline_array(trimmed, line_num, trimmed_span)?;
+        return Ok(RootResult::InlineArray(value));
+    }
+
+    // Rule 8 for `{` / `[` that don't match 2-5: starts with brace
+    // but not closed → unterminated inline compound.
+    if trimmed.starts_with('{') {
+        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+        }));
+    }
+    if trimmed.starts_with('[') {
+        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+            line: line_num as u32,
+            span: trimmed_span,
+        }));
+    }
+
+    // Rule 6/7: pair-shape vs array-item. Use the same heuristic
+    // as before.
+    if is_pair_shape(trimmed) {
+        Ok(RootResult::Object)
+    } else {
+        Ok(RootResult::Array)
+    }
+}
+
+/// Check if the trimmed line looks like a pair shape (has a `:` with
+/// a non-empty key before it and whitespace/EOL after it, or `::` raw
+/// marker).
+fn is_pair_shape(trimmed: &str) -> bool {
     let bytes = trimmed.as_bytes();
     let Some(colon_idx) = bytes.iter().position(|&b| b == b':') else {
-        return RootKind::Array;
+        return false;
     };
-    // Empty prefix before `:` (e.g. `:value`, `:: lit`, `:i 42`,
-    // `:f 3.14`) — these are array-item shapes, not pair lines.
+    // Empty prefix before `:` → array-item shape
     let key_part = trimmed[..colon_idx].trim_end();
     if key_part.is_empty() {
-        return RootKind::Array;
+        return false;
     }
     let after = &trimmed[colon_idx + 1..];
-    let after_bytes = after.as_bytes();
-    // `key::` (raw marker) — pair shape.
-    if after_bytes.first() == Some(&b':') {
-        return RootKind::Object;
-    }
-    // `key:i ` / `key:f ` (typed marker) — pair shape iff the marker
-    // letter is followed by whitespace / EOL.
-    if matches!(after_bytes.first(), Some(&b'i') | Some(&b'f')) {
-        match after_bytes.get(1) {
-            None | Some(b' ') | Some(b'\t') => return RootKind::Object,
-            _ => {}
-        }
+    // `key::` (raw marker) → pair shape
+    if after.starts_with(':') {
+        return true;
     }
     // Plain `key: ` separator — body must start with whitespace or
     // be empty. Anything else (e.g. `http://...`) means the `:` is
-    // part of a value and there's no real key/value pair.
-    if after.is_empty() || after.starts_with([' ', '\t']) {
-        return RootKind::Object;
-    }
-    RootKind::Array
+    // part of a value and there's no real pair.
+    after.is_empty() || after.starts_with([' ', '\t'])
 }
 
 fn classify_separator(after_colon: &str) -> Separator<'_> {
     if let Some(rest) = after_colon.strip_prefix(':') {
         return Separator::Raw(rest);
     }
-    if let Some(rest) = after_colon.strip_prefix('i') {
-        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-            return Separator::TypedInteger(rest);
-        }
-    }
-    if let Some(rest) = after_colon.strip_prefix('f') {
-        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-            return Separator::TypedFloat(rest);
-        }
-    }
+    // Under spec 0.5.0, `:i` and `:f` typed markers are removed.
+    // Everything that isn't `::` is a plain `:` separator.
     Separator::Plain(after_colon)
 }

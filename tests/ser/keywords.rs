@@ -46,7 +46,7 @@ fn option_none_can_be_skipped_via_serde_attr() {
         label: None,
     })
     .unwrap();
-    assert_eq!(s, "port:i 8080\n");
+    assert_eq!(s, "port: 8080\n");
 }
 
 #[test]

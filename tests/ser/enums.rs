@@ -43,7 +43,7 @@ fn newtype_variant_emits_single_entry_object() {
         action: Action::Count(7),
     })
     .unwrap();
-    assert_eq!(s, "action: {\n    Count:i 7\n}\n");
+    assert_eq!(s, "action: {\n    Count: 7\n}\n");
 }
 
 #[test]

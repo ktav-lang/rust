@@ -20,11 +20,15 @@ use bumpalo::collections::Vec as BumpVec;
 pub(crate) enum Event<'a> {
     Null,
     Bool(bool),
-    /// Typed-integer marker (`:i`) text, or an untyped scalar that may
-    /// happen to look like a number — both reach the deserializer the
-    /// same way and get fed to `fast_num::parse_*`.
+    /// Integer literal inferred from the scalar body's lexical form
+    /// (§ 3.6, § 5.2 rule 13). Carries the canonical base-10 decimal
+    /// form (via `itoa`). Under 0.5.0, `:i` markers are removed;
+    /// integer detection is automatic.
     Integer(&'a str),
-    /// Typed-float marker (`:f`) text.
+    /// Float literal inferred from the scalar body's lexical form
+    /// (§ 3.6, § 5.2 rule 14). Carries the canonical shortest-decimal
+    /// form (via `ryu`). Under 0.5.0, `:f` markers are removed;
+    /// float detection is automatic.
     Float(&'a str),
     /// Plain string scalar.
     Str(&'a str),

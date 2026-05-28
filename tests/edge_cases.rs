@@ -22,5 +22,4 @@ mod double_round_trip;
 #[path = "edge_cases/special_strings.rs"]
 mod special_strings;
 
-#[path = "edge_cases/typed_markers.rs"]
-mod typed_markers;
+// typed_markers module removed — spec 0.5.0 no longer has `:i`/`:f` markers

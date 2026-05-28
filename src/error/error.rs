@@ -142,10 +142,12 @@ pub enum ErrorKind {
         marker: char,
         span: Span,
     },
-    /// The body following a `:i` / `:f` typed-scalar marker is not a
-    /// valid integer / float literal (or is empty / opens a compound).
-    /// `body` is the human-readable detail (e.g. `"integer body is empty"`
-    /// or `"'abc' is not a valid integer literal for `:i`"`).
+    /// **Spec 0.5.0 § 6.9 (reserved).**
+    ///
+    /// In 0.1.x this was emitted for invalid `:i` / `:f` bodies. In 0.5.0
+    /// typed markers no longer exist. This variant is kept for backward
+    /// compatibility but the parser never constructs it.
+    #[doc(hidden)]
     InvalidTypedScalar {
         line: u32,
         marker: char,
@@ -181,14 +183,40 @@ pub enum ErrorKind {
         expected: CompoundKind,
         found: char,
     },
-    /// A `key: { … }` / `key: [ … ]` / array-item line tried to fit a
-    /// non-empty compound on a single line. Spec § 6.7 forbids this —
-    /// every entry / item must be on its own line.
+    /// **Spec 0.5.0 § 6.7 (reserved).**
+    ///
+    /// In 0.1.x this was emitted when a non-empty compound appeared on a
+    /// single line. In 0.5.0 inline non-empty compounds are valid (§ 5.8).
+    /// This variant is kept for backward compatibility but the parser never
+    /// constructs it.
+    #[doc(hidden)]
     InlineNonEmptyCompound { line: u32, span: Span, body: String },
     /// A non-blank, non-comment, non-closer, non-array-item line lacks
     /// the `:` that would make it a `key: value` pair. The whole
     /// trimmed line is the offending span.
     MissingSeparator { line: u32, span: Span },
+    /// A `{` or `[` in a value-position is not followed by a matching
+    /// `}` / `]` on the same line. Spec § 6.11.
+    UnterminatedInlineCompound { line: u32, span: Span },
+    /// A structural defect inside a closed inline compound — leading
+    /// comma, double comma, empty array item, missing pair separator.
+    /// Spec § 6.12.
+    MalformedInlineCompound {
+        line: u32,
+        span: Span,
+        detail: String,
+    },
+    /// A `\X` form inside an inline scalar value where `X` is not one
+    /// of the eight recognised escape characters. Spec § 6.13.
+    BadEscapeSequence {
+        line: u32,
+        span: Span,
+        sequence: String,
+    },
+    /// A non-blank, non-comment line that appears after a top-level
+    /// inline compound root has already been fully consumed.
+    /// Spec § 6.14.
+    OrphanLineAfterTopLevelInline { line: u32, span: Span },
     /// Escape hatch for parser failures that don't map to one of the
     /// canonical categories — currently only parser-internal invariant
     /// violations (`pending key already set`, `closed compound without
@@ -310,6 +338,28 @@ impl Display for ErrorKind {
                 "Line {}: MissingSeparator: object entries must be 'key: value' pairs",
                 line
             ),
+            ErrorKind::UnterminatedInlineCompound { line, .. } => write!(
+                f,
+                "Line {}: UnterminatedInlineCompound: inline compound not closed on the same line",
+                line
+            ),
+            ErrorKind::MalformedInlineCompound { line, detail, .. } => {
+                write!(
+                    f,
+                    "Line {}: MalformedInlineCompound: {}",
+                    line, detail
+                )
+            }
+            ErrorKind::BadEscapeSequence { line, sequence, .. } => write!(
+                f,
+                "Line {}: BadEscapeSequence: invalid escape sequence '{}'",
+                line, sequence
+            ),
+            ErrorKind::OrphanLineAfterTopLevelInline { line, .. } => write!(
+                f,
+                "Line {}: OrphanLineAfterTopLevelInline: content after root-level inline compound",
+                line
+            ),
             ErrorKind::Other { message, .. } => f.write_str(message),
         }
     }
@@ -388,7 +438,11 @@ impl ErrorKind {
             | ErrorKind::InvalidKey { line, .. }
             | ErrorKind::UnbalancedBracket { line, .. }
             | ErrorKind::InlineNonEmptyCompound { line, .. }
-            | ErrorKind::MissingSeparator { line, .. } => Some(*line),
+            | ErrorKind::MissingSeparator { line, .. }
+            | ErrorKind::UnterminatedInlineCompound { line, .. }
+            | ErrorKind::MalformedInlineCompound { line, .. }
+            | ErrorKind::BadEscapeSequence { line, .. }
+            | ErrorKind::OrphanLineAfterTopLevelInline { line, .. } => Some(*line),
             ErrorKind::UnclosedCompound { .. } => None,
             ErrorKind::Other { line, .. } => *line,
         }
@@ -407,6 +461,10 @@ impl ErrorKind {
             | ErrorKind::UnbalancedBracket { span, .. }
             | ErrorKind::InlineNonEmptyCompound { span, .. }
             | ErrorKind::MissingSeparator { span, .. }
+            | ErrorKind::UnterminatedInlineCompound { span, .. }
+            | ErrorKind::MalformedInlineCompound { span, .. }
+            | ErrorKind::BadEscapeSequence { span, .. }
+            | ErrorKind::OrphanLineAfterTopLevelInline { span, .. }
             | ErrorKind::Other { span, .. } => *span,
         }
     }

@@ -25,12 +25,10 @@ pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) 
             out.push('\n');
         }
         Value::Integer(s) => {
-            out.push_str(":i ");
             out.push_str(s);
             out.push('\n');
         }
         Value::Float(s) => {
-            out.push_str(":f ");
             out.push_str(s);
             out.push('\n');
         }

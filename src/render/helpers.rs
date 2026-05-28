@@ -1,29 +1,42 @@
 //! Small primitives shared by the rendering functions.
 
+use crate::parser::classify;
+
 pub(super) const INDENT: &str = "    ";
 
 /// True if the value must be emitted with `::` so that the parser does not
-/// re-interpret it as a compound (`{...}` / `[...]`) or a JSON keyword
-/// (`null` / `true` / `false`).
-pub(super) fn needs_raw_marker(s: &str) -> bool {
+/// re-interpret it as a compound (`{...}` / `[...]`), a JSON keyword
+/// (`null` / `true` / `false`), a number literal (§ 3.6), or a multi-line
+/// opener (`(` / `((`).
+pub(crate) fn needs_raw_marker(s: &str) -> bool {
     // Fast path: most scalars don't start with whitespace, so we can check
     // the first byte directly and skip `trim_start`'s whole-string scan.
     match s.as_bytes().first() {
         None => false,
         Some(&b' ') | Some(&b'\t') => needs_raw_marker_slow(s.trim_start()),
         Some(&b'{') | Some(&b'[') => true,
-        Some(_) => {
-            matches!(s, "null" | "true" | "false" | "(" | "((" | "()" | "(())")
-        }
+        Some(_) => needs_raw_marker_content(s),
     }
+}
+
+fn needs_raw_marker_content(s: &str) -> bool {
+    if matches!(s, "null" | "true" | "false" | "(" | "((" | "()" | "(())") {
+        return true;
+    }
+    if s.starts_with('(') {
+        return true;
+    }
+    // § 5.2 rules 13–14: number literals must be forced to String via `::`
+    if classify::matches_integer_grammar(s) || classify::matches_float_grammar(s) {
+        return true;
+    }
+    false
 }
 
 #[cold]
 #[inline(never)]
 fn needs_raw_marker_slow(t: &str) -> bool {
-    t.starts_with('{')
-        || t.starts_with('[')
-        || matches!(t, "null" | "true" | "false" | "(" | "((" | "()" | "(())")
+    t.starts_with('{') || t.starts_with('[') || needs_raw_marker_content(t)
 }
 
 /// Push `level * INDENT.len()` spaces into `out`. Uses slice copies of a

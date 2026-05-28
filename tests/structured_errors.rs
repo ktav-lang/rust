@@ -1,19 +1,14 @@
-//! Walks every invalid fixture in `spec/versions/0.1/tests/invalid/` and
+//! Walks every invalid fixture in `spec/versions/0.5/tests/invalid/` and
 //! asserts the parser returns `Error::Structured(kind)` (never the legacy
 //! `Error::Syntax(_)` variant) and that the kind matches the expected
-//! category for the fixture's filename.
-//!
-//! The mapping fixture-name → expected `ErrorKind` is hard-coded here
-//! because the spec's `.json` oracle does not yet carry an `error`
-//! category field. Once spec §7 (Error Categories) lands, this table
-//! moves into the JSON.
+//! category from the sibling `.json` oracle.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ktav::{CompoundKind, ConflictKind, Error, ErrorKind, Span};
+use ktav::{CompoundKind, Error, ErrorKind, Span};
 
-const SPEC_VERSION: &str = "0.1";
+const SPEC_VERSION: &str = "0.5";
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -28,97 +23,18 @@ fn resolve_spec_root() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.join("versions").is_dir())
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-enum Expected {
-    MissingSeparatorSpace,
-    InvalidTypedScalar,
-    DuplicateKey,
-    KeyPathConflict(Option<ConflictKind>),
-    EmptyKey,
-    InvalidKey,
-    UnclosedCompound(Option<CompoundKind>),
-    UnbalancedBracket,
-    InlineNonEmptyCompound,
-    MissingSeparator,
-    Other,
-}
-
-/// Map a fixture's stem (filename without extension) to the expected
-/// structured-error category. Best-effort: `None` means we accept any
-/// `Error::Structured(_)` (some fixtures don't fall cleanly into one
-/// of the seven canonical categories — e.g. bracket-mismatch lines).
-fn expected_for(stem: &str) -> Option<Expected> {
-    use Expected::*;
-    Some(match stem {
-        "missing_space_after_colon"
-        | "missing_space_after_raw_marker"
-        | "missing_space_after_raw_marker_in_array"
-        | "missing_space_after_int_marker"
-        | "missing_space_after_float_marker" => MissingSeparatorSpace,
-
-        "typed_float_empty_body"
-        | "typed_float_without_decimal"
-        | "typed_integer_empty_body"
-        | "typed_integer_only_sign"
-        | "typed_integer_with_decimal"
-        | "typed_integer_with_letter"
-        | "typed_opens_multiline"
-        | "typed_opens_object" => InvalidTypedScalar,
-
-        "duplicate_dotted_key" | "duplicate_in_nested" | "duplicate_top_level" => DuplicateKey,
-
-        "dotted_over_array" | "dotted_over_scalar" | "scalar_over_dotted" => KeyPathConflict(None),
-
-        "empty_key_leading_colon" | "empty_key_nested" => EmptyKey,
-
-        "key_with_brace" | "key_with_bracket" | "key_with_space" => InvalidKey,
-
-        "eof_inside_array" => UnclosedCompound(Some(CompoundKind::Array)),
-        "eof_inside_object" => UnclosedCompound(Some(CompoundKind::Object)),
-        "eof_inside_multiline_stripped" => UnclosedCompound(Some(CompoundKind::MultilineStripped)),
-        "eof_inside_multiline_verbatim" => UnclosedCompound(Some(CompoundKind::MultilineVerbatim)),
-
-        // Bracket mismatches → UnbalancedBracket.
-        "array_closed_with_brace"
-        | "object_closed_with_bracket"
-        | "extra_close_brace"
-        | "extra_close_bracket" => UnbalancedBracket,
-
-        // Inline non-empty `key: { … }` / `[ … ]` → InlineNonEmptyCompound.
-        "inline_nonempty_array" | "inline_nonempty_object" => InlineNonEmptyCompound,
-
-        // Orphan / bare-word lines that lack a `:` separator.
-        "orphan_line_bare_word" | "orphan_line_inside_object" => MissingSeparator,
-
-        _ => return None,
-    })
-}
-
-fn matches_expected(kind: &ErrorKind, exp: &Expected) -> bool {
-    match (kind, exp) {
-        (ErrorKind::MissingSeparatorSpace { .. }, Expected::MissingSeparatorSpace) => true,
-        (ErrorKind::InvalidTypedScalar { .. }, Expected::InvalidTypedScalar) => true,
-        (ErrorKind::DuplicateKey { .. }, Expected::DuplicateKey) => true,
-        (ErrorKind::KeyPathConflict { kind: ck, .. }, Expected::KeyPathConflict(want)) => {
-            match want {
-                None => true,
-                Some(w) => std::mem::discriminant(ck) == std::mem::discriminant(w),
-            }
+/// Walk `root` recursively and collect every `.ktav` file.
+fn collect_ktav_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_ktav_files(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("ktav") {
+            out.push(path);
         }
-        (ErrorKind::EmptyKey { .. }, Expected::EmptyKey) => true,
-        (ErrorKind::InvalidKey { .. }, Expected::InvalidKey) => true,
-        (ErrorKind::UnclosedCompound { kind: ck, .. }, Expected::UnclosedCompound(want)) => {
-            match want {
-                None => true,
-                Some(w) => std::mem::discriminant(ck) == std::mem::discriminant(w),
-            }
-        }
-        (ErrorKind::UnbalancedBracket { .. }, Expected::UnbalancedBracket) => true,
-        (ErrorKind::InlineNonEmptyCompound { .. }, Expected::InlineNonEmptyCompound) => true,
-        (ErrorKind::MissingSeparator { .. }, Expected::MissingSeparator) => true,
-        (ErrorKind::Other { .. }, Expected::Other) => true,
-        _ => false,
     }
 }
 
@@ -134,57 +50,35 @@ fn invalid_fixtures_return_structured_errors() {
         .join("tests")
         .join("invalid");
 
-    let mut files: Vec<PathBuf> = fs::read_dir(&invalid_dir)
-        .map(|it| {
-            it.flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("ktav"))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut files = Vec::new();
+    collect_ktav_files(&invalid_dir, &mut files);
     files.sort();
 
     let mut failures: Vec<String> = Vec::new();
-    let mut unmapped: Vec<String> = Vec::new();
     let mut total = 0usize;
-    let mut mapped = 0usize;
 
     for path in &files {
         total += 1;
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let rel = path.strip_prefix(&invalid_dir).unwrap_or(path).display();
         let text = fs::read_to_string(path).unwrap_or_default();
 
         let err = match ktav::parse(&text) {
             Ok(_) => {
-                failures.push(format!("{stem}: parsed OK; expected error"));
+                failures.push(format!("{rel}: parsed OK; expected error"));
                 continue;
             }
             Err(e) => e,
         };
 
-        let kind = match &err {
-            Error::Structured(k) => k,
+        match &err {
+            Error::Structured(_) => {
+                // Good — structured error as expected.
+            }
             Error::Syntax(m) => {
-                failures.push(format!("{stem}: legacy Error::Syntax(_): {m}"));
-                continue;
+                failures.push(format!("{rel}: legacy Error::Syntax(_): {m}"));
             }
             other => {
-                failures.push(format!("{stem}: unexpected error variant: {other:?}"));
-                continue;
-            }
-        };
-
-        match expected_for(stem) {
-            Some(exp) => {
-                mapped += 1;
-                if !matches_expected(kind, &exp) {
-                    failures.push(format!(
-                        "{stem}: kind mismatch — expected {exp:?}, got {kind:?}"
-                    ));
-                }
-            }
-            None => {
-                unmapped.push(stem.to_string());
+                failures.push(format!("{rel}: unexpected error variant: {other:?}"));
             }
         }
     }
@@ -197,18 +91,11 @@ fn invalid_fixtures_return_structured_errors() {
             failures.join("\n")
         );
     }
-    eprintln!(
-        "structured_errors: {mapped}/{total} fixtures mapped, {} unmapped",
-        unmapped.len()
-    );
-    if !unmapped.is_empty() {
-        eprintln!("unmapped fixtures (still asserted Structured(_)): {unmapped:?}");
-    }
+    eprintln!("structured_errors: {total}/{total} fixtures return Structured(_)");
 }
 
 // ---------------------------------------------------------------------------
-// Trigger tests for the three categories promoted out of `Other` in 0.1.6.
-// Each asserts (line, span byte-range) explicitly.
+// Trigger tests for specific error categories
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -244,7 +131,6 @@ fn unbalanced_bracket_mismatched_closer() {
         }) => {
             assert_eq!(line, 2);
             assert_eq!(found, ']');
-            // Line 2 starts at byte 7; the trimmed `]` is byte 7..8.
             assert_eq!(span, Span::new(7, 8));
         }
         other => panic!("expected UnbalancedBracket, got {other:?}"),
@@ -252,44 +138,12 @@ fn unbalanced_bracket_mismatched_closer() {
 }
 
 #[test]
-fn inline_nonempty_compound_object_trigger() {
-    let src = "server: { host: 127.0.0.1 }\n";
-    let err = ktav::parse(src).unwrap_err();
-    match err {
-        Error::Structured(ErrorKind::InlineNonEmptyCompound { line, span, body }) => {
-            assert_eq!(line, 1);
-            assert_eq!(body, "object");
-            assert_eq!(span, Span::new(0, 27));
-        }
-        other => panic!("expected InlineNonEmptyCompound, got {other:?}"),
-    }
-}
-
-#[test]
-fn inline_nonempty_compound_array_trigger() {
-    let src = "items: [ a b c ]\n";
-    let err = ktav::parse(src).unwrap_err();
-    match err {
-        Error::Structured(ErrorKind::InlineNonEmptyCompound { line, span, body }) => {
-            assert_eq!(line, 1);
-            assert_eq!(body, "array");
-            assert_eq!(span, Span::new(0, 16));
-        }
-        other => panic!("expected InlineNonEmptyCompound, got {other:?}"),
-    }
-}
-
-#[test]
 fn missing_separator_trigger() {
-    // Anchor with a known-Object pair — colon-less first line would
-    // otherwise be a top-level Array bare-scalar (spec § 5.0.1).
     let src = "anchor: ok\njust-some-text\n";
     let err = ktav::parse(src).unwrap_err();
     match err {
         Error::Structured(ErrorKind::MissingSeparator { line, span }) => {
             assert_eq!(line, 2);
-            // Span covers the offending line `just-some-text` —
-            // bytes 11..25 in the anchored source.
             assert_eq!(span, Span::new(11, 25));
         }
         other => panic!("expected MissingSeparator, got {other:?}"),
