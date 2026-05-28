@@ -9,6 +9,59 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.5.0] — 2026-05-28
+
+Implements Ktav specification 0.5.0. This is a breaking release:
+the parser, serializer, and Value model are rewritten for the new
+language semantics.
+
+### Breaking
+
+- Typed markers `:i` and `:f` removed. Numbers, booleans, and `null`
+  are inferred from the lexical form (spec §§ 3.6, 5.2).
+- Comments use `##` (line-start only). A single `#` byte is content.
+- Bare `port: 8080` is now `Integer(8080)`, not `String("8080")`.
+  Write `port:: 8080` to keep a String.
+- Lone `{` / `[` on the first content line opens a multi-line root
+  Object / Array (spec § 5.0.1 rules 4–5). The 0.1.1 JSONL-style
+  semantic is removed.
+- `Float` Values no longer carry the textual form; canonicalised via
+  `ryu`.
+- Key segments are trimmed of leading/trailing whitespace (spec § 4).
+- Line terminators are `LF`, `CR`, or `CR LF`; `CR` is never a
+  content byte.
+- `ErrorKind::InlineNonEmptyCompound` and `InvalidTypedScalar` are
+  deprecated (`#[doc(hidden)]`); the parser no longer emits them.
+
+### Added
+
+- **Inline compounds** `{k: v, …}` / `[i, …]` (spec § 5.8) with
+  trailing comma, mid-value brace literal (§ 5.8.5), and nesting
+  depth limit of 128.
+- **Eight escape sequences** in inline scalars: `\\`, `\,`, `\}`,
+  `\]`, `\{`, `\[`, `\n`, `\r` (spec § 3.7).
+- **Number literal grammar** — `0x`, `0o`, `0b`, decimal, underscore
+  separators; i64 overflow falls back to String (spec § 3.6).
+- **`emit_canonical()`** — spec § 5.9 normative writer output,
+  byte-deterministic across implementations.
+- **`src/parser/inline.rs`** — inline-compound parser.
+- **`src/render/canonical.rs`** — canonical writer.
+- New error variants: `UnterminatedInlineCompound`,
+  `MalformedInlineCompound`, `BadEscapeSequence`,
+  `OrphanLineAfterTopLevelInline`.
+- Triple-test conformance harness (`tests/spec_conformance.rs`):
+  93 valid + 31 invalid fixtures from `spec/versions/0.5/tests/`.
+- Parser fast-paths: plain-decimal integers, no-underscore floats,
+  ryu-reuse, first-byte fast-reject, LF-only line splitting,
+  pre-sized Bump arena.
+
+### Changed
+
+- License: `MIT` → `MIT OR Apache-2.0`.
+- Spec submodule pinned to `v0.5.0` (`4d0a8aa`).
+- Doctests disabled (`[lib] doctest = false`); examples remain as
+  `text` blocks in doc comments.
+
 ## [0.3.1] — 2026-05-10
 
 Backward-compatible feature release tracking spec 0.1.1.

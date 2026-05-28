@@ -1,9 +1,9 @@
 [package]
 name = "ktav"
-version = "0.3.1"
+version = "0.5.0"
 edition = "2021"
 description = "Ktav — a plain configuration format. Three rules, zero indentation, zero quoting. Serde-native."
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/ktav-lang/rust"
 readme = "README.md"
 keywords = ["config", "configuration", "serde", "minimal", "plain"]
@@ -23,6 +23,9 @@ itoa = "1"
 ryu = "1"
 compact_str = { version = "0.9", features = ["serde"] }
 bumpalo = { version = "3", features = ["collections"] }
+
+[lib]
+doctest = false
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
