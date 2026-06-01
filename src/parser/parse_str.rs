@@ -1,5 +1,7 @@
 //! The crate-level entry point for parsing a `&str` into a [`Value`].
 
+use memchr::{memchr, memchr2};
+
 use crate::error::Error;
 use crate::value::Value;
 
@@ -22,13 +24,23 @@ pub(crate) fn parse_str(text: &str) -> Result<Value, Error> {
     // Fast path for the overwhelmingly common case: LF-only input
     // (no CR bytes). This avoids the per-byte branch on `\r` in the
     // inner scan loop and lets the compiler emit a tighter scan.
-    if !bytes.contains(&b'\r') {
+    if memchr(b'\r', bytes).is_none() {
+        // LF-only fast path: memchr-backed `\n` splitting that mirrors
+        // `text.split('\n')` exactly (including the trailing empty line
+        // after a final `\n`).
         let mut line_start: usize = 0;
         let mut line_num: usize = 0;
-        for line in text.split('\n') {
+        loop {
+            let end = memchr(b'\n', &bytes[line_start..])
+                .map(|p| line_start + p)
+                .unwrap_or(bytes.len());
             line_num += 1;
+            let line: &str = &text[line_start..end];
             parser.handle_line(line, line_num, line_start as u32)?;
-            line_start += line.len() + 1; // +1 for the consumed '\n'
+            if end == bytes.len() {
+                break;
+            }
+            line_start = end + 1;
         }
         return parser.finish(bytes.len() as u32);
     }
@@ -39,17 +51,11 @@ pub(crate) fn parse_str(text: &str) -> Result<Value, Error> {
         if line_start == bytes.len() {
             break;
         }
-        // Scan for the next line terminator: CR, LF, or CR LF.
-        let mut pos = line_start;
-        while pos < bytes.len() {
-            if bytes[pos] == b'\r' {
-                break;
-            }
-            if bytes[pos] == b'\n' {
-                break;
-            }
-            pos += 1;
-        }
+        // Scan for the next line terminator: CR, LF, or CR LF — via
+        // SIMD memchr2.
+        let pos = memchr2(b'\n', b'\r', &bytes[line_start..])
+            .map(|p| line_start + p)
+            .unwrap_or(bytes.len());
         let content_end = pos;
         let next_start = if pos < bytes.len() {
             if bytes[pos] == b'\r' {

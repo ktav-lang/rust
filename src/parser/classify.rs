@@ -9,6 +9,8 @@
 //!
 //! Rules 6–9 (inline compounds) are deferred to Phase 4.
 
+use memchr::memchr3;
+
 use crate::error::{Error, ErrorKind, Span};
 use crate::value::Scalar;
 
@@ -335,8 +337,9 @@ pub(crate) fn is_float_literal(s: &str) -> bool {
         return false;
     }
     // Fast reject: a float literal MUST contain `.` or `e`/`E`.
-    // Plain digit strings are integers, not floats.
-    if !bytes.contains(&b'.') && !bytes.contains(&b'e') && !bytes.contains(&b'E') {
+    // Plain digit strings are integers, not floats. memchr3 collapses
+    // three separate `contains` scans into one SIMD pass.
+    if memchr3(b'.', b'e', b'E', bytes).is_none() {
         return false;
     }
     let mut i = 0;

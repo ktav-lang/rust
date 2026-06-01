@@ -5,6 +5,8 @@
 //!
 //! Escape sequences (section 3.7) are processed inside inline scalar values.
 
+use memchr::memchr2;
+
 use crate::error::{Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
 
@@ -80,7 +82,7 @@ fn parse_inline_object_inner(
         }
 
         // Find the first unescaped `:` to split key / value.
-        let colon_pos = find_unescaped_colon(trimmed);
+        let colon_pos = find_unescaped_colon_inline(trimmed);
         let colon_pos = match colon_pos {
             Some(p) => p,
             None => {
@@ -330,7 +332,8 @@ fn parse_float_value(s: &str) -> Option<f64> {
 
 /// Process escape sequences in an inline scalar value.
 ///
-/// Recognised sequences: `\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`.
+/// Recognised sequences (10, spec 0.6.0 § 3.7):
+///   `\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`, `\.`, `\:`.
 /// Any other `\X` is a `BadEscapeSequence` error.
 pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Result<String, Error> {
     // Fast path: if no backslash, the input is already clean — return a
@@ -363,6 +366,8 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
                 b'[' => out.push('['),
                 b'n' => out.push('\n'),
                 b'r' => out.push('\r'),
+                b'.' => out.push('.'),
+                b':' => out.push(':'),
                 _ => {
                     // Invalid escape
                     let seq = if next < 0x80 {
@@ -387,6 +392,114 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
     }
 
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Key-context escape processing (spec 0.6.0 § 3.7 + § 5.3)
+// ---------------------------------------------------------------------------
+
+/// Find the byte offset of the first **unescaped** `:` in `s`. Returns
+/// `None` if every `:` is preceded by `\`. Spec 0.6.0 § 5.3 — the pair
+/// separator is the first unescaped `:` (or `::`).
+///
+/// `\` consumes the next byte; pairs of `\\` reset to "no pending
+/// escape". This intentionally does not validate the escape sequence —
+/// validation is deferred to `decode_key_segment` so a glued
+/// `BadEscapeSequence` error fires at the right call site.
+pub(crate) fn find_unescaped_colon(s: &str) -> Option<usize> {
+    // SIMD-accelerated escape-aware scan: memchr2 jumps to the next
+    // candidate byte (`\` or `:`). When we land on `\` we skip the
+    // escaped byte and resume; when we land on `:` we return it.
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rel = memchr2(b'\\', b':', &bytes[i..])?;
+        let abs = i + rel;
+        if bytes[abs] == b':' {
+            return Some(abs);
+        }
+        // `\` — skip the escaped byte (whatever it is). At EOL just
+        // stop: the caller will report a key-without-separator error
+        // of its own.
+        i = abs + 2;
+    }
+    None
+}
+
+/// Split a key string into dotted segments at **unescaped** `.` bytes
+/// (spec 0.6.0 § 4 / § 5.3). The returned slices reference the input;
+/// callers run `decode_key_segment` on each segment to materialise the
+/// final byte form.
+pub(crate) fn split_key_path(s: &str) -> Vec<&str> {
+    // SIMD-accelerated escape-aware split: memchr2 jumps to the next
+    // candidate byte (`\` or `.`). On `\` skip the escaped byte; on
+    // `.` cut a segment.
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let rel = match memchr2(b'\\', b'.', &bytes[i..]) {
+            Some(p) => p,
+            None => break,
+        };
+        let abs = i + rel;
+        if bytes[abs] == b'.' {
+            out.push(&s[start..abs]);
+            start = abs + 1;
+            i = abs + 1;
+        } else {
+            // `\` — escape consumes the next byte.
+            if abs + 1 < bytes.len() {
+                i = abs + 2;
+            } else {
+                // Lone trailing `\` — let decoding report it.
+                i = abs + 1;
+            }
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
+/// Returns `true` iff the key string contains no `.` separator at any
+/// unescaped position. Used by callers that take a non-dotted fast
+/// path; callers still need `decode_key_segment` to materialise the
+/// final byte form when the segment contains a `\`.
+pub(crate) fn key_is_single_segment(s: &str) -> bool {
+    // SIMD-accelerated escape-aware scan via memchr2.
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let rel = match memchr2(b'\\', b'.', &bytes[i..]) {
+            Some(p) => p,
+            None => return true,
+        };
+        let abs = i + rel;
+        if bytes[abs] == b'.' {
+            return false;
+        }
+        // `\` — skip the escaped byte.
+        i = abs + 2;
+    }
+    true
+}
+
+/// Decode a single key segment per spec 0.6.0 § 3.7. The segment must
+/// not contain unescaped `.` or `:` (callers are expected to split on
+/// those first). Returns the decoded String on success or
+/// `BadEscapeSequence` on an unknown `\X`. Identical escape table to
+/// [`process_escapes`].
+pub(crate) fn decode_key_segment(
+    input: &str,
+    line_num: usize,
+    span: Span,
+) -> Result<String, Error> {
+    // Fast path: no backslash → input is already final.
+    if !input.as_bytes().contains(&b'\\') {
+        return Ok(input.to_string());
+    }
+    process_escapes(input, line_num, span)
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +600,7 @@ fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
 
 /// Find the first unescaped `:` in `s` that is at nesting depth 0.
 /// Used to split inline pairs into key and value.
-fn find_unescaped_colon(s: &str) -> Option<usize> {
+fn find_unescaped_colon_inline(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut depth: i32 = 0;
     let mut i = 0;

@@ -32,8 +32,13 @@ fn invalid_keys_rejected() {
     assert!(!is_valid_key("with]bracket"));
     assert!(!is_valid_key("with{brace"));
     assert!(!is_valid_key("with}brace"));
-    assert!(!is_valid_key("with:colon"));
-    // Under 0.5.0, `,` is forbidden
+    // Spec 0.6.0 — `:` is permitted inside a DECODED key segment
+    // (user expresses it via `\:`). `is_valid_key` runs on the
+    // decoded form, so a literal `:` is no longer rejected here.
+    assert!(is_valid_key("with:colon"));
+    // Same for `.` — permitted in decoded form.
+    assert!(is_valid_key("with.dot"));
+    // Under 0.5.0+, `,` is still forbidden.
     assert!(!is_valid_key("with,comma"));
     assert!(!is_valid_key("with(paren"));
     assert!(!is_valid_key("with)paren"));

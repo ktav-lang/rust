@@ -126,6 +126,61 @@ fn invalid_input_returns_structured_error_matching_parse() {
 }
 
 #[test]
+fn escaped_dot_in_key_is_flat_and_decoded_in_event_stream() {
+    // Spec 0.6.0 — `\.` inside a key segment is a literal dot and does
+    // NOT split the dotted path. The event stream should emit a single
+    // flat Key("a.b").
+    let src = "a\\.b: v\n";
+    let events = collect(src);
+    assert_eq!(
+        events,
+        vec![
+            Owned::BeginObject,
+            Owned::Key("a.b".into()),
+            Owned::Str("v".into()),
+            Owned::EndObject,
+        ]
+    );
+}
+
+#[test]
+fn escaped_colon_in_key_is_decoded_in_event_stream() {
+    // Spec 0.6.0 — `\:` inside a key is a literal colon, not the pair
+    // separator.
+    let src = "a\\:b: v\n";
+    let events = collect(src);
+    assert_eq!(
+        events,
+        vec![
+            Owned::BeginObject,
+            Owned::Key("a:b".into()),
+            Owned::Str("v".into()),
+            Owned::EndObject,
+        ]
+    );
+}
+
+#[test]
+fn mixed_dotted_path_with_literal_dot_in_leaf_segment() {
+    // `x.y\.z: v` splits on the FIRST (unescaped) dot only; the second
+    // dot is escaped and stays inside the leaf segment.
+    let src = "x.y\\.z: v\n";
+    let events = collect(src);
+    assert_eq!(
+        events,
+        vec![
+            Owned::BeginObject,
+            Owned::Key("x".into()),
+            Owned::BeginObject,
+            Owned::Key("y.z".into()),
+            Owned::Str("v".into()),
+            Owned::EndObject,
+            Owned::EndObject,
+        ]
+    );
+}
+
+#[test]
 fn dotted_key_resolved_into_synthetic_compound_events() {
     // Dotted keys are resolved at tokenize time → the callback sees a
     // synthetic `Key("a") + BeginObject + Key("b") + Str("v") +

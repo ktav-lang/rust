@@ -8,6 +8,7 @@ use super::classify::classify_value_start;
 use super::collecting::{Collecting, MultilineMode};
 use super::frame::Frame;
 use super::inline;
+use super::inline::find_unescaped_colon;
 use super::insert::insert_value;
 use super::value_start::ValueStart;
 
@@ -249,7 +250,8 @@ impl<'a> Parser<'a> {
         // Byte offset (within `raw`) of where the trimmed line begins.
         let trimmed_off_in_raw = (trimmed_span.start - line_start) as usize;
 
-        let colon = match line.find(':') {
+        // Spec 0.6.0 § 5.3: the pair separator is the first UNescaped `:`.
+        let colon = match find_unescaped_colon(line) {
             Some(c) => c,
             None => {
                 return Err(Error::Structured(ErrorKind::MissingSeparator {
@@ -723,8 +725,8 @@ fn classify_root_kind_050(
 /// a non-empty key before it and whitespace/EOL after it, or `::` raw
 /// marker).
 fn is_pair_shape(trimmed: &str) -> bool {
-    let bytes = trimmed.as_bytes();
-    let Some(colon_idx) = bytes.iter().position(|&b| b == b':') else {
+    // Spec 0.6.0 § 5.3 — pair separator is the first UNescaped `:`.
+    let Some(colon_idx) = find_unescaped_colon(trimmed) else {
         return false;
     };
     // Empty prefix before `:` → array-item shape

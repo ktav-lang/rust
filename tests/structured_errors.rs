@@ -1,4 +1,4 @@
-//! Walks every invalid fixture in `spec/versions/0.5/tests/invalid/` and
+//! Walks every invalid fixture in `spec/versions/0.6/tests/invalid/` and
 //! asserts the parser returns `Error::Structured(kind)` (never the legacy
 //! `Error::Syntax(_)` variant) and that the kind matches the expected
 //! category from the sibling `.json` oracle.
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use ktav::{CompoundKind, Error, ErrorKind, Span};
 
-const SPEC_VERSION: &str = "0.5";
+const SPEC_VERSION: &str = "0.6";
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));

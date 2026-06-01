@@ -9,6 +9,46 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.6.0] — 2026-06-01
+
+Implements Ktav specification 0.6.0. Adds **key escaping**: keys now
+process the §3.7 escape set, and two new escapes — `\.` and `\:` —
+allow literal dot/colon characters inside a key segment.
+
+### Breaking
+
+- A literal backslash in a key now requires `\\`. Previously the
+  parser treated `\` in a key as an opaque content byte (no escape
+  processing). Source files that contain a single `\` in a key must
+  double it to keep the same key bytes. Backslashes in values are
+  unchanged.
+
+### Added
+
+- Escape table grows from 8 to 10 sequences: the existing eight
+  (`\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`) plus the two new
+  key-oriented ones — `\.` (literal dot in a key segment, does NOT
+  split the dotted path) and `\:` (literal colon, does NOT act as the
+  pair separator). The two new escapes are valid (redundant) in value
+  contexts too.
+- The escape-aware key scanner now treats the **first unescaped** `:`
+  (or `::`) as the pair separator and splits dotted paths on
+  **unescaped** `.` only. Inline-compound keys (`{a\.b: 1}`) follow
+  the same rules.
+- Render path re-escapes `\`, `.`, `:` in every emitted key segment,
+  guaranteeing parse → render → parse identity for keys containing
+  literal dots or colons.
+- Zero-copy event path keeps borrowing the source slice for a key
+  segment that has no `\`; segments with escapes are decoded into the
+  bump arena so the event's `&'a str` lifetime is preserved.
+
+### Errors
+
+- `\X` in a key with `X` not in the ten-escape set is now a
+  `BadEscapeSequence`. `\.` and `\:` are no longer `BadEscapeSequence`
+  in any context.
+
+
 ## [0.5.0] — 2026-05-28
 
 Implements Ktav specification 0.5.0. This is a breaking release:

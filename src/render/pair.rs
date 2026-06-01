@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::value::Value;
 
 use super::array_item::render_array_item;
-use super::helpers::{needs_raw_marker, push_indent};
+use super::helpers::{needs_raw_marker, push_escaped_key_segment, push_indent};
 use super::object::render_object_body;
 
 /// Does `s` contain a line whose trimmed form is exactly `term`?
@@ -21,7 +21,11 @@ fn has_sole_terminator_line(s: &str, term: &str) -> bool {
 
 pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut String) -> Result<()> {
     push_indent(out, indent);
-    out.push_str(key);
+    // Spec 0.6.0 § 3.7 — re-escape `\`, `.`, `:` in each key segment
+    // so the parser reads the same segment back. The Object value
+    // stores the *decoded* leaf key as a single byte string; the
+    // emitted form must escape any literal dot/colon.
+    push_escaped_key_segment(key, out);
     match value {
         Value::Null => {
             out.push_str(": null\n");

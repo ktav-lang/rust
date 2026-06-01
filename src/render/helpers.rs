@@ -4,6 +4,34 @@ use crate::parser::classify;
 
 pub(super) const INDENT: &str = "    ";
 
+/// Emit a key (flat, single-segment — the byte string stored on the
+/// Object) into `out`, re-escaping `\`, `.`, `:` per spec 0.6.0 § 3.7
+/// so the parser reads the same segment back.
+///
+/// This is used for the leaf key of a pair (and any non-dotted
+/// segment). Callers that want to emit a dotted path (multiple
+/// segments separated by an UNescaped `.`) join multiple calls with a
+/// literal `.` between them.
+pub(crate) fn push_escaped_key_segment(key: &str, out: &mut String) {
+    // Fast path: most keys don't contain any of the three escape-
+    // worthy bytes.
+    let bytes = key.as_bytes();
+    let needs_escape = bytes.iter().any(|&b| b == b'\\' || b == b'.' || b == b':');
+    if !needs_escape {
+        out.push_str(key);
+        return;
+    }
+    out.reserve(key.len() + 4);
+    for ch in key.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '.' => out.push_str("\\."),
+            ':' => out.push_str("\\:"),
+            other => out.push(other),
+        }
+    }
+}
+
 /// True if the value must be emitted with `::` so that the parser does not
 /// re-interpret it as a compound (`{...}` / `[...]`), a JSON keyword
 /// (`null` / `true` / `false`), a number literal (§ 3.6), or a multi-line

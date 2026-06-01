@@ -14,9 +14,13 @@
 
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
+use memchr::{memchr, memchr2};
 
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 use crate::parser::classify::{is_float_literal, try_parse_integer};
+use crate::parser::inline::{
+    decode_key_segment, find_unescaped_colon, key_is_single_segment, split_key_path,
+};
 
 use super::event::{Event, EventSink, EventStream};
 
@@ -45,23 +49,30 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     // Fast path for the overwhelmingly common case: LF-only input
     // (no CR bytes).  This avoids the per-byte branch on `\r` in the
     // inner scan loop and lets the compiler emit a tighter scan.
-    if !bytes.contains(&b'\r') {
+    if memchr(b'\r', bytes).is_none() {
+        // LF-only fast path: memchr-backed `\n` splitting.
         let mut line_num: usize = 0;
-        let mut offset: usize = 0;
-        for line in text.split('\n') {
+        let mut line_start: usize = 0;
+        while line_start <= bytes.len() {
+            let end = memchr(b'\n', &bytes[line_start..])
+                .map(|p| line_start + p)
+                .unwrap_or(bytes.len());
+            let line: &'a str = &text[line_start..end];
             line_num += 1;
-            let line_start = offset;
-            offset += line.len() + 1; // +1 for the consumed '\n'
             p.handle_line(line, line_num, line_start as u32, &mut events)?;
+            if end == bytes.len() {
+                break;
+            }
+            line_start = end + 1;
         }
     } else {
         let mut line_start: usize = 0;
         let mut line_num: usize = 0;
         while line_start < bytes.len() {
-            let mut end = line_start;
-            while end < bytes.len() && bytes[end] != b'\n' && bytes[end] != b'\r' {
-                end += 1;
-            }
+            // memchr2 → SIMD-accelerated scan for next `\n` or `\r`.
+            let end = memchr2(b'\n', b'\r', &bytes[line_start..])
+                .map(|p| line_start + p)
+                .unwrap_or(bytes.len());
             let content_end = end;
             let next_start = if end < bytes.len() {
                 if bytes[end] == b'\r' && end + 1 < bytes.len() && bytes[end + 1] == b'\n' {
@@ -96,10 +107,10 @@ fn detect_root_kind(text: &str, bytes: &[u8]) -> RootKind {
     let mut i = 0;
     while i < bytes.len() {
         let line_start = i;
-        // Find next line terminator (CR / LF / CR LF)
-        while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
-            i += 1;
-        }
+        // Find next line terminator (CR / LF / CR LF) via SIMD memchr2.
+        i = memchr2(b'\n', b'\r', &bytes[i..])
+            .map(|p| line_start + p)
+            .unwrap_or(bytes.len());
         let content_end = i;
         // Skip terminator
         if i < bytes.len() {
@@ -148,9 +159,9 @@ fn classify_first_line_root_kind(trimmed: &str) -> RootKind {
 }
 
 /// Check if the trimmed line looks like a pair shape.
+/// Spec 0.6.0 § 5.3 — the separator is the first UNescaped `:`.
 fn is_pair_shape(trimmed: &str) -> bool {
-    let bytes = trimmed.as_bytes();
-    let Some(colon_idx) = bytes.iter().position(|&b| b == b':') else {
+    let Some(colon_idx) = find_unescaped_colon(trimmed) else {
         return false;
     };
     let key_part = trimmed[..colon_idx].trim_end();
@@ -355,7 +366,8 @@ impl<'a> EventParser<'a> {
         trimmed_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let colon = match trimmed.find(':') {
+        // Spec 0.6.0 § 5.3 — pair separator is the first UNescaped `:`.
+        let colon = match find_unescaped_colon(trimmed) {
             Some(c) => c,
             None => {
                 return Err(Error::Structured(ErrorKind::MissingSeparator {
@@ -624,54 +636,70 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<&'a str> {
-        if !key.as_bytes().contains(&b'.') {
+        // Single segment (no UNescaped `.`) fast path. Decode the
+        // segment if it contains a `\`; otherwise reuse the source
+        // borrow.
+        if key_is_single_segment(key) {
             self.close_synthetics_to_real(events);
-            if !is_valid_key(key) {
+            let leaf = self.decode_key_in_arena(key, line_num, key_span)?;
+            if !is_valid_key(leaf) {
                 return Err(Error::Structured(ErrorKind::InvalidKey {
                     line: line_num as u32,
                     key: key.to_string(),
                     span: key_span,
                 }));
             }
-            return Ok(key);
+            return Ok(leaf);
         }
 
-        let (prefix_str, leaf) = key.rsplit_once('.').unwrap();
-        if leaf.is_empty() || !is_valid_key(leaf) {
-            return Err(Error::Structured(ErrorKind::InvalidKey {
-                line: line_num as u32,
-                key: key.to_string(),
-                span: key_span,
-            }));
+        // Multi-segment path — split on UNescaped `.`, decode each
+        // segment (arena-allocated if it had `\`).
+        let raw_segments = split_key_path(key);
+        debug_assert!(raw_segments.len() >= 2);
+        let mut decoded_segments: Vec<&'a str> = Vec::with_capacity(raw_segments.len());
+        for seg in &raw_segments {
+            // Empty segment → InvalidKey (`a..b`, leading/trailing `.`).
+            let trimmed = seg.trim();
+            if trimmed.is_empty() {
+                return Err(Error::Structured(ErrorKind::InvalidKey {
+                    line: line_num as u32,
+                    key: key.to_string(),
+                    span: key_span,
+                }));
+            }
+            let decoded = self.decode_key_in_arena(trimmed, line_num, key_span)?;
+            if !is_valid_key(decoded) {
+                return Err(Error::Structured(ErrorKind::InvalidKey {
+                    line: line_num as u32,
+                    key: key.to_string(),
+                    span: key_span,
+                }));
+            }
+            decoded_segments.push(decoded);
         }
+
+        let leaf = *decoded_segments.last().unwrap();
+        let prefix_segments = &decoded_segments[..decoded_segments.len() - 1];
 
         let cur_levels_len = match self.stack.last().unwrap() {
             Frame::Object { levels, .. } => levels.len(),
             _ => unreachable!("dispatched as object"),
         };
 
-        let mut new_iter = prefix_str.split('.');
         let mut lcp_count: usize = 0;
-        let mut next_seg: Option<&'a str> = None;
+        let mut pending_seg_idx: Option<usize> = None;
 
-        while lcp_count + 1 < cur_levels_len {
+        for (i, seg) in prefix_segments.iter().enumerate() {
+            if lcp_count + 1 >= cur_levels_len {
+                pending_seg_idx = Some(i);
+                break;
+            }
             let cur_prefix = match self.stack.last().unwrap() {
                 Frame::Object { levels, .. } => levels[1 + lcp_count].prefix.unwrap(),
                 _ => unreachable!(),
             };
-            let seg = match new_iter.next() {
-                Some(s) => s,
-                None => break,
-            };
-            if !is_valid_key(seg) {
-                return Err(Error::Structured(ErrorKind::InvalidKey {
-                    line: line_num as u32,
-                    key: key.to_string(),
-                    span: key_span,
-                }));
-            }
-            if seg != cur_prefix {
-                next_seg = Some(seg);
+            if *seg != cur_prefix {
+                pending_seg_idx = Some(i);
                 break;
             }
             lcp_count += 1;
@@ -682,21 +710,29 @@ impl<'a> EventParser<'a> {
             self.pop_synthetic_level(events);
         }
 
-        if let Some(seg) = next_seg {
-            self.push_synthetic(seg, line_num, key_span, events)?;
-        }
-        for seg in new_iter {
-            if !is_valid_key(seg) {
-                return Err(Error::Structured(ErrorKind::InvalidKey {
-                    line: line_num as u32,
-                    key: key.to_string(),
-                    span: key_span,
-                }));
-            }
+        let push_start = pending_seg_idx.unwrap_or(prefix_segments.len());
+        for seg in &prefix_segments[push_start..] {
             self.push_synthetic(seg, line_num, key_span, events)?;
         }
 
         Ok(leaf)
+    }
+
+    /// Decode a key segment per § 3.7. If the input contains no `\`,
+    /// the source slice is returned as-is (zero-copy fast path); else
+    /// the decoded byte string is allocated in the bump arena so the
+    /// returned `&'a str` outlives the call.
+    fn decode_key_in_arena(
+        &self,
+        seg: &'a str,
+        line_num: usize,
+        key_span: Span,
+    ) -> Result<&'a str> {
+        if !seg.as_bytes().contains(&b'\\') {
+            return Ok(seg);
+        }
+        let decoded = decode_key_segment(seg, line_num, key_span)?;
+        Ok(self.bump.alloc_str(&decoded))
     }
 
     #[inline]
@@ -1129,11 +1165,11 @@ fn is_valid_key(k: &str) -> bool {
         return false;
     }
     let bytes = k.as_bytes();
-    // Scalar-first loop: branch predictor learns quickly that most bytes
-    // are valid. A single mis-predict on the rare invalid byte is cheaper
-    // than the per-byte closure overhead of `.any(|&b| …)`.
+    // Spec 0.6.0 — `:` and `.` are allowed in a DECODED key segment
+    // (the user expressed them via `\:` / `\.`). The remaining
+    // structural bytes are still forbidden.
     for &b in bytes {
-        if matches!(b, b'[' | b']' | b'{' | b'}' | b':' | b',' | b'(' | b')') {
+        if matches!(b, b'[' | b']' | b'{' | b'}' | b',' | b'(' | b')') {
             return false;
         }
     }

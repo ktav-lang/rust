@@ -90,7 +90,8 @@ fn first_item_needs_wrap(item: &Value) -> bool {
 /// Emit a single `key: value` / `key:: value` / compound pair.
 fn emit_pair(key: &str, value: &Value, indent: usize, out: &mut String) -> Result<()> {
     push_indent(out, indent);
-    out.push_str(key);
+    // Spec 0.6.0 § 3.7 — re-escape `\`, `.`, `:` in the key.
+    crate::render::helpers::push_escaped_key_segment(key, out);
     match value {
         Value::Null => {
             // § 5.9.9

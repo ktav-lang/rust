@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use ktav::Value;
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 
-const SPEC_VERSION: &str = "0.5";
+const SPEC_VERSION: &str = "0.6";
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
