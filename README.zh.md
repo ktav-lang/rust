@@ -5,6 +5,8 @@
 
 **Languages:** [English](README.md) · [Русский](README.ru.md) · **简体中文**
 
+**演练场：** 在浏览器中互转 JSON / YAML / TOML / INI ⇄ Ktav — **[ktav-lang.github.io](https://ktav-lang.github.io/)**。
+
 **规范:** 本 crate 实现 **Ktav 0.1**。格式与 crate 彼此独立地
 版本化与维护——规范正文见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec)。

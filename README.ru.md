@@ -6,6 +6,8 @@
 
 **Languages:** [English](README.md) · **Русский** · [简体中文](README.zh.md)
 
+**Песочница:** конвертация JSON / YAML / TOML / INI ⇄ Ktav прямо в браузере — **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
+
 **Спецификация:** этот crate реализует **Ktav 0.1**. Формат версионируется
 и поддерживается независимо от crate-а — см.
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) для
