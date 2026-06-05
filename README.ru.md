@@ -14,7 +14,7 @@
 
 **Песочница:** конвертация JSON / YAML / TOML / INI ⇄ Ktav прямо в браузере — **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Спецификация:** этот crate реализует **Ktav 0.1**. Формат версионируется
+**Спецификация:** этот crate реализует **Ktav**. Формат версионируется
 и поддерживается независимо от crate-а — см.
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) для
 канонического документа.
@@ -44,7 +44,7 @@
 объекта — пары; внутри любого массива — элементы.
 
 ```text
-# comment              — any line starting with '#'
+## comment              — any line starting with '##'
 key: value             — scalar pair; key may be a dotted path (a.b.c)
 key:: value            — scalar pair; value is ALWAYS a literal string
 key: { ... }           — multi-line object; `}` closes on its own line
@@ -71,7 +71,7 @@ key: (( ... ))         — multi-line string; verbatim (no stripping)
 name: Russia
 path: /etc/hosts
 greeting: hello world
-# `::` принудительно задаёт литеральную строку
+## `::` принудительно задаёт литеральную строку
 pattern:: [a-z]+
 ```
 
@@ -98,15 +98,15 @@ huge: 1234567890123
 Строго нижний регистр. Всё остальное — строка.
 
 ```text
-# Value::Bool(true)
+## Value::Bool(true)
 on: true
-# Value::Bool(false)
+## Value::Bool(false)
 off: false
-# Value::String("True")
+## Value::String("True")
 capitalized: True
-# Value::String("FALSE")
+## Value::String("FALSE")
 yelling:    FALSE
-# Value::String("true")
+## Value::String("true")
 literal:: true
 ```
 
@@ -116,11 +116,11 @@ literal:: true
 а также `()` для unit.
 
 ```text
-# Value::Null
+## Value::Null
 label: null
-# Value::String("Null")
+## Value::String("Null")
 capitalized: Null
-# Value::String("null")
+## Value::String("null")
 literal:: null
 ```
 
@@ -134,9 +134,9 @@ literal:: null
 запятые не нужны.
 
 ```text
-# пустой объект
+## пустой объект
 meta: {}
-# пустой массив
+## пустой массив
 tags: []
 ```
 
@@ -148,9 +148,9 @@ tags: []
 поступайте так же:
 
 ```text
-# строка "true", а не булево
+## строка "true", а не булево
 flag:: true
-# строка "null", а не Null
+## строка "null", а не Null
 noun:: null
 regex:: [a-z]+
 ipv6:: [::1]:8080
@@ -165,11 +165,11 @@ template:: {issue.id}.tpl
 разделения запятыми и нет механизма escape для них.
 
 ```text
-# rejected — inline non-empty compound
+## rejected — inline non-empty compound
 server: { host: 127.0.0.1, port: 8080 }
 tags: [primary, eu, prod]
 
-# accepted — multi-line form
+## accepted — multi-line form
 server: {
     host: 127.0.0.1
     port: 8080
@@ -208,15 +208,15 @@ struct Config {
 
 const SRC: &str = "\
 service: web
-port:i 8080
-ratio:f 0.75
+port: 8080
+ratio: 0.75
 tls: true
 tags: [
     prod
     eu-west-1
 ]
 db.host: primary.internal
-db.timeout:i 30
+db.timeout: 30
 ";
 
 let cfg: Config = ktav::from_str(SRC)?;
@@ -314,7 +314,7 @@ custom-shape-а.
 ```rust
 use ktav::{parse_events, ParseEvent};
 
-let src = "port:i 8080\nhost: example.com\n";
+let src = "port: 8080\nhost: example.com\n";
 let mut keys = Vec::new();
 parse_events(src, |ev| {
     if let ParseEvent::Key(k) = ev {
@@ -330,14 +330,15 @@ assert_eq!(keys, ["port", "host"]);
 и pretty-print-ом:
 [`examples/events.rs`](examples/events.rs) — `cargo run --example events`.
 
-### Типизированные маркеры
+### Числа
 
 Числовые Rust-типы (`u8`..`u128`, `i8`..`i128`, `usize`, `isize`, `f32`,
-`f64`) сериализуются в Ktav с явными типизированными маркерами:
-`port:i 8080`, `ratio:f 0.5`. Десериализация принимает *обе* формы —
-и с маркерами, и plain-string; документы, написанные без маркеров,
-по-прежнему работают, как и раньше. `NaN` / `±Infinity` отвергаются
-сериализатором (Ktav 0.1.0 их не представляет).
+`f64`) сериализуются в Ktav как голые числа: `port: 8080`,
+`ratio: 0.5`. На обратном пути голое целое/десятичное тело
+десериализуется прямо в нужный числовой тип; значение, пришедшее
+строкой (например, форсированное через `::`), по-прежнему принимается
+через `FromStr`. `NaN` / `±Infinity` отвергаются сериализатором
+(Ktav их не представляет).
 
 ## Примеры: Ktav → JSON5
 
@@ -502,11 +503,11 @@ regex-ов и IPv6-адресов просто работает.
 ### 8. Комментарии
 
 ```text
-# top-level comment
+## top-level comment
 port: 8080
 
 items: [
-    # this comment does not break the array
+    ## this comment does not break the array
     a
     b
 ]
@@ -591,10 +592,10 @@ enum Action {
 ```
 
 ```text
-# unit variant — just the name
+## unit variant — just the name
 mode: fast
 
-# newtype variant — single-entry object
+## newtype variant — single-entry object
 action: {
     Log: hello
 }
@@ -648,11 +649,9 @@ ktav/
 
 ## Установка
 
-После публикации:
-
 ```toml
 [dependencies]
-ktav = "0.1"
+ktav = "0.6.0"
 serde = { version = "1", features = ["derive"] }
 ```
 

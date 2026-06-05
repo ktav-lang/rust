@@ -13,7 +13,7 @@
 
 **演练场：** 在浏览器中互转 JSON / YAML / TOML / INI ⇄ Ktav — **[ktav-lang.github.io](https://ktav-lang.github.io/)**。
 
-**规范:** 本 crate 实现 **Ktav 0.1**。格式与 crate 彼此独立地
+**规范:** 本 crate 实现 **Ktav**。格式与 crate 彼此独立地
 版本化与维护——规范正文见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec)。
 
@@ -39,7 +39,7 @@ Ktav 文档是一个隐式的顶层对象。任何对象里是键值对,任何�
 元素。
 
 ```text
-# comment              — any line starting with '#'
+## comment              — any line starting with '##'
 key: value             — scalar pair; key may be a dotted path (a.b.c)
 key:: value            — scalar pair; value is ALWAYS a literal string
 key: { ... }           — multi-line object; `}` closes on its own line
@@ -65,7 +65,7 @@ key: (( ... ))         — multi-line string; verbatim (no stripping)
 name: Russia
 path: /etc/hosts
 greeting: hello world
-# `::` 强制将值解释为字面量字符串
+## `::` 强制将值解释为字面量字符串
 pattern:: [a-z]+
 ```
 
@@ -90,15 +90,15 @@ huge: 1234567890123
 严格小写。其它写法都是字符串。
 
 ```text
-# Value::Bool(true)
+## Value::Bool(true)
 on: true
-# Value::Bool(false)
+## Value::Bool(false)
 off: false
-# Value::String("True")
+## Value::String("True")
 capitalized: True
-# Value::String("FALSE")
+## Value::String("FALSE")
 yelling:    FALSE
-# Value::String("true")
+## Value::String("true")
 literal:: true
 ```
 
@@ -107,11 +107,11 @@ literal:: true
 严格小写。对应 Rust 侧的 `Option::None`,以及 unit 类型 `()`。
 
 ```text
-# Value::Null
+## Value::Null
 label: null
-# Value::String("Null")
+## Value::String("Null")
 capitalized: Null
-# Value::String("null")
+## Value::String("null")
 literal:: null
 ```
 
@@ -123,9 +123,9 @@ literal:: null
 **唯一**允许的内联复合值——没什么要分隔,不需要逗号。
 
 ```text
-# 空对象
+## 空对象
 meta: {}
-# 空数组
+## 空数组
 tags: []
 ```
 
@@ -136,9 +136,9 @@ tags: []
 写入端请用同样的方式:
 
 ```text
-# 字符串 "true",而非 Bool
+## 字符串 "true",而非 Bool
 flag:: true
-# 字符串 "null",而非 Null
+## 字符串 "null",而非 Null
 noun:: null
 regex:: [a-z]+
 ipv6:: [::1]:8080
@@ -152,11 +152,11 @@ template:: {issue.id}.tpl
 逗号分隔的规则,也没有针对它们的转义机制。
 
 ```text
-# rejected — inline non-empty compound
+## rejected — inline non-empty compound
 server: { host: 127.0.0.1, port: 8080 }
 tags: [primary, eu, prod]
 
-# accepted — multi-line form
+## accepted — multi-line form
 server: {
     host: 127.0.0.1
     port: 8080
@@ -195,15 +195,15 @@ struct Config {
 
 const SRC: &str = "\
 service: web
-port:i 8080
-ratio:f 0.75
+port: 8080
+ratio: 0.75
 tls: true
 tags: [
     prod
     eu-west-1
 ]
 db.host: primary.internal
-db.timeout:i 30
+db.timeout: 30
 ";
 
 let cfg: Config = ktav::from_str(SRC)?;
@@ -297,7 +297,7 @@ match parse(src) {
 ```rust
 use ktav::{parse_events, ParseEvent};
 
-let src = "port:i 8080\nhost: example.com\n";
+let src = "port: 8080\nhost: example.com\n";
 let mut keys = Vec::new();
 parse_events(src, |ev| {
     if let ParseEvent::Key(k) = ev {
@@ -312,13 +312,13 @@ assert_eq!(keys, ["port", "host"]);
 和漂亮打印的可运行示例:
 [`examples/events.rs`](examples/events.rs) —— `cargo run --example events`。
 
-### 类型化标记
+### 数字
 
 Rust 数值类型(`u8`..`u128`、`i8`..`i128`、`usize`、`isize`、`f32`、
-`f64`)会以显式的类型化标记序列化到 Ktav:`port:i 8080`、
-`ratio:f 0.5`。反序列化接受*两种*形式 —— 带标记的以及纯字符串形式;
-未带标记的旧文档仍能正常工作,与以前一致。`NaN` / `±Infinity` 会被
-序列化器拒绝(Ktav 0.1.0 不表示这些值)。
+`f64`)会以裸数字序列化到 Ktav:`port: 8080`、`ratio: 0.5`。回程时,
+裸整数/小数 body 直接反序列化为目标数值类型;以字符串形式到达的值
+(例如用 `::` 强制的)仍通过 `FromStr` 接受。`NaN` / `±Infinity` 会被
+序列化器拒绝(Ktav 不表示这些值)。
 
 ## 示例:Ktav → JSON5
 
@@ -479,11 +479,11 @@ hosts: [
 ### 8. 注释
 
 ```text
-# top-level comment
+## top-level comment
 port: 8080
 
 items: [
-    # this comment does not break the array
+    ## this comment does not break the array
     a
     b
 ]
@@ -562,10 +562,10 @@ enum Action {
 ```
 
 ```text
-# unit variant — just the name
+## unit variant — just the name
 mode: fast
 
-# newtype variant — single-entry object
+## newtype variant — single-entry object
 action: {
     Log: hello
 }
@@ -615,11 +615,9 @@ ktav/
 
 ## 安装
 
-发布后:
-
 ```toml
 [dependencies]
-ktav = "0.1"
+ktav = "0.6.0"
 serde = { version = "1", features = ["derive"] }
 ```
 

@@ -14,7 +14,7 @@
 
 **Playground:** convert JSON / YAML / TOML / INI ⇄ Ktav in your browser at **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Specification:** this crate implements **Ktav 0.1**. The format is
+**Specification:** this crate implements **Ktav**. The format is
 versioned and maintained independently of this crate — see
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) for the formal
 document.
@@ -44,7 +44,7 @@ A Ktav document is an implicit top-level object. Inside any object you
 have pairs; inside any array you have items.
 
 ```text
-# comment              — any line starting with '#'
+## comment              — any line starting with '##'
 key: value             — scalar pair; key may be a dotted path (a.b.c)
 key:: value            — scalar pair; value is ALWAYS a literal string
 key: { ... }           — multi-line object; `}` closes on its own line
@@ -70,16 +70,18 @@ is whatever follows `:` after trimming.
 name: Russia
 path: /etc/hosts
 greeting: hello world
-# `::` forces a literal string
+## `::` forces a literal string
 pattern:: [a-z]+
 ```
 
 ### Numbers
 
-Numbers are written bare (no quotes). At the `Value` level they are
-strings; serde parses them into the target Rust type (`u16`, `i64`,
-`f64`, …) using `FromStr` on deserialization, and formats them with
-`Display` on serialization.
+Numbers are written bare (no quotes) and typed by lexical form: a bare
+integer body parses to `Value::Integer`, a bare decimal to
+`Value::Float` (each holds its exact text, so precision round-trips).
+serde deserializes them into the target Rust type (`u16`, `i64`,
+`f64`, …) via `FromStr`, and formats them with `Display` on
+serialization; a value forced to a string with `::` is still accepted.
 
 ```text
 port: 8080
@@ -97,15 +99,15 @@ A value like `port: abc` parses fine *at the Ktav level* (string
 Strict lowercase. Anything else is a string.
 
 ```text
-# Value::Bool(true)
+## Value::Bool(true)
 on: true
-# Value::Bool(false)
+## Value::Bool(false)
 off: false
-# Value::String("True")
+## Value::String("True")
 capitalized: True
-# Value::String("FALSE")
+## Value::String("FALSE")
 yelling:    FALSE
-# Value::String("true")
+## Value::String("true")
 literal:: true
 ```
 
@@ -115,11 +117,11 @@ Strict lowercase. Matches `Option::None` on the Rust side, as well as
 `()` for unit.
 
 ```text
-# Value::Null
+## Value::Null
 label: null
-# Value::String("Null")
+## Value::String("Null")
 capitalized: Null
-# Value::String("null")
+## Value::String("null")
 literal:: null
 ```
 
@@ -133,9 +135,9 @@ The **only** inline compound values allowed — nothing to separate, no
 commas needed.
 
 ```text
-# empty object
+## empty object
 meta: {}
-# empty array
+## empty array
 tags: []
 ```
 
@@ -147,9 +149,9 @@ automatically** so the round-trip is lossless. On the writing side you
 do the same:
 
 ```text
-# the string "true", not a bool
+## the string "true", not a bool
 flag:: true
-# the string "null", not a null
+## the string "null", not a null
 noun:: null
 regex:: [a-z]+
 ipv6:: [::1]:8080
@@ -164,11 +166,11 @@ rejected with a clear error — Ktav has no comma-separation rules and
 no escape mechanism for them.
 
 ```text
-# rejected — inline non-empty compound
+## rejected — inline non-empty compound
 server: { host: 127.0.0.1, port: 8080 }
 tags: [primary, eu, prod]
 
-# accepted — multi-line form
+## accepted — multi-line form
 server: {
     host: 127.0.0.1
     port: 8080
@@ -207,15 +209,15 @@ struct Config {
 
 const SRC: &str = "\
 service: web
-port:i 8080
-ratio:f 0.75
+port: 8080
+ratio: 0.75
 tls: true
 tags: [
     prod
     eu-west-1
 ]
 db.host: primary.internal
-db.timeout:i 30
+db.timeout: 30
 ";
 
 let cfg: Config = ktav::from_str(SRC)?;
@@ -311,7 +313,7 @@ counting keys, streaming to another format, building a custom shape.
 ```rust
 use ktav::{parse_events, ParseEvent};
 
-let src = "port:i 8080\nhost: example.com\n";
+let src = "port: 8080\nhost: example.com\n";
 let mut keys = Vec::new();
 parse_events(src, |ev| {
     if let ParseEvent::Key(k) = ev {
@@ -327,14 +329,14 @@ pair; nested compounds bracket their contents. `ParseEvent` is
 and a pretty-printer:
 [`examples/events.rs`](examples/events.rs) — `cargo run --example events`.
 
-### Typed markers
+### Numbers
 
 Rust numeric types (`u8`..`u128`, `i8`..`i128`, `usize`, `isize`, `f32`,
-`f64`) serialize to Ktav with explicit typed markers: `port:i 8080`,
-`ratio:f 0.5`. Deserialization accepts *both* typed-marker and plain-string
-forms — documents written without markers still work, exactly as before.
-`NaN` / `±Infinity` are rejected by the serializer (Ktav 0.1.0 does not
-represent them).
+`f64`) serialize to Ktav as bare numbers: `port: 8080`, `ratio: 0.5`.
+Coming back, a bare integer/decimal body deserializes straight into
+the target numeric type; a value that arrived as a string (e.g. forced
+with `::`) is still accepted via `FromStr`. `NaN` / `±Infinity` are
+rejected by the serializer (Ktav does not represent them).
 
 ## Examples: Ktav → JSON5
 
@@ -499,11 +501,11 @@ round-tripping regexes and IPv6 addresses just works.
 ### 8. Comments
 
 ```text
-# top-level comment
+## top-level comment
 port: 8080
 
 items: [
-    # this comment does not break the array
+    ## this comment does not break the array
     a
     b
 ]
@@ -587,10 +589,10 @@ enum Action {
 ```
 
 ```text
-# unit variant — just the name
+## unit variant — just the name
 mode: fast
 
-# newtype variant — single-entry object
+## newtype variant — single-entry object
 action: {
     Log: hello
 }
@@ -643,11 +645,9 @@ their parent module.
 
 ## Installation
 
-Once published:
-
 ```toml
 [dependencies]
-ktav = "0.1"
+ktav = "0.6.0"
 serde = { version = "1", features = ["derive"] }
 ```
 
