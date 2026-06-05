@@ -9,6 +9,10 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.6.1] — 2026-06-05
+
+- Docs: rewrite all README examples to spec 0.6 syntax (bare numbers instead of removed `:i`/`:f` markers; `##` comments instead of `#`).
+
 ## [0.6.0] — 2026-06-01
 
 Implements Ktav specification 0.6.0. Adds **key escaping**: keys now
