@@ -280,13 +280,42 @@ match parse(src) {
 变体:`MissingSeparatorSpace`、`InvalidTypedScalar`、`DuplicateKey`、
 `KeyPathConflict`、`EmptyKey`、`InvalidKey`、`UnclosedCompound`、
 `UnbalancedBracket`、`InlineNonEmptyCompound`、`MissingSeparator`、
-`Other`。该枚举标注 `#[non_exhaustive]` —— 必须包含 `_ =>` 分支。
-变体不重要时可使用便捷访问器 `Error::line()` / `Error::span()`。
-`Display` 输出的字符串与遗留 `Error::Syntax(_)` 完全一致,因此原有
-基于字符串的调用方无需修改即可继续工作。
+`LossyScalar`（仅严格模式，见下文）、`Other`。该枚举标注
+`#[non_exhaustive]` —— 必须包含 `_ =>` 分支。变体不重要时可使用便捷
+访问器 `Error::line()` / `Error::span()`。`Display` 输出的字符串与
+遗留 `Error::Syntax(_)` 完全一致,因此原有基于字符串的调用方无需修改
+即可继续工作。
 
 完整可运行示例遍历所有变体:
 [`examples/errors.rs`](examples/errors.rs) —— `cargo run --example errors`。
+
+### 严格模式 —— 捕获被静默规范化的数字
+
+类型由标量的词法形式推断，且推断出的数字会被规范化：`version: 1.10`
+解析为 `Float(1.1)`，`zip: 01234` 解析为 `Integer(1234)`。默认的
+`parse()` 会静默完成这一过程，因此把文档写回去就会改写它。
+
+`parse_strict()` 则拒绝这类**有损标量**：
+
+```rust
+use ktav::{parse, parse_strict, Error, ErrorKind};
+
+let src = "zip: 01234\n";
+
+assert!(parse(src).is_ok());                 // Integer(1234) —— 前导零丢失
+
+match parse_strict(src) {
+    Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
+        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+    }
+    other => panic!("期望 LossyScalar，实际为 {other:?}"),
+}
+```
+
+修复方式有两种：追加 `::` 让该值保持字符串（`zip:: 01234`），或直接
+写成规范数字。凡是 `parse_strict()` 接受的文档，其产生的 `Value` 树
+与 `parse()` 完全相同 —— 严格模式是一道校验闸门，而非另一种方言。
+serde 路径（`from_str`）目前尚无严格模式变体。
 
 ### 流式解析 —— 不构建中间树的事件流
 

@@ -11,6 +11,29 @@
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
 
+## Unreleased
+
+### 新增
+
+- `parse_strict()` —— 可选的严格解析模式，拒绝**有损标量**：即词法形式
+  与其将被推断成的数字的规范形式不一致的值（`1.10` → `1.1`、`01234` →
+  `1234`、`+7`、`0x1A`、`0o755`、`1_000`、`5e3`）。默认的 `parse()`
+  会静默地将这类值规范化，因此往返一次就会改写文档且没有任何提示；
+  严格模式则将其暴露出来，错误信息同时给出两种形式，并提示两种修复
+  方式（追加 `::` 以保留字符串，或直接写规范数字）。被
+  `parse_strict()` 接受的文档产生的 `Value` 树与 `parse()` 完全一致。
+- `ErrorKind::LossyScalar { line, body, canonical, span }` —— 仅在严格
+  模式下出现的新错误变体，已接入 `ErrorKind::line()` /
+  `ErrorKind::span()`。`ErrorKind` 标注了 `#[non_exhaustive]`，因此这是
+  一次增量式变更。
+
+`parse()`、serde 路径（`from_str`）与 C ABI 的行为均未改变；serde
+事件路径目前尚无严格模式变体。
+
+感谢 [@chappihappymeal](https://github.com/chappihappymeal) 报告问题
+并贡献实现（[#1](https://github.com/ktav-lang/rust/issues/1)、
+[#2](https://github.com/ktav-lang/rust/pull/2)）。
+
 ## [0.6.1] — 2026-06-05
 
 - 文档：将所有 README 示例改写为 spec 0.6 语法（裸数字替代已移除的 `:i`/`:f` 标记；`##` 注释替代 `#`）。
