@@ -71,7 +71,7 @@ fn paths_validated_segment_by_segment_via_insert() {
 
 #[test]
 fn classify_scalar() {
-    match classify_value_start("hello", 1, S).unwrap() {
+    match classify_value_start("hello", 1, S, false).unwrap() {
         ValueStart::Scalar(s) => assert_eq!(s, "hello"),
         _ => panic!("expected Scalar"),
     }
@@ -80,15 +80,15 @@ fn classify_scalar() {
 #[test]
 fn classify_keywords() {
     assert!(matches!(
-        classify_value_start("null", 1, S).unwrap(),
+        classify_value_start("null", 1, S, false).unwrap(),
         ValueStart::Null
     ));
     assert!(matches!(
-        classify_value_start("true", 1, S).unwrap(),
+        classify_value_start("true", 1, S, false).unwrap(),
         ValueStart::Bool(true)
     ));
     assert!(matches!(
-        classify_value_start("false", 1, S).unwrap(),
+        classify_value_start("false", 1, S, false).unwrap(),
         ValueStart::Bool(false)
     ));
 }
@@ -96,11 +96,11 @@ fn classify_keywords() {
 #[test]
 fn classify_case_sensitive_keywords() {
     // Only lowercase matches -- "True" / "NULL" are strings.
-    match classify_value_start("True", 1, S).unwrap() {
+    match classify_value_start("True", 1, S, false).unwrap() {
         ValueStart::Scalar(s) => assert_eq!(s, "True"),
         _ => panic!("expected Scalar"),
     }
-    match classify_value_start("NULL", 1, S).unwrap() {
+    match classify_value_start("NULL", 1, S, false).unwrap() {
         ValueStart::Scalar(s) => assert_eq!(s, "NULL"),
         _ => panic!("expected Scalar"),
     }
@@ -109,11 +109,11 @@ fn classify_case_sensitive_keywords() {
 #[test]
 fn classify_open_compounds() {
     assert!(matches!(
-        classify_value_start("{", 1, S).unwrap(),
+        classify_value_start("{", 1, S, false).unwrap(),
         ValueStart::OpenObject
     ));
     assert!(matches!(
-        classify_value_start("[", 1, S).unwrap(),
+        classify_value_start("[", 1, S, false).unwrap(),
         ValueStart::OpenArray
     ));
 }
@@ -121,19 +121,19 @@ fn classify_open_compounds() {
 #[test]
 fn classify_empty_inline_compounds() {
     assert!(matches!(
-        classify_value_start("{}", 1, S).unwrap(),
+        classify_value_start("{}", 1, S, false).unwrap(),
         ValueStart::EmptyObject
     ));
     assert!(matches!(
-        classify_value_start("[]", 1, S).unwrap(),
+        classify_value_start("[]", 1, S, false).unwrap(),
         ValueStart::EmptyArray
     ));
     assert!(matches!(
-        classify_value_start("{ }", 1, S).unwrap(),
+        classify_value_start("{ }", 1, S, false).unwrap(),
         ValueStart::EmptyObject
     ));
     assert!(matches!(
-        classify_value_start("[  ]", 1, S).unwrap(),
+        classify_value_start("[  ]", 1, S, false).unwrap(),
         ValueStart::EmptyArray
     ));
 }
@@ -141,7 +141,7 @@ fn classify_empty_inline_compounds() {
 #[test]
 fn classify_inline_nonempty_accepted() {
     // Phase 4: inline compounds are now parsed into InlineValue
-    match classify_value_start("{a: 1}", 1, S).unwrap() {
+    match classify_value_start("{a: 1}", 1, S, false).unwrap() {
         ValueStart::InlineValue(v) => {
             assert!(v.as_object().is_some());
             let obj = v.as_object().unwrap();
@@ -152,7 +152,7 @@ fn classify_inline_nonempty_accepted() {
             std::mem::discriminant(&other)
         ),
     }
-    match classify_value_start("[1, 2]", 1, S).unwrap() {
+    match classify_value_start("[1, 2]", 1, S, false).unwrap() {
         ValueStart::InlineValue(v) => {
             let arr = v.as_array().unwrap();
             assert_eq!(arr.len(), 2);
@@ -335,16 +335,16 @@ fn float_rejects_bad_forms() {
 
 #[test]
 fn classify_infers_integer() {
-    match classify_value_start("42", 1, S).unwrap() {
+    match classify_value_start("42", 1, S, false).unwrap() {
         ValueStart::Integer(s) => assert_eq!(s, "42"),
         other => panic!("expected Integer, got {:?}", std::mem::discriminant(&other)),
     }
-    match classify_value_start("-7", 1, S).unwrap() {
+    match classify_value_start("-7", 1, S, false).unwrap() {
         ValueStart::Integer(s) => assert_eq!(s, "-7"),
         other => panic!("expected Integer, got {:?}", std::mem::discriminant(&other)),
     }
     // Hex produces canonical decimal
-    match classify_value_start("0xFF", 1, S).unwrap() {
+    match classify_value_start("0xFF", 1, S, false).unwrap() {
         ValueStart::Integer(s) => assert_eq!(s, "255"),
         other => panic!("expected Integer, got {:?}", std::mem::discriminant(&other)),
     }
@@ -352,11 +352,11 @@ fn classify_infers_integer() {
 
 #[test]
 fn classify_infers_float() {
-    match classify_value_start("3.14", 1, S).unwrap() {
+    match classify_value_start("3.14", 1, S, false).unwrap() {
         ValueStart::Float(_) => {}
         other => panic!("expected Float, got {:?}", std::mem::discriminant(&other)),
     }
-    match classify_value_start("1e10", 1, S).unwrap() {
+    match classify_value_start("1e10", 1, S, false).unwrap() {
         ValueStart::Float(_) => {}
         other => panic!("expected Float, got {:?}", std::mem::discriminant(&other)),
     }
@@ -365,7 +365,7 @@ fn classify_infers_float() {
 #[test]
 fn classify_integer_overflow_falls_to_string() {
     // i64::MAX + 1 should be a String
-    match classify_value_start("9223372036854775808", 1, S).unwrap() {
+    match classify_value_start("9223372036854775808", 1, S, false).unwrap() {
         ValueStart::Scalar(s) => assert_eq!(s, "9223372036854775808"),
         other => panic!(
             "expected Scalar (String), got {:?}",

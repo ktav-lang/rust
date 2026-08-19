@@ -18,7 +18,17 @@ use super::parser::Parser;
 ///
 /// A bare `CR` (not followed by `LF`) is its own terminator.
 pub(crate) fn parse_str(text: &str) -> Result<Value, Error> {
-    let mut parser = Parser::new();
+    parse_str_impl(text, false)
+}
+
+/// Strict variant of [`parse_str`]: lossy scalars are rejected with
+/// [`crate::ErrorKind::LossyScalar`]. See [`crate::parse_strict`].
+pub(crate) fn parse_str_strict(text: &str) -> Result<Value, Error> {
+    parse_str_impl(text, true)
+}
+
+fn parse_str_impl(text: &str, strict: bool) -> Result<Value, Error> {
+    let mut parser = Parser::new(strict);
     let bytes = text.as_bytes();
 
     // Fast path for the overwhelmingly common case: LF-only input

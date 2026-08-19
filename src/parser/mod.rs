@@ -11,7 +11,7 @@ mod parser;
 mod validate;
 mod value_start;
 
-pub(crate) use parse_str::parse_str;
+pub(crate) use parse_str::{parse_str, parse_str_strict};
 
 #[cfg(test)]
 mod tests;

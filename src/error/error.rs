@@ -154,6 +154,19 @@ pub enum ErrorKind {
         body: String,
         span: Span,
     },
+    /// **Strict mode only** ([`crate::parse_strict`]). A scalar whose
+    /// lexical form differs from the canonical form of the number it
+    /// would be inferred as (§ 3.6 / § 5.2) — type inference would
+    /// silently rewrite the value (`1.10` → `1.1`, `01234` → `1234`).
+    /// `body` is the source form, `canonical` the form the inferred
+    /// value would round-trip to. Fix by appending `::` to keep the
+    /// scalar a String, or by writing the canonical number.
+    LossyScalar {
+        line: u32,
+        body: String,
+        canonical: String,
+        span: Span,
+    },
     /// Two pairs in the same object share the same key.
     DuplicateKey { line: u32, key: String, span: Span },
     /// A dotted-key insertion clashed with an existing entry. `kind`
@@ -277,6 +290,16 @@ impl Display for ErrorKind {
             ErrorKind::InvalidTypedScalar { line, body, .. } => {
                 write!(f, "Line {}: InvalidTypedScalar: {}", line, body)
             }
+            ErrorKind::LossyScalar {
+                line,
+                body,
+                canonical,
+                ..
+            } => write!(
+                f,
+                "Line {}: LossyScalar: '{}' would be inferred as a number and silently canonicalised to '{}'; append '::' to keep it a String or write the canonical form",
+                line, body, canonical
+            ),
             ErrorKind::DuplicateKey { line, key, .. } => {
                 write!(f, "Line {}: duplicate key '{}'", line, key)
             }
@@ -432,6 +455,7 @@ impl ErrorKind {
         match self {
             ErrorKind::MissingSeparatorSpace { line, .. }
             | ErrorKind::InvalidTypedScalar { line, .. }
+            | ErrorKind::LossyScalar { line, .. }
             | ErrorKind::DuplicateKey { line, .. }
             | ErrorKind::KeyPathConflict { line, .. }
             | ErrorKind::EmptyKey { line, .. }
@@ -453,6 +477,7 @@ impl ErrorKind {
         match self {
             ErrorKind::MissingSeparatorSpace { span, .. }
             | ErrorKind::InvalidTypedScalar { span, .. }
+            | ErrorKind::LossyScalar { span, .. }
             | ErrorKind::DuplicateKey { span, .. }
             | ErrorKind::KeyPathConflict { span, .. }
             | ErrorKind::EmptyKey { span, .. }

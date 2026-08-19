@@ -27,6 +27,7 @@ pub(super) fn classify_value_start(
     text: &str,
     line_num: usize,
     trimmed_span: Span,
+    strict: bool,
 ) -> Result<ValueStart, Error> {
     let trimmed = text.trim_start();
 
@@ -51,7 +52,7 @@ pub(super) fn classify_value_start(
         // with a parse error, propagate that error (the user gets a
         // more specific diagnostic than "unterminated").
         if trimmed.ends_with('}') {
-            let value = inline::parse_inline_object(trimmed, line_num, trimmed_span)?;
+            let value = inline::parse_inline_object(trimmed, line_num, trimmed_span, strict)?;
             return Ok(ValueStart::InlineValue(value));
         }
         // § 5.2 rule 8: starts with `{` but no `}` at the end → unterminated.
@@ -72,7 +73,7 @@ pub(super) fn classify_value_start(
         }
         // § 5.2 rule 7: if the body ends with `]`, try to parse it.
         if trimmed.ends_with(']') {
-            let value = inline::parse_inline_array(trimmed, line_num, trimmed_span)?;
+            let value = inline::parse_inline_array(trimmed, line_num, trimmed_span, strict)?;
             return Ok(ValueStart::InlineValue(value));
         }
         // § 5.2 rule 9: starts with `[` but no `]` at the end → unterminated.
@@ -121,6 +122,9 @@ pub(super) fn classify_value_start(
     if let Some(val) = try_parse_integer(trimmed) {
         let mut buf = itoa::Buffer::new();
         let canonical = buf.format(val);
+        if strict && canonical != trimmed {
+            return Err(lossy_scalar(trimmed, canonical, line_num, trimmed_span));
+        }
         return Ok(ValueStart::Integer(canonical.into()));
     }
 
@@ -134,12 +138,26 @@ pub(super) fn classify_value_start(
             if canonical == trimmed {
                 return Ok(ValueStart::Float(trimmed.into()));
             }
+            if strict {
+                return Err(lossy_scalar(trimmed, canonical, line_num, trimmed_span));
+            }
             return Ok(ValueStart::Float(canonical.into()));
         }
     }
 
     // § 5.2 rule 15: String
     Ok(ValueStart::Scalar(trimmed.into()))
+}
+
+/// Build the strict-mode error for a scalar whose lexical form differs
+/// from the canonical form of the inferred number.
+pub(crate) fn lossy_scalar(body: &str, canonical: &str, line_num: usize, span: Span) -> Error {
+    Error::Structured(ErrorKind::LossyScalar {
+        line: line_num as u32,
+        body: body.to_string(),
+        canonical: canonical.to_string(),
+        span,
+    })
 }
 
 // ---------------------------------------------------------------------------
