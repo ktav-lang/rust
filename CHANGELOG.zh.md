@@ -30,6 +30,13 @@
 `parse()`、serde 路径（`from_str`）与 C ABI 的行为均未改变；serde
 事件路径目前尚无严格模式变体。
 
+### 变更
+
+- **MSRV 从 1.70 提升至 1.71。** 这并非我们的主动选择：`serde_core`
+  要求 `serde_derive = "=1.0.229"`，而该版本（2026-07-18）声明
+  `rust-version = 1.71`。库不会随包发布自己的 `Cargo.lock`，因此
+  1.70 的用户本就已经无法构建本 crate —— 现在清单如实反映了真实要求。
+
 感谢 [@chappihappymeal](https://github.com/chappihappymeal) 报告问题
 并贡献实现（[#1](https://github.com/ktav-lang/rust/issues/1)、
 [#2](https://github.com/ktav-lang/rust/pull/2)）。

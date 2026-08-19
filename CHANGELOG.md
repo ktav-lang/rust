@@ -31,6 +31,14 @@ For the format specification's own history, see the
 Behaviour of `parse()`, the serde path (`from_str`) and the C ABI is
 unchanged; the serde event path has no strict variant yet.
 
+### Changed
+
+- **MSRV raised from 1.70 to 1.71.** Not a choice of ours: `serde_core`
+  requires `serde_derive = "=1.0.229"`, and that release (2026-07-18)
+  declares `rust-version = 1.71`. Since a library does not ship its
+  `Cargo.lock`, a 1.70 user could no longer build this crate anyway —
+  the manifest now states what is actually required.
+
 Thanks to [@chappihappymeal](https://github.com/chappihappymeal) for
 reporting the issue and contributing the implementation
 ([#1](https://github.com/ktav-lang/rust/issues/1),
