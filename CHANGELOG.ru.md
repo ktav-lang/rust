@@ -11,7 +11,7 @@ Cargo-конвенцией: до 1.0 bump MINOR считается ломающ�
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec).
 
 
-## Unreleased
+## [0.6.2] — 2026-08-19
 
 ### Добавлено
 

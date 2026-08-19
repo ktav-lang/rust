@@ -11,7 +11,7 @@
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
 
-## Unreleased
+## [0.6.2] —— 2026-08-19
 
 ### 新增
 

@@ -9,7 +9,7 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
-## Unreleased
+## [0.6.2] — 2026-08-19
 
 ### Added
 
