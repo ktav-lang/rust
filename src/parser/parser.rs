@@ -13,6 +13,8 @@ use super::insert::insert_value;
 use super::value_start::ValueStart;
 
 pub(super) struct Parser<'a> {
+    /// Reject lossy scalars (see [`crate::parse_strict`]).
+    strict: bool,
     stack: Vec<Frame<'a>>,
     collecting: Option<Collecting<'a>>,
     /// Byte offset of the unclosed-compound's opener inside the
@@ -44,12 +46,13 @@ pub(super) struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(strict: bool) -> Self {
         // Defer root frame construction until the first content line
         // is classified. `finish` falls back to an empty Object root
         // if no content line was ever encountered (preserves 0.3.0
         // behaviour on empty / comments-only docs).
         Self {
+            strict,
             stack: Vec::with_capacity(8),
             collecting: None,
             opener_offsets: Vec::with_capacity(8),
@@ -150,7 +153,7 @@ impl<'a> Parser<'a> {
             // fall through to the close-frame branch which will raise
             // UnbalancedBracket against the empty stack.
             if trimmed != "}" && trimmed != "]" {
-                match classify_root_kind_050(trimmed, line_num, trimmed_span)? {
+                match classify_root_kind_050(trimmed, line_num, trimmed_span, self.strict)? {
                     RootResult::InlineObject(value) => {
                         self.root_consumed = true;
                         self.root_inline_value = Some(value);
@@ -312,7 +315,7 @@ impl<'a> Parser<'a> {
                     trimmed_span,
                 )?;
                 let key_span = Span::new(key_start, key_end);
-                match classify_value_start(after, line_num, trimmed_span)? {
+                match classify_value_start(after, line_num, trimmed_span, self.strict)? {
                     ValueStart::Scalar(s) => {
                         self.insert_object_pair(key, Value::String(s), line_num, key_span)
                     }
@@ -390,7 +393,7 @@ impl<'a> Parser<'a> {
             return self.push_array_item(value);
         }
 
-        match classify_value_start(line, line_num, trimmed_span)? {
+        match classify_value_start(line, line_num, trimmed_span, self.strict)? {
             ValueStart::Scalar(s) => self.push_array_item(Value::String(s)),
             ValueStart::Null => self.push_array_item(Value::Null),
             ValueStart::Bool(b) => self.push_array_item(Value::Bool(b)),
@@ -666,6 +669,7 @@ fn classify_root_kind_050(
     trimmed: &str,
     line_num: usize,
     trimmed_span: Span,
+    strict: bool,
 ) -> Result<RootResult, Error> {
     // Rule 4: lone `{`
     if trimmed == "{" {
@@ -683,7 +687,7 @@ fn classify_root_kind_050(
             let value = Value::Object(crate::value::ObjectMap::default());
             return Ok(RootResult::InlineObject(value));
         }
-        let value = inline::parse_inline_object(trimmed, line_num, trimmed_span)?;
+        let value = inline::parse_inline_object(trimmed, line_num, trimmed_span, strict)?;
         return Ok(RootResult::InlineObject(value));
     }
 
@@ -693,7 +697,7 @@ fn classify_root_kind_050(
             let value = Value::Array(Vec::new());
             return Ok(RootResult::InlineArray(value));
         }
-        let value = inline::parse_inline_array(trimmed, line_num, trimmed_span)?;
+        let value = inline::parse_inline_array(trimmed, line_num, trimmed_span, strict)?;
         return Ok(RootResult::InlineArray(value));
     }
 

@@ -8,7 +8,7 @@ repository = "https://github.com/ktav-lang/rust"
 readme = "README.md"
 keywords = ["config", "configuration", "serde", "minimal", "plain"]
 categories = ["config", "parsing"]
-rust-version = "1.70"
+rust-version = "1.71"
 
 # Which version of the Ktav format specification this crate implements.
 # See https://github.com/ktav-lang/spec for the formal document.

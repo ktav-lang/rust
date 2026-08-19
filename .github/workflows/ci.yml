@@ -44,7 +44,7 @@ jobs:
         run: cargo test
 
   msrv:
-    name: MSRV (1.70)
+    name: MSRV (1.71)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,8 +53,8 @@ jobs:
 
       # Stable cargo (>= 1.84) with `incompatible-rust-versions = fallback`
       # honours `package.rust-version` and prefers transitive versions
-      # declaring MSRV <= ours. This picks an entirely 1.70-parseable
-      # graph automatically — no per-crate `--precise` pins needed.
+      # declaring MSRV <= ours, so the graph stays buildable on the
+      # toolchain pinned below without per-crate `--precise` pins.
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Generate MSRV-aware lockfile
@@ -62,7 +62,7 @@ jobs:
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
         run: cargo generate-lockfile
 
-      - uses: dtolnay/rust-toolchain@1.70
+      - uses: dtolnay/rust-toolchain@1.71
 
       - uses: Swatinem/rust-cache@v2
 

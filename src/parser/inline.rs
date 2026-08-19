@@ -10,7 +10,7 @@ use memchr::memchr2;
 use crate::error::{Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
 
-use super::classify::{fast_plain_decimal_i64, is_float_literal, try_parse_integer};
+use super::classify::{fast_plain_decimal_i64, is_float_literal, lossy_scalar, try_parse_integer};
 use super::insert::insert_value;
 
 /// Maximum nesting depth for inline compounds (per Q-3 decision).
@@ -26,14 +26,20 @@ pub(crate) fn parse_inline_object(
     input: &str,
     line_num: usize,
     span: Span,
+    strict: bool,
 ) -> Result<Value, Error> {
-    parse_inline_object_inner(input, line_num, span, 0)
+    parse_inline_object_inner(input, line_num, span, 0, strict)
 }
 
 /// Parse a balanced inline array body. `input` is the full body
 /// including the outer `[` and `]`. Returns `Value::Array`.
-pub(crate) fn parse_inline_array(input: &str, line_num: usize, span: Span) -> Result<Value, Error> {
-    parse_inline_array_inner(input, line_num, span, 0)
+pub(crate) fn parse_inline_array(
+    input: &str,
+    line_num: usize,
+    span: Span,
+    strict: bool,
+) -> Result<Value, Error> {
+    parse_inline_array_inner(input, line_num, span, 0, strict)
 }
 
 // ---------------------------------------------------------------------------
@@ -45,6 +51,7 @@ fn parse_inline_object_inner(
     line_num: usize,
     span: Span,
     depth: usize,
+    strict: bool,
 ) -> Result<Value, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -120,7 +127,7 @@ fn parse_inline_object_inner(
             Value::String(processed.into())
         } else {
             // Plain `:` — parse inline value
-            parse_inline_value(value_body, line_num, span, depth)?
+            parse_inline_value(value_body, line_num, span, depth, strict)?
         };
 
         // Use insert_value for dotted key expansion
@@ -135,6 +142,7 @@ fn parse_inline_array_inner(
     line_num: usize,
     span: Span,
     depth: usize,
+    strict: bool,
 ) -> Result<Value, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -179,7 +187,7 @@ fn parse_inline_array_inner(
         }
 
         // Parse inline value (could be nested compound or scalar)
-        let value = parse_inline_value_raw(trimmed, line_num, span, depth)?;
+        let value = parse_inline_value_raw(trimmed, line_num, span, depth, strict)?;
         items.push(value);
     }
 
@@ -197,13 +205,14 @@ fn parse_inline_value(
     line_num: usize,
     span: Span,
     depth: usize,
+    strict: bool,
 ) -> Result<Value, Error> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         // Empty value after `:` → empty String
         return Ok(Value::String("".into()));
     }
-    parse_inline_value_raw(trimmed, line_num, span, depth)
+    parse_inline_value_raw(trimmed, line_num, span, depth, strict)
 }
 
 /// Parse a single inline value that is already trimmed. This handles the
@@ -214,6 +223,7 @@ fn parse_inline_value_raw(
     line_num: usize,
     span: Span,
     depth: usize,
+    strict: bool,
 ) -> Result<Value, Error> {
     let first_byte = trimmed.as_bytes()[0];
 
@@ -227,7 +237,7 @@ fn parse_inline_value_raw(
                     return Ok(Value::Object(ObjectMap::default()));
                 }
                 // Nested inline object
-                return parse_inline_object_inner(trimmed, line_num, span, depth + 1);
+                return parse_inline_object_inner(trimmed, line_num, span, depth + 1, strict);
             }
         }
         // Unterminated
@@ -246,7 +256,7 @@ fn parse_inline_value_raw(
                     return Ok(Value::Array(Vec::new()));
                 }
                 // Nested inline array
-                return parse_inline_array_inner(trimmed, line_num, span, depth + 1);
+                return parse_inline_array_inner(trimmed, line_num, span, depth + 1, strict);
             }
         }
         // Unterminated
@@ -260,14 +270,19 @@ fn parse_inline_value_raw(
     let processed = process_escapes(trimmed, line_num, span)?;
     let body = processed.trim();
 
-    classify_inline_scalar(body, line_num, span)
+    classify_inline_scalar(body, line_num, span, strict)
 }
 
 /// Classify an inline scalar body (after escape processing and trimming)
 /// per section 5.2 rules 10-15. Rules 1-9 don't apply inside inline
 /// scalars (no multi-line openers, no nested compounds — those are
 /// handled by the caller).
-fn classify_inline_scalar(body: &str, _line_num: usize, _span: Span) -> Result<Value, Error> {
+fn classify_inline_scalar(
+    body: &str,
+    line_num: usize,
+    span: Span,
+    strict: bool,
+) -> Result<Value, Error> {
     if body.is_empty() {
         return Ok(Value::String("".into()));
     }
@@ -288,6 +303,9 @@ fn classify_inline_scalar(body: &str, _line_num: usize, _span: Span) -> Result<V
     if let Some(val) = try_parse_integer(body) {
         let mut buf = itoa::Buffer::new();
         let canonical = buf.format(val);
+        if strict && canonical != body {
+            return Err(lossy_scalar(body, canonical, line_num, span));
+        }
         return Ok(Value::Integer(canonical.into()));
     }
 
@@ -299,6 +317,9 @@ fn classify_inline_scalar(body: &str, _line_num: usize, _span: Span) -> Result<V
             // If ryu reproduces the input, use it directly.
             if canonical == body {
                 return Ok(Value::Float(body.into()));
+            }
+            if strict {
+                return Err(lossy_scalar(body, canonical, line_num, span));
             }
             return Ok(Value::Float(canonical.into()));
         }

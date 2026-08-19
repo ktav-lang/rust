@@ -9,6 +9,41 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## Unreleased
+
+### Added
+
+- `parse_strict()` — opt-in strict parse mode that rejects **lossy
+  scalars**: values whose lexical form differs from the canonical form
+  of the number they would be inferred as (`1.10` → `1.1`, `01234` →
+  `1234`, `+7`, `0x1A`, `0o755`, `1_000`, `5e3`). The default `parse()`
+  silently canonicalises such values, so a round-trip rewrites the
+  document with no diagnostic; strict mode surfaces them instead, and
+  the message names both forms and suggests the two fixes (append `::`
+  to keep a String, or write the canonical number). Documents accepted
+  by `parse_strict()` produce exactly the same `Value` tree as
+  `parse()`.
+- `ErrorKind::LossyScalar { line, body, canonical, span }` — the new
+  strict-mode-only error variant, wired into `ErrorKind::line()` /
+  `ErrorKind::span()`. `ErrorKind` is `#[non_exhaustive]`, so this is
+  an additive change.
+
+Behaviour of `parse()`, the serde path (`from_str`) and the C ABI is
+unchanged; the serde event path has no strict variant yet.
+
+### Changed
+
+- **MSRV raised from 1.70 to 1.71.** Not a choice of ours: `serde_core`
+  requires `serde_derive = "=1.0.229"`, and that release (2026-07-18)
+  declares `rust-version = 1.71`. Since a library does not ship its
+  `Cargo.lock`, a 1.70 user could no longer build this crate anyway —
+  the manifest now states what is actually required.
+
+Thanks to [@chappihappymeal](https://github.com/chappihappymeal) for
+reporting the issue and contributing the implementation
+([#1](https://github.com/ktav-lang/rust/issues/1),
+[#2](https://github.com/ktav-lang/rust/pull/2)).
+
 ## [0.6.1] — 2026-06-05
 
 - Docs: rewrite all README examples to spec 0.6 syntax (bare numbers instead of removed `:i`/`:f` markers; `##` comments instead of `#`).

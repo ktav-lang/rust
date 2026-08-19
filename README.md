@@ -294,14 +294,45 @@ match parse(src) {
 Variants: `MissingSeparatorSpace`, `InvalidTypedScalar`, `DuplicateKey`,
 `KeyPathConflict`, `EmptyKey`, `InvalidKey`, `UnclosedCompound`,
 `UnbalancedBracket`, `InlineNonEmptyCompound`, `MissingSeparator`,
-`Other`. The enum is `#[non_exhaustive]` — always include a `_ =>`
-arm. `Error::line()` / `Error::span()` are convenience accessors when
-the variant doesn't matter. The `Display` impl produces the same
-human-readable string the legacy `Error::Syntax(_)` did, so existing
-string-based callers keep working.
+`LossyScalar` (strict mode only, see below), `Other`. The enum is
+`#[non_exhaustive]` — always include a `_ =>` arm. `Error::line()` /
+`Error::span()` are convenience accessors when the variant doesn't
+matter. The `Display` impl produces the same human-readable string the
+legacy `Error::Syntax(_)` did, so existing string-based callers keep
+working.
 
 A complete runnable example walks all variants:
 [`examples/errors.rs`](examples/errors.rs) — `cargo run --example errors`.
+
+### Strict mode — catch silently canonicalised numbers
+
+Types are inferred from a scalar's lexical form, and inferred numbers
+are canonicalised: `version: 1.10` parses as `Float(1.1)` and
+`zip: 01234` as `Integer(1234)`. The default `parse()` does this
+silently, so writing the document back out rewrites it.
+
+`parse_strict()` rejects such **lossy scalars** instead:
+
+```rust
+use ktav::{parse, parse_strict, Error, ErrorKind};
+
+let src = "zip: 01234\n";
+
+assert!(parse(src).is_ok());                 // Integer(1234) — leading zero gone
+
+match parse_strict(src) {
+    Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
+        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+    }
+    other => panic!("expected LossyScalar, got {other:?}"),
+}
+```
+
+Fix either by appending `::` to keep the value a String
+(`zip:: 01234`) or by writing the canonical number. Any document
+`parse_strict()` accepts yields exactly the same `Value` tree as
+`parse()`, so strict mode is a validation gate, not a different
+dialect. The serde path (`from_str`) has no strict variant yet.
 
 ### Stream parse — events without an intermediate tree
 

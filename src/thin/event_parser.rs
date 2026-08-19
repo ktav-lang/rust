@@ -1009,7 +1009,7 @@ fn classify<'a>(
         if trimmed.ends_with('}') {
             // Try to parse inline object → emit as events
             let value =
-                crate::parser::inline::parse_inline_object(trimmed, line_num, trimmed_span)?;
+                crate::parser::inline::parse_inline_object(trimmed, line_num, trimmed_span, false)?;
             let events = value_to_events(&value, bump);
             return Ok(ValueStart::InlineEvents(events));
         }
@@ -1025,7 +1025,8 @@ fn classify<'a>(
             return Ok(ValueStart::EmptyArray);
         }
         if trimmed.ends_with(']') {
-            let value = crate::parser::inline::parse_inline_array(trimmed, line_num, trimmed_span)?;
+            let value =
+                crate::parser::inline::parse_inline_array(trimmed, line_num, trimmed_span, false)?;
             let events = value_to_events(&value, bump);
             return Ok(ValueStart::InlineEvents(events));
         }

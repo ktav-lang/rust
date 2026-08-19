@@ -294,14 +294,45 @@ match parse(src) {
 Варианты: `MissingSeparatorSpace`, `InvalidTypedScalar`, `DuplicateKey`,
 `KeyPathConflict`, `EmptyKey`, `InvalidKey`, `UnclosedCompound`,
 `UnbalancedBracket`, `InlineNonEmptyCompound`, `MissingSeparator`,
-`Other`. Enum помечен `#[non_exhaustive]` — обязателен arm `_ =>`.
-`Error::line()` / `Error::span()` — convenience accessors для случаев
-когда вариант неважен. `Display` выдаёт те же читаемые строки, что и
-legacy `Error::Syntax(_)`, поэтому существующие string-based вызывающие
+`LossyScalar` (только в строгом режиме, см. ниже), `Other`. Enum помечен
+`#[non_exhaustive]` — обязателен arm `_ =>`. `Error::line()` /
+`Error::span()` — convenience accessors для случаев когда вариант
+неважен. `Display` выдаёт те же читаемые строки, что и legacy
+`Error::Syntax(_)`, поэтому существующие string-based вызывающие
 работают без изменений.
 
 Полный запускаемый пример проходит по всем вариантам:
 [`examples/errors.rs`](examples/errors.rs) — `cargo run --example errors`.
+
+### Строгий режим — ловим молча канонизированные числа
+
+Типы выводятся по лексической форме скаляра, а выведенные числа
+канонизируются: `version: 1.10` разбирается как `Float(1.1)`, а
+`zip: 01234` — как `Integer(1234)`. Обычный `parse()` делает это молча,
+поэтому обратная запись документа его переписывает.
+
+`parse_strict()` вместо этого отвергает такие **скаляры с потерей**:
+
+```rust
+use ktav::{parse, parse_strict, Error, ErrorKind};
+
+let src = "zip: 01234\n";
+
+assert!(parse(src).is_ok());                 // Integer(1234) — ведущий ноль потерян
+
+match parse_strict(src) {
+    Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
+        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+    }
+    other => panic!("ожидался LossyScalar, получено {other:?}"),
+}
+```
+
+Исправить можно либо дописав `::`, чтобы значение осталось строкой
+(`zip:: 01234`), либо записав число в канонической форме. Любой
+документ, принятый `parse_strict()`, даёт ровно то же дерево `Value`,
+что и `parse()` — строгий режим это проверочный шлюз, а не другой
+диалект. У serde-пути (`from_str`) строгого варианта пока нет.
 
 ### Stream-парсинг — события без промежуточного дерева
 
