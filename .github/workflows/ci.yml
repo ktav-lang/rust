@@ -53,14 +53,24 @@ jobs:
 
       # Stable cargo (>= 1.84) with `incompatible-rust-versions = fallback`
       # honours `package.rust-version` and prefers transitive versions
-      # declaring MSRV <= ours. This picks an entirely 1.70-parseable
-      # graph automatically — no per-crate `--precise` pins needed.
+      # declaring MSRV <= ours — it still does the bulk of the work here
+      # (e.g. it holds `zmij` at 1.0.19 because 1.0.23 wants 1.71).
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Generate MSRV-aware lockfile
         env:
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
         run: cargo generate-lockfile
+
+      # The fallback resolver filters on each crate's *own* rust-version,
+      # so it cannot see an MSRV bump that arrives through an exact
+      # companion pin: `serde_core 1.0.229` declares rust-version 1.56
+      # (accepted), yet requires `serde_derive = "=1.0.229"`, which
+      # declares 1.71 (2026-07-18) and breaks the build. serde,
+      # serde_core and serde_derive move in lockstep, so pinning `serde`
+      # walks all three back to 1.0.228 (rust-version 1.61).
+      - name: Pin dependencies that outgrew our MSRV
+        run: cargo update -p serde --precise 1.0.228
 
       - uses: dtolnay/rust-toolchain@1.70
 
