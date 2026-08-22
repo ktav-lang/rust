@@ -21,6 +21,7 @@ use crate::parser::classify::{is_float_literal, try_parse_integer};
 use crate::parser::inline::{
     decode_key_segment, find_unescaped_colon, key_is_single_segment, split_key_path,
 };
+use crate::parser::validate::is_valid_key;
 
 use super::event::{Event, EventSink, EventStream};
 
@@ -641,14 +642,16 @@ impl<'a> EventParser<'a> {
         // borrow.
         if key_is_single_segment(key) {
             self.close_synthetics_to_real(events);
-            let leaf = self.decode_key_in_arena(key, line_num, key_span)?;
-            if !is_valid_key(leaf) {
+            // Validate the RAW segment (forbidden bytes must be
+            // escaped) before decoding — see `parser::validate`.
+            if !is_valid_key(key) {
                 return Err(Error::Structured(ErrorKind::InvalidKey {
                     line: line_num as u32,
                     key: key.to_string(),
                     span: key_span,
                 }));
             }
+            let leaf = self.decode_key_in_arena(key, line_num, key_span)?;
             return Ok(leaf);
         }
 
@@ -667,14 +670,14 @@ impl<'a> EventParser<'a> {
                     span: key_span,
                 }));
             }
-            let decoded = self.decode_key_in_arena(trimmed, line_num, key_span)?;
-            if !is_valid_key(decoded) {
+            if !is_valid_key(trimmed) {
                 return Err(Error::Structured(ErrorKind::InvalidKey {
                     line: line_num as u32,
                     key: key.to_string(),
                     span: key_span,
                 }));
             }
+            let decoded = self.decode_key_in_arena(trimmed, line_num, key_span)?;
             decoded_segments.push(decoded);
         }
 
@@ -1157,24 +1160,6 @@ fn value_to_events_inner<'a>(
             events.push(Event::EndArray);
         }
     }
-}
-
-#[inline]
-fn is_valid_key(k: &str) -> bool {
-    let k = k.trim();
-    if k.is_empty() {
-        return false;
-    }
-    let bytes = k.as_bytes();
-    // Spec 0.6.0 — `:` and `.` are allowed in a DECODED key segment
-    // (the user expressed them via `\:` / `\.`). The remaining
-    // structural bytes are still forbidden.
-    for &b in bytes {
-        if matches!(b, b'[' | b']' | b'{' | b'}' | b',' | b'(' | b')') {
-            return false;
-        }
-    }
-    true
 }
 
 /// Fast-path check: plain ASCII decimal integer (no sign, underscore, or

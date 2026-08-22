@@ -8,7 +8,7 @@ pub(crate) mod inline;
 mod insert;
 mod parse_str;
 mod parser;
-mod validate;
+pub(crate) mod validate;
 mod value_start;
 
 pub(crate) use parse_str::{parse_str, parse_str_strict};

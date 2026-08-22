@@ -32,17 +32,17 @@ pub(super) fn insert_value(
                 span,
             }));
         }
-        // Decode escapes BEFORE validation — the decoded bytes are the
-        // actual key (e.g. `a\.b` decodes to `a.b`, which is a valid
-        // single segment now).
-        let decoded = decode_key_segment(trimmed_key, line_num, span)?;
-        if !is_valid_key(&decoded) {
+        // Validate the RAW segment (forbidden bytes must be escaped)
+        // before decoding — `is_valid_key` needs to see which bytes
+        // were escaped, which the decoded form has already erased.
+        if !is_valid_key(trimmed_key) {
             return Err(Error::Structured(ErrorKind::InvalidKey {
                 line: line_num as u32,
                 key: path.to_string(),
                 span,
             }));
         }
+        let decoded = decode_key_segment(trimmed_key, line_num, span)?;
         return match table.entry(decoded.as_str().into()) {
             Entry::Occupied(e) => {
                 let existing = e.get();
@@ -94,14 +94,14 @@ fn insert_dotted(
                 span,
             }));
         }
-        let decoded = decode_key_segment(trimmed, line_num, span)?;
-        if !is_valid_key(&decoded) {
+        if !is_valid_key(trimmed) {
             return Err(Error::Structured(ErrorKind::InvalidKey {
                 line: line_num as u32,
                 key: full_path.to_string(),
                 span,
             }));
         }
+        let decoded = decode_key_segment(trimmed, line_num, span)?;
         let is_leaf = idx + 1 == n;
         if !is_leaf {
             let entry = table
