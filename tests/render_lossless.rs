@@ -441,6 +441,34 @@ fn render_emits_bracket_form_for_a_truly_empty_array_root() {
     assert_render_roundtrip(&v);
 }
 
+// The widened wrap check is shared with the canonical writer, whose
+// behaviour for *empty* compound first items changed too (0.6.2
+// emitted `{}` / `[]` / `{}\nx` for these — item lost, level lost,
+// or an unparseable document respectively). Pin the canonical side
+// as well, including the exact new emitted form.
+
+#[test]
+fn canonical_wraps_single_empty_object_item() {
+    let v = Value::Array(vec![Value::Object(ObjectMap::default())]);
+    assert_eq!(emit_canonical(&v).unwrap(), "[\n    {}\n]\n");
+    assert_canonical_roundtrip(&v);
+}
+
+#[test]
+fn canonical_wraps_single_empty_array_item() {
+    let v = Value::Array(vec![Value::Array(vec![])]);
+    assert_eq!(emit_canonical(&v).unwrap(), "[\n    []\n]\n");
+    assert_canonical_roundtrip(&v);
+}
+
+#[test]
+fn canonical_wraps_empty_compound_item_followed_by_more_items() {
+    assert_canonical_roundtrip(&Value::Array(vec![
+        Value::Object(ObjectMap::default()),
+        s("tail"),
+    ]));
+}
+
 #[test]
 fn force_strings_wraps_single_object_item() {
     // Every leaf is already a String — asserting round-trip against

@@ -13,12 +13,14 @@ use super::object::render_object_body;
 /// Top-level Arrays normally render as bare item-per-line, with no
 /// surrounding `[...]` brackets — the root-kind detection in § 5.0.1
 /// recovers the Array from the shape of the first line. But when the
-/// first item is itself a non-empty Object or Array, rendering it
-/// bare would start the document with a lone `{` / `[`, which § 5.0.1
-/// reads back as "the root itself is that compound" rather than "the
-/// first item of a root Array" — silently changing the root kind on
-/// re-parse. § 5.9.3 wraps the root in `[` / `]` in exactly this case;
-/// `emit_canonical` already does, and this now matches it.
+/// first item is itself an Object or Array (empty or not), its first
+/// emitted line — a lone `{` / `[` opener, or a closed inline `{}` /
+/// `[]` — is read back by § 5.0.1 as establishing a *different* root,
+/// silently changing the root kind on re-parse (or, for an empty
+/// compound followed by more items, failing to parse at all). In that
+/// case the root is wrapped in explicit `[` / `]`; see
+/// `helpers::first_item_needs_wrap` for the full § 5.0.1 / § 5.9.3
+/// story. The same shared check drives `emit_canonical`.
 pub fn render(value: &Value) -> Result<String> {
     // Pre-size the output buffer so renders of medium-large documents
     // don't trigger 4–6 String reallocations on the way to their final
