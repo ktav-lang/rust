@@ -4,12 +4,23 @@ use crate::error::{Error, Result};
 use crate::value::{ObjectMap, Value};
 
 use super::array_item::render_array_item;
+use super::helpers::first_item_needs_wrap;
 use super::object::render_object_body;
 
 /// Serializes `value` as a top-level Ktav document. The top-level
 /// value must be an Object or an Array (spec § 5.0.1, added 0.1.1).
-/// Top-level Arrays render as bare item-per-line — no surrounding
-/// `[...]` brackets.
+///
+/// Top-level Arrays normally render as bare item-per-line, with no
+/// surrounding `[...]` brackets — the root-kind detection in § 5.0.1
+/// recovers the Array from the shape of the first line. But when the
+/// first item is itself an Object or Array (empty or not), its first
+/// emitted line — a lone `{` / `[` opener, or a closed inline `{}` /
+/// `[]` — is read back by § 5.0.1 as establishing a *different* root,
+/// silently changing the root kind on re-parse (or, for an empty
+/// compound followed by more items, failing to parse at all). In that
+/// case the root is wrapped in explicit `[` / `]`; see
+/// `helpers::first_item_needs_wrap` for the full § 5.0.1 / § 5.9.3
+/// story. The same shared check drives `emit_canonical`.
 pub fn render(value: &Value) -> Result<String> {
     // Pre-size the output buffer so renders of medium-large documents
     // don't trigger 4–6 String reallocations on the way to their final
@@ -20,9 +31,24 @@ pub fn render(value: &Value) -> Result<String> {
     let mut out = String::with_capacity(estimate_size(value));
     match value {
         Value::Object(o) => render_object_body(o, 0, &mut out)?,
+        // § 5.9.3: an empty Array root has no items to give it shape,
+        // so it must be written explicitly — otherwise `render` emits
+        // nothing, and an empty document parses back as `Object({})`
+        // (§ 5.0.1's default for content-free input), not `Array([])`.
+        // `emit_canonical` already special-cases this; mirrored here.
+        Value::Array(items) if items.is_empty() => out.push_str("[]\n"),
         Value::Array(items) => {
-            for item in items {
-                render_array_item(item, 0, &mut out)?;
+            // Non-empty here (the empty case is the arm above).
+            if first_item_needs_wrap(&items[0]) {
+                out.push_str("[\n");
+                for item in items {
+                    render_array_item(item, 1, &mut out)?;
+                }
+                out.push_str("]\n");
+            } else {
+                for item in items {
+                    render_array_item(item, 0, &mut out)?;
+                }
             }
         }
         _ => {

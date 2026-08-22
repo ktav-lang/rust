@@ -1,18 +1,10 @@
 //! Render one line of an array (item can be scalar, object, or nested array).
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::value::Value;
 
-use super::helpers::{needs_raw_marker, push_indent};
+use super::helpers::{item_needs_raw_marker, push_indent};
 use super::object::render_object_body;
-
-/// Does `s` contain a line whose trimmed form is exactly `term`?
-///
-/// (Same role as in `pair.rs`: a content line trimming to the form's
-/// terminator must not collide with that terminator — spec § 5.6.1.)
-fn has_sole_terminator_line(s: &str, term: &str) -> bool {
-    s.split('\n').any(|line| line.trim() == term)
-}
 
 pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) -> Result<()> {
     push_indent(out, indent);
@@ -33,30 +25,17 @@ pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) 
             out.push('\n');
         }
         Value::String(s) => {
-            if s.contains('\n') {
-                // Match pair.rs: prefer indented stripped form for readability,
-                // fall back to verbatim when content has leading whitespace
-                // (which stripped's dedent would clobber) or contains a
-                // sole-`)` terminator line that would close the form early.
-                let has_sole_single = has_sole_terminator_line(s, ")");
-                let has_sole_double = has_sole_terminator_line(s, "))");
-                let has_leading_ws = s
-                    .split('\n')
-                    .any(|line| !line.is_empty() && line.starts_with(|c: char| c.is_whitespace()));
+            if s.contains('\r') {
+                return Err(crate::render::helpers::cr_error());
+            }
+            if crate::render::helpers::string_needs_multiline(s) {
+                // Match pair.rs: prefer indented stripped form for
+                // readability, fall back to verbatim when stripped can't
+                // round-trip the content; the shared chooser errors when
+                // neither form can hold the body (§ 5.6.1).
+                let form = crate::render::helpers::choose_multiline_form(s, true)?;
 
-                let stripped_ok = !has_sole_single && !has_leading_ws;
-                let verbatim_ok = !has_sole_double;
-
-                if !stripped_ok && !verbatim_ok {
-                    return Err(Error::Message(
-                        "String cannot round-trip through Ktav 0.1.0 — content \
-                         has both a sole-`)` line and a sole-`))` line; \
-                         neither multi-line form can hold both (§ 5.6.1)."
-                            .into(),
-                    ));
-                }
-
-                if stripped_ok {
+                if matches!(form, crate::render::helpers::MultilineForm::Stripped) {
                     // Stripped form (default).
                     out.push_str("(\n");
                     let content_indent = indent + 1;
@@ -84,7 +63,7 @@ pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) 
                 // recognisable literal-string entry.
                 out.push_str("::\n");
             } else {
-                if needs_raw_marker(s) {
+                if item_needs_raw_marker(s) {
                     out.push_str(":: ");
                 }
                 out.push_str(s);

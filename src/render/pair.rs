@@ -2,22 +2,12 @@
 //! line. Under spec 0.5.0, integers and floats are emitted with plain `:`
 //! (no `:i` / `:f` markers).
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::value::Value;
 
 use super::array_item::render_array_item;
 use super::helpers::{needs_raw_marker, push_escaped_key_segment, push_indent};
 use super::object::render_object_body;
-
-/// Does `s` contain a line whose trimmed form is exactly `term`?
-///
-/// A line of the multi-line `s` whose trimmed content is exactly `)`
-/// (for stripped) or `))` (for verbatim) would be read back as the
-/// block terminator — so the renderer must avoid that form for such
-/// content (spec § 5.6.1).
-fn has_sole_terminator_line(s: &str, term: &str) -> bool {
-    s.split('\n').any(|line| line.trim() == term)
-}
 
 pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut String) -> Result<()> {
     push_indent(out, indent);
@@ -46,41 +36,19 @@ pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut Str
             out.push('\n');
         }
         Value::String(s) => {
-            if s.contains('\n') {
+            if s.contains('\r') {
+                return Err(crate::render::helpers::cr_error());
+            }
+            if crate::render::helpers::string_needs_multiline(s) {
                 // Pick the form whose terminator doesn't clash with the
                 // content (spec § 5.6.1). Prefer **stripped** (`(` ... `)`)
                 // because indented output is much more readable; fall back
                 // to **verbatim** (`((` ... `))`) when stripped can't
-                // round-trip the content losslessly.
-                //
-                // Stripped's parser dedents by the *minimum* leading
-                // whitespace across non-blank lines, so any content that
-                // has its own leading whitespace gets clobbered. We use
-                // stripped only when no content line begins with
-                // whitespace; otherwise verbatim (which copies bytes).
-                //
-                // Forms also collide with terminator lines: a sole-`)`
-                // line breaks stripped, a sole-`))` line breaks verbatim.
-                let has_sole_single = has_sole_terminator_line(s, ")");
-                let has_sole_double = has_sole_terminator_line(s, "))");
-                let has_leading_ws = s
-                    .split('\n')
-                    .any(|line| !line.is_empty() && line.starts_with(|c: char| c.is_whitespace()));
+                // round-trip the content losslessly. The shared chooser
+                // errors when neither form can hold the body.
+                let form = crate::render::helpers::choose_multiline_form(s, true)?;
 
-                let stripped_ok = !has_sole_single && !has_leading_ws;
-                let verbatim_ok = !has_sole_double;
-
-                if !stripped_ok && !verbatim_ok {
-                    return Err(Error::Message(
-                        "String cannot round-trip through Ktav 0.1.0 — content \
-                         has both a sole-`)` line and a sole-`))` line; \
-                         neither multi-line form can hold both (§ 5.6.1). \
-                         Split the value across adjacent multi-line pairs."
-                            .into(),
-                    ));
-                }
-
-                if stripped_ok {
+                if matches!(form, crate::render::helpers::MultilineForm::Stripped) {
                     // Stripped form (default). Each content line gets a
                     // `content_indent` prefix; the dedent on parse strips
                     // it back off, so the round-trip is byte-exact (blank

@@ -1,8 +1,37 @@
 //! Small primitives shared by the rendering functions.
 
+use crate::error::{Error, Result};
 use crate::parser::classify;
+use crate::value::Value;
 
 pub(super) const INDENT: &str = "    ";
+
+/// A top-level Array must be wrapped in `[` / `]` whenever its first
+/// item, rendered on its own line, would itself be read as a complete
+/// root by § 5.0.1. Only the *first* item matters — root-kind
+/// detection looks at the first content line only — so
+/// `Array(["x", {..}])` is already unambiguous (a bare scalar first
+/// line means "root is an Array") and needs no wrapping.
+///
+/// **Wider than § 5.9.3 as written.** The spec derives the wrap rule
+/// from § 5.0.1 rules 4/5 only — "specifically a lone `{` (rule 4) or
+/// a lone `[` (rule 5)" — which covers non-empty compounds, since
+/// those open with a brace on its own line. But rules 2/3 (a *closed*
+/// inline `{ … }` / `[ … ]` as the first content line) create exactly
+/// the same ambiguity, and an empty compound item emits as precisely
+/// that: bare `Array([{}])` renders as the single line `{}`, which
+/// rule 2 reads as "the root IS this Object" — one item short. Worse,
+/// rule 2 also forbids further content lines, so `Array([{}, "x"])`
+/// renders as `"{}\nx\n"` and fails to parse outright
+/// (`OrphanLineAfterTopLevelInline`, § 6.14).
+///
+/// Both were reproduced against 0.6.2 on `emit_canonical` as well as
+/// `render`, so this is a lossless-writer fix, not a new convention —
+/// but the § 5.9.3 wording should be widened to name rules 2/3
+/// alongside 4/5. Tracked in `ktav-lang/spec`.
+pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
+    matches!(item, Value::Object(_) | Value::Array(_))
+}
 
 /// Emit a key (flat, single-segment — the byte string stored on the
 /// Object) into `out`, re-escaping `\`, `.`, `:` per spec 0.6.0 § 3.7
@@ -30,6 +59,105 @@ pub(crate) fn push_escaped_key_segment(key: &str, out: &mut String) {
             other => out.push(other),
         }
     }
+}
+
+/// True if a one-line String body cannot be emitted on the value line
+/// at all and must take a multi-line form: the parser trims the body
+/// after `:` / `::` with `str::trim()` (§ 4) — the full Unicode
+/// `White_Space` set, so an NBSP/NEL/ideographic-space edge is lost
+/// the same way an ASCII one is; § 5.9.7 also routes control bytes
+/// (other than `TAB`) to the multi-line form. Bodies containing `LF`
+/// are multi-line by definition.
+pub(crate) fn string_needs_multiline(s: &str) -> bool {
+    s.chars().next().is_some_and(char::is_whitespace)
+        || s.chars().next_back().is_some_and(char::is_whitespace)
+        || s.bytes().any(|b| b < 0x20 && b != b'\t')
+}
+
+/// The § 5.9.7 error for a `CR` byte in a String: no text form can
+/// hold it (verbatim blocks split on line terminators), so the writer
+/// must reject the Value rather than emit a document that parses to a
+/// different one.
+pub(crate) fn cr_error() -> Error {
+    Error::Message(
+        "String containing CR (0x0D) is not representable in canonical form (§ 5.9.7)".into(),
+    )
+}
+
+/// Which multi-line form a String body should take.
+pub(crate) enum MultilineForm {
+    /// `(` … `)` — parser dedents by the common leading whitespace.
+    Stripped,
+    /// `((` … `))` — parser copies content lines byte-for-byte.
+    Verbatim,
+}
+
+/// Pick the multi-line form that reproduces `s` byte-for-byte on
+/// re-parse, or error when neither form can (spec § 5.6.1).
+///
+/// Verbatim breaks on a content line trimming to `))` (it would close
+/// the block). Stripped breaks on a line trimming to `)` (same), on a
+/// whitespace-only line (§ 5.6 blanks it), and — because the parser
+/// dedents by the COMMON leading whitespace — it loses per-line
+/// indentation unless at least one non-blank line is unindented and
+/// pins the common indent to zero.
+///
+/// `prefer_stripped` keeps the pretty renderers' historical choice
+/// (indented stripped output when it is unconditionally safe); the
+/// canonical writer passes `false` and prefers verbatim (§ 5.9.7).
+pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<MultilineForm> {
+    let mut sole_single = false;
+    let mut sole_double = false;
+    let mut ws_only_line = false;
+    let mut indented_line = false;
+    let mut unindented_line = false;
+    for line in s.split('\n') {
+        let trimmed = line.trim();
+        match trimmed {
+            ")" => sole_single = true,
+            "))" => sole_double = true,
+            _ => {}
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if trimmed.is_empty() {
+            ws_only_line = true;
+        } else if line.starts_with(|c: char| c.is_whitespace()) {
+            indented_line = true;
+        } else {
+            unindented_line = true;
+        }
+    }
+
+    let stripped_safe = !sole_single && !ws_only_line && !indented_line;
+    let stripped_lossless = !sole_single && !ws_only_line && unindented_line;
+    let verbatim_ok = !sole_double;
+
+    if prefer_stripped && stripped_safe {
+        Ok(MultilineForm::Stripped)
+    } else if verbatim_ok {
+        Ok(MultilineForm::Verbatim)
+    } else if stripped_lossless {
+        Ok(MultilineForm::Stripped)
+    } else {
+        Err(Error::Message(
+            "String has no lossless multi-line form (§ 5.6.1): a sole-`))` \
+             content line closes the verbatim block, and the stripped block \
+             cannot hold this body (a sole-`)` line, a whitespace-only line, \
+             or every line indented). Split the value across adjacent \
+             multi-line pairs."
+                .into(),
+        ))
+    }
+}
+
+/// Item-context variant of [`needs_raw_marker`]: a bare array-item
+/// line has extra collisions a pair body does not — a leading `##` is
+/// a comment line (§ 3.4), a leading `::` is the raw-marker itself,
+/// and a sole `]` / `}` closes the enclosing compound.
+pub(crate) fn item_needs_raw_marker(s: &str) -> bool {
+    needs_raw_marker(s) || s.starts_with("##") || s.starts_with("::") || matches!(s, "]" | "}")
 }
 
 /// True if the value must be emitted with `::` so that the parser does not

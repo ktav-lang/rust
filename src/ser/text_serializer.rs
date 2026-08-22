@@ -377,7 +377,7 @@ impl<'a> SerializeStruct for ObjectCompound<'a> {
     ) -> Result<()> {
         self.empty_so_far = false;
         write_indent(self.out, self.field_indent);
-        self.out.push_str(key);
+        crate::render::helpers::push_escaped_key_segment(key, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,
@@ -410,7 +410,7 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
         })?;
         self.empty_so_far = false;
         write_indent(self.out, self.field_indent);
-        self.out.push_str(&key);
+        crate::render::helpers::push_escaped_key_segment(&key, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,
@@ -574,20 +574,18 @@ struct PairValueSer<'a> {
 }
 
 impl<'a> PairValueSer<'a> {
-    fn write_scalar_line(self, v: &str) {
-        if v.contains('\n') {
+    fn write_scalar_line(self, v: &str) -> Result<()> {
+        if v.contains('\r') {
+            return Err(crate::render::helpers::cr_error());
+        }
+        if crate::render::helpers::string_needs_multiline(v) {
             // Mirror render/pair.rs choice: prefer indented stripped form
-            // for readability; fall back to verbatim only when content
-            // can't round-trip through stripped (leading whitespace
-            // would be eaten by the parser-side dedent, or a sole-`)`
-            // line would close stripped early).
-            let has_sole_single = has_sole_terminator_line(v, ")");
-            let has_leading_ws = v
-                .split('\n')
-                .any(|line| !line.is_empty() && line.starts_with(|c: char| c.is_whitespace()));
-            let stripped_ok = !has_sole_single && !has_leading_ws;
+            // for readability; fall back to verbatim when stripped can't
+            // round-trip the content. The shared chooser errors when
+            // neither form can hold the body (§ 5.6.1).
+            let form = crate::render::helpers::choose_multiline_form(v, true)?;
 
-            if stripped_ok {
+            if matches!(form, crate::render::helpers::MultilineForm::Stripped) {
                 // Stripped form (default). content_indent = key_indent + 1.
                 self.out.push_str(": (\n");
                 let content_indent = self.indent + 1;
@@ -620,13 +618,8 @@ impl<'a> PairValueSer<'a> {
             self.out.push_str(v);
             self.out.push('\n');
         }
+        Ok(())
     }
-}
-
-/// Same role as in `render/pair.rs`: a content line trimming to the
-/// form's terminator must not collide with that terminator (spec § 5.6.1).
-fn has_sole_terminator_line(s: &str, term: &str) -> bool {
-    s.split('\n').any(|line| line.trim() == term)
 }
 
 impl<'a> ser::Serializer for PairValueSer<'a> {
@@ -697,13 +690,11 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
 
     fn serialize_char(self, v: char) -> Result<()> {
         let s = v.to_string();
-        self.write_scalar_line(&s);
-        Ok(())
+        self.write_scalar_line(&s)
     }
 
     fn serialize_str(self, v: &str) -> Result<()> {
-        self.write_scalar_line(v);
-        Ok(())
+        self.write_scalar_line(v)
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
@@ -742,8 +733,7 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
     }
 
     fn serialize_unit_variant(self, _: &'static str, _: u32, variant: &'static str) -> Result<()> {
-        self.write_scalar_line(variant);
-        Ok(())
+        self.write_scalar_line(variant)
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(self, _: &'static str, v: &T) -> Result<()> {
@@ -760,7 +750,7 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
         // Externally-tagged: `: {\n    VariantName: value\n}\n`
         self.out.push_str(": {\n");
         write_indent(self.out, self.indent + 1);
-        self.out.push_str(variant);
+        crate::render::helpers::push_escaped_key_segment(variant, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.indent + 1,
@@ -796,7 +786,7 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
     ) -> Result<TupleVariantPair<'a>> {
         self.out.push_str(": {\n");
         write_indent(self.out, self.indent + 1);
-        self.out.push_str(variant);
+        crate::render::helpers::push_escaped_key_segment(variant, self.out);
         self.out.push_str(": [\n");
         Ok(TupleVariantPair {
             out: self.out,
@@ -841,7 +831,7 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
     ) -> Result<StructVariantPair<'a>> {
         self.out.push_str(": {\n");
         write_indent(self.out, self.indent + 1);
-        self.out.push_str(variant);
+        crate::render::helpers::push_escaped_key_segment(variant, self.out);
         self.out.push_str(": {\n");
         Ok(StructVariantPair {
             out: self.out,
@@ -876,19 +866,19 @@ struct ItemValueSer<'a> {
 }
 
 impl<'a> ItemValueSer<'a> {
-    fn write_scalar_line(self, v: &str) {
+    fn write_scalar_line(self, v: &str) -> Result<()> {
+        if v.contains('\r') {
+            return Err(crate::render::helpers::cr_error());
+        }
         write_indent(self.out, self.indent);
-        if v.contains('\n') {
+        if crate::render::helpers::string_needs_multiline(v) {
             // Mirror render/array_item.rs: prefer indented stripped form,
-            // fall back to verbatim only when content has leading
-            // whitespace or contains a sole-`)` line.
-            let has_sole_single = has_sole_terminator_line(v, ")");
-            let has_leading_ws = v
-                .split('\n')
-                .any(|line| !line.is_empty() && line.starts_with(|c: char| c.is_whitespace()));
-            let stripped_ok = !has_sole_single && !has_leading_ws;
+            // fall back to verbatim when stripped can't round-trip the
+            // content; the shared chooser errors when neither form can
+            // hold the body (§ 5.6.1).
+            let form = crate::render::helpers::choose_multiline_form(v, true)?;
 
-            if stripped_ok {
+            if matches!(form, crate::render::helpers::MultilineForm::Stripped) {
                 self.out.push_str("(\n");
                 let content_indent = self.indent + 1;
                 for line in v.split('\n') {
@@ -912,7 +902,7 @@ impl<'a> ItemValueSer<'a> {
             // indented blank line, which the parser treats as decorative
             // and drops. Force `::` so it stays a literal-string entry.
             self.out.push_str("::\n");
-        } else if needs_raw_marker(v) {
+        } else if crate::render::helpers::item_needs_raw_marker(v) {
             self.out.push_str(":: ");
             self.out.push_str(v);
             self.out.push('\n');
@@ -920,6 +910,7 @@ impl<'a> ItemValueSer<'a> {
             self.out.push_str(v);
             self.out.push('\n');
         }
+        Ok(())
     }
 }
 
@@ -1002,13 +993,11 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
 
     fn serialize_char(self, v: char) -> Result<()> {
         let s = v.to_string();
-        self.write_scalar_line(&s);
-        Ok(())
+        self.write_scalar_line(&s)
     }
 
     fn serialize_str(self, v: &str) -> Result<()> {
-        self.write_scalar_line(v);
-        Ok(())
+        self.write_scalar_line(v)
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<()> {
@@ -1048,8 +1037,7 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
     }
 
     fn serialize_unit_variant(self, _: &'static str, _: u32, variant: &'static str) -> Result<()> {
-        self.write_scalar_line(variant);
-        Ok(())
+        self.write_scalar_line(variant)
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(self, _: &'static str, v: &T) -> Result<()> {
@@ -1066,7 +1054,7 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
         write_indent(self.out, self.indent);
         self.out.push_str("{\n");
         write_indent(self.out, self.indent + 1);
-        self.out.push_str(variant);
+        crate::render::helpers::push_escaped_key_segment(variant, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.indent + 1,
@@ -1104,7 +1092,7 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
         write_indent(self.out, self.indent);
         self.out.push_str("{\n");
         write_indent(self.out, self.indent + 1);
-        self.out.push_str(variant);
+        crate::render::helpers::push_escaped_key_segment(variant, self.out);
         self.out.push_str(": [\n");
         Ok(TupleVariantItem {
             out: self.out,
@@ -1152,7 +1140,7 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
         write_indent(self.out, self.indent);
         self.out.push_str("{\n");
         write_indent(self.out, self.indent + 1);
-        self.out.push_str(variant);
+        crate::render::helpers::push_escaped_key_segment(variant, self.out);
         self.out.push_str(": {\n");
         Ok(StructVariantItem {
             out: self.out,
@@ -1308,7 +1296,7 @@ impl<'a> SerializeStructVariant for StructVariantPair<'a> {
         value: &T,
     ) -> Result<()> {
         write_indent(self.out, self.field_indent);
-        self.out.push_str(name);
+        crate::render::helpers::push_escaped_key_segment(name, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,
@@ -1339,7 +1327,7 @@ impl<'a> SerializeStructVariant for StructVariantItem<'a> {
         value: &T,
     ) -> Result<()> {
         write_indent(self.out, self.field_indent);
-        self.out.push_str(name);
+        crate::render::helpers::push_escaped_key_segment(name, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,
