@@ -42,10 +42,15 @@ pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
 /// segments separated by an UNescaped `.`) join multiple calls with a
 /// literal `.` between them.
 pub(crate) fn push_escaped_key_segment(key: &str, out: &mut String) {
-    // Fast path: most keys don't contain any of the three escape-
+    // Fast path: most keys don't contain any of the § 3.7 escape-
     // worthy bytes.
     let bytes = key.as_bytes();
-    let needs_escape = bytes.iter().any(|&b| b == b'\\' || b == b'.' || b == b':');
+    let needs_escape = bytes.iter().any(|&b| {
+        matches!(
+            b,
+            b'\\' | b',' | b'}' | b']' | b'{' | b'[' | b'\n' | b'\r' | b'.' | b':'
+        )
+    });
     if !needs_escape {
         out.push_str(key);
         return;
@@ -54,6 +59,13 @@ pub(crate) fn push_escaped_key_segment(key: &str, out: &mut String) {
     for ch in key.chars() {
         match ch {
             '\\' => out.push_str("\\\\"),
+            ',' => out.push_str("\\,"),
+            '}' => out.push_str("\\}"),
+            ']' => out.push_str("\\]"),
+            '{' => out.push_str("\\{"),
+            '[' => out.push_str("\\["),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
             '.' => out.push_str("\\."),
             ':' => out.push_str("\\:"),
             other => out.push(other),

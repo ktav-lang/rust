@@ -127,6 +127,17 @@ fn canonical_keeps_representable_tricky_keys() {
     }
 }
 
+/// rust#7 made these seven bytes legal in a key via their § 3.7
+/// escape; the writer must be able to emit that escape too, or a
+/// `Value` built directly through the API (bypassing the parser)
+/// would still silently corrupt on output.
+#[test]
+fn canonical_keeps_keys_with_the_seven_newly_escapable_bytes() {
+    for key in ["a,b", "a{b", "a}b", "a[b", "a]b", "a\nb", "a\rb"] {
+        assert_canonical_roundtrip(&obj(&[(key, s("x"))]));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Serde text serializer (`to_string`) — same guarantees
 // ---------------------------------------------------------------------------
@@ -214,6 +225,19 @@ fn serde_escapes_dotted_map_keys() {
     assert_eq!(m, back);
 }
 
+#[test]
+fn serde_escapes_map_keys_with_the_seven_newly_escapable_bytes() {
+    let mut m = BTreeMap::new();
+    for (i, key) in ["a,b", "a{b", "a}b", "a[b", "a]b", "a\nb", "a\rb"]
+        .into_iter()
+        .enumerate()
+    {
+        m.insert(key.to_string(), i as i32);
+    }
+    let back: BTreeMap<String, i32> = from_str(&to_string(&m).unwrap()).unwrap();
+    assert_eq!(m, back);
+}
+
 // ---------------------------------------------------------------------------
 // Plain `Value` renderer (`to_string_force_strings` → `render`)
 // ---------------------------------------------------------------------------
@@ -228,6 +252,13 @@ fn force_strings_keeps_padded_strings() {
 #[test]
 fn force_strings_rejects_cr_string() {
     assert!(to_string_force_strings(&obj(&[("k", s("a\rb"))])).is_err());
+}
+
+#[test]
+fn force_strings_keeps_keys_with_the_seven_newly_escapable_bytes() {
+    for key in ["a,b", "a{b", "a}b", "a[b", "a]b", "a\nb", "a\rb"] {
+        assert_force_strings_roundtrip(&obj(&[(key, s("x"))]));
+    }
 }
 
 // ---------------------------------------------------------------------------
