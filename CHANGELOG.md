@@ -9,6 +9,52 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.6.3] — 2026-08-23
+
+### Fixed
+
+- **Keys accept all ten § 3.7 escape sequences, not three.** § 3.7 / § 4
+  define `\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`, `\.`, `\:` as
+  valid in a key; only `\\`, `\.` and `\:` actually worked. `a\,b: 1`
+  and the six other forms were rejected with `InvalidKey`. The cause
+  was ordering: the key was escape-decoded first, then re-validated,
+  and validation blanket-rejected `,` `{` `}` `[` `]` `LF` `CR` in the
+  decoded bytes without distinguishing a byte that arrived through a
+  legitimate escape from one written raw. Validation now runs on the
+  raw (pre-decode) segment, so raw structural bytes stay rejected while
+  their escaped forms pass ([#7](https://github.com/ktav-lang/rust/issues/7)).
+- **The event parser and the tree parser no longer disagree on keys.**
+  `src/thin/event_parser.rs` carried its own copy of the key check with
+  the same post-decode bug, plus a second divergence of its own: it
+  omitted `LF`/`CR` from the forbidden set, so `parse()` and
+  `from_str::<T>()` already accepted different key sets. The duplicate
+  is gone; both front ends now share one validator.
+- **The writer emits the full escape set.** `push_escaped_key_segment`
+  escaped only `\\`, `.` and `:`, so a `Value` built through the API
+  (rather than parsed) with a key containing `,` `{` `}` `[` `]` `LF`
+  or `CR` serialised to a document that did not parse back — on all
+  three writer surfaces, which share the helper (`emit_canonical`,
+  serde `to_string`, `render` / `to_string_force_strings`). `(` and `)`
+  are deliberately left alone: § 3.7 defines no escape for them, so a
+  key containing one stays unrepresentable
+  ([#5](https://github.com/ktav-lang/rust/issues/5) covers refusing
+  those explicitly, on the `0.7` branch).
+
+Non-breaking: every input that parsed before still parses to the same
+`Value`, and the writer output only changes for keys whose previous
+output did not parse at all.
+
+### Changed
+
+- The pinned `ktav-lang/spec` submodule now carries conformance
+  fixtures for the seven previously-untested escapes, four negative
+  fixtures pinning the boundary (raw `{` / `}` still `InvalidKey`;
+  `\(` / `\)` still `BadEscapeSequence`), and the § 5.9.3 wording fix
+  for the empty-compound root wrap
+  ([spec#6](https://github.com/ktav-lang/spec/issues/6),
+  [spec#4](https://github.com/ktav-lang/spec/issues/4)). The suite goes
+  from 102 valid / 31 invalid to 110 valid / 35 invalid.
+
 ## [0.6.2] — 2026-08-19
 
 ### Added
