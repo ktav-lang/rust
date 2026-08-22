@@ -6,24 +6,29 @@ use crate::value::Value;
 
 pub(super) const INDENT: &str = "    ";
 
-/// § 5.9.3 / § 5.0.1: a top-level Array must be wrapped in `[` / `]`
-/// whenever its first item, rendered on its own line, would itself
-/// parse as a complete, different root on its own — a `{...}` / `[...]`
-/// object or array, empty or not. Only the *first* item matters:
-/// root-kind detection looks at the first content line only, so
-/// `Array([{..}])` is indistinguishable from a root Object unless
-/// wrapped, while `Array(["x", {..}])` is already unambiguous (a bare
-/// scalar first line means "root is an Array") and does not need
-/// wrapping.
+/// A top-level Array must be wrapped in `[` / `]` whenever its first
+/// item, rendered on its own line, would itself be read as a complete
+/// root by § 5.0.1. Only the *first* item matters — root-kind
+/// detection looks at the first content line only — so
+/// `Array(["x", {..}])` is already unambiguous (a bare scalar first
+/// line means "root is an Array") and needs no wrapping.
 ///
-/// Empty compounds need this too, not just non-empty ones: bare
-/// `Array([{}])` renders as the single line `{}`, which is exactly
-/// what an empty Object root renders as — so it reads back as
-/// `Object({})`, one item short. And if more items follow, the empty
-/// compound is read as a full document, and there is no "next line"
-/// slot for them: `Array([{}, "x"])` renders as `"{}\nx\n"`, which
-/// fails to parse (`OrphanLineAfterTopLevelInline`) rather than losing
-/// data quietly.
+/// **Wider than § 5.9.3 as written.** The spec derives the wrap rule
+/// from § 5.0.1 rules 4/5 only — "specifically a lone `{` (rule 4) or
+/// a lone `[` (rule 5)" — which covers non-empty compounds, since
+/// those open with a brace on its own line. But rules 2/3 (a *closed*
+/// inline `{ … }` / `[ … ]` as the first content line) create exactly
+/// the same ambiguity, and an empty compound item emits as precisely
+/// that: bare `Array([{}])` renders as the single line `{}`, which
+/// rule 2 reads as "the root IS this Object" — one item short. Worse,
+/// rule 2 also forbids further content lines, so `Array([{}, "x"])`
+/// renders as `"{}\nx\n"` and fails to parse outright
+/// (`OrphanLineAfterTopLevelInline`, § 6.14).
+///
+/// Both were reproduced against 0.6.2 on `emit_canonical` as well as
+/// `render`, so this is a lossless-writer fix, not a new convention —
+/// but the § 5.9.3 wording should be widened to name rules 2/3
+/// alongside 4/5. Tracked in `ktav-lang/spec`.
 pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
     matches!(item, Value::Object(_) | Value::Array(_))
 }
