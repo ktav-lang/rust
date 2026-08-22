@@ -592,8 +592,9 @@ space — takes the stripped form `( ... )` or, when stripped would
 change the content, the verbatim form `(( ... ))`; whichever the
 writer picks, the round-trip is byte-for-byte lossless.
 
-The trailing space below is why this matters: on a single line the
-parser would trim it away, so the writer reaches for a block instead.
+Which block form you get depends on *where* the whitespace is. A
+trailing space survives the stripped form, since stripping only removes
+the common **leading** indent:
 
 ```json5
 { password: "hunter2 " }
@@ -604,7 +605,19 @@ password: (
 )
 ```
 
-Read that back and you get `"hunter2 "`, space intact.
+Leading whitespace is what forces the verbatim form — stripping would
+eat it:
+
+```json5
+{ indent: "  padded" }
+```
+```text
+indent: ((
+  padded
+))
+```
+
+Either way, reading it back gives you the original bytes.
 
 Limitation: a body containing a line whose trimmed content is exactly
 `))` cannot use the verbatim form. It falls back to stripped instead —
