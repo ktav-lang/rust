@@ -215,13 +215,14 @@ fn emit_string_in_pair(s: &str, indent: usize, out: &mut String) -> Result<()> {
 
     if s.contains('\r') {
         // § 5.9.7: CR byte not representable in canonical form.
-        return Err(Error::Message(
-            "String containing CR (0x0D) is not representable in canonical form (§ 5.9.7)".into(),
-        ));
+        return Err(crate::render::helpers::cr_error());
     }
 
-    if s.contains('\n') {
-        // Multi-line string.
+    if crate::render::helpers::string_needs_multiline(s) {
+        // Multi-line string — also the § 5.9.7 form for bodies with
+        // leading/trailing whitespace or control bytes, which the
+        // parser would trim (or the spec routes to verbatim) on a
+        // one-line value.
         return emit_multiline_string(s, indent, true, out);
     }
 
@@ -261,17 +262,16 @@ fn emit_string_as_item(s: &str, indent: usize, out: &mut String) -> Result<()> {
     }
 
     if s.contains('\r') {
-        return Err(Error::Message(
-            "String containing CR (0x0D) is not representable in canonical form (§ 5.9.7)".into(),
-        ));
+        return Err(crate::render::helpers::cr_error());
     }
 
-    if s.contains('\n') {
+    if crate::render::helpers::string_needs_multiline(s) {
         return emit_multiline_string(s, indent, false, out);
     }
 
-    // One-line string. Check if it needs the raw marker.
-    if needs_raw_marker(s) {
+    // One-line string. Check if it needs the raw marker — the item
+    // form has extra collisions (`##`, `::`, sole `]` / `}`).
+    if crate::render::helpers::item_needs_raw_marker(s) {
         out.push_str(":: ");
         out.push_str(s);
         out.push('\n');
@@ -289,24 +289,23 @@ fn emit_string_as_item(s: &str, indent: usize, out: &mut String) -> Result<()> {
 /// Emit a multi-line string in canonical form.
 ///
 /// Prefers verbatim `((…))` (§ 5.9.7). Falls back to stripped `(…)` when
-/// a content line is exactly `))`. If both `)` and `))` appear as sole
-/// content lines, either form is accepted (pathological case).
+/// a content line is exactly `))`, and errors when neither form can
+/// hold the body losslessly (§ 5.6.1) — see `choose_multiline_form`.
 ///
 /// `is_pair`: if true, we need `key: ((` prefix; if false, just `((`.
 /// For the item case, `indent` is where `((` goes, and body is at indent 0.
 fn emit_multiline_string(s: &str, indent: usize, is_pair: bool, out: &mut String) -> Result<()> {
     let segments: Vec<&str> = s.split('\n').collect();
-    let has_sole_double_paren = segments.iter().any(|l| l.trim() == "))");
-    let has_sole_single_paren = segments.iter().any(|l| l.trim() == ")");
-
-    if has_sole_double_paren && !has_sole_single_paren {
-        // Verbatim would hit `))` content line → use stripped form.
-        // § 5.9.7: body at indent 0 (no leading whitespace), closer `)`
-        // at outer indent.
-        emit_multiline_stripped(&segments, indent, is_pair, out);
-    } else {
-        // Default: verbatim form.
-        emit_multiline_verbatim(&segments, indent, is_pair, out);
+    // § 5.9.7: prefer verbatim; fall back to stripped only when a `))`
+    // content line makes verbatim impossible, and error when neither
+    // form can hold the body losslessly.
+    match crate::render::helpers::choose_multiline_form(s, false)? {
+        crate::render::helpers::MultilineForm::Verbatim => {
+            emit_multiline_verbatim(&segments, indent, is_pair, out);
+        }
+        crate::render::helpers::MultilineForm::Stripped => {
+            emit_multiline_stripped(&segments, indent, is_pair, out);
+        }
     }
     Ok(())
 }
@@ -342,10 +341,11 @@ fn emit_multiline_stripped(segments: &[&str], indent: usize, is_pair: bool, out:
         if i > 0 {
             out.push('\n');
         }
-        // Body at indent 0; blank lines stay blank.
-        if !seg.trim().is_empty() {
-            out.push_str(seg.trim_start());
-        }
+        // Body at indent 0, lines kept byte-for-byte: an unindented
+        // line pins the parser's common-indent dedent to zero (the
+        // form chooser guarantees one exists), so per-line leading
+        // whitespace survives the round-trip.
+        out.push_str(seg);
     }
     out.push('\n');
     push_indent(out, indent);
@@ -423,57 +423,11 @@ fn normalise_scientific(raw: &str) -> String {
 /// opener). In that case the canonical writer must use the `::` raw
 /// marker so the parser reads it back as a String.
 ///
-/// This is a standalone implementation for the canonical writer. It will
-/// be unified with the parser's classify logic in Phase 3.
+/// Delegates to the shared `render::helpers` implementation, which
+/// also covers a body starting with `(` (§ 5.2 would open a
+/// multi-line block or reject it as an inline paren compound).
 fn needs_raw_marker(body: &str) -> bool {
-    if body.is_empty() {
-        return false;
-    }
-
-    let bytes = body.as_bytes();
-
-    // Leading/trailing whitespace → must use raw marker (or multi-line).
-    // But we already handle the multi-line case (contains '\n') in the
-    // caller, so here body is single-line. Edge whitespace means the
-    // parser would trim and get a different body → raw marker.
-    if bytes[0] == b' '
-        || bytes[0] == b'\t'
-        || *bytes.last().unwrap() == b' '
-        || *bytes.last().unwrap() == b'\t'
-    {
-        return true;
-    }
-
-    // Starts with `{` or `[` → would be classified as inline compound.
-    if bytes[0] == b'{' || bytes[0] == b'[' {
-        return true;
-    }
-
-    // Exact multi-line opener tokens → would open multiline, not String.
-    if matches!(body, "(" | "((" | "()" | "(())") {
-        return true;
-    }
-
-    // Keywords.
-    if matches!(body, "null" | "true" | "false") {
-        return true;
-    }
-
-    // Integer literal (§ 3.6).
-    if crate::parser::classify::matches_integer_grammar(body) {
-        return true;
-    }
-
-    // Float literal (§ 3.6).
-    if crate::parser::classify::matches_float_grammar(body) {
-        return true;
-    }
-
-    // Contains control bytes (0x00–0x1F except TAB 0x09) — but these
-    // can't appear in a single-line body in valid UTF-8 config text
-    // anyway. Skip this check for now; multi-line handles it.
-
-    false
+    crate::render::helpers::needs_raw_marker(body)
 }
 
 // Number grammar matching now delegated to crate::parser::classify

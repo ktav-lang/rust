@@ -96,17 +96,16 @@ fn string_with_whitespace_inside() {
 }
 
 #[test]
-fn values_with_leading_trailing_whitespace_are_trimmed() {
-    // This is EXPECTED behaviour — ser emits `x: value`, parser trims.
-    // So if you serialize a string that had leading whitespace, it
-    // won't survive. That's documented.
+fn values_with_leading_trailing_whitespace_round_trip() {
+    // A one-line body would be trimmed by the parser, so the writer
+    // emits a multi-line form for edge whitespace (§ 5.9.7) and the
+    // padding survives the round-trip.
     let cfg = Cfg {
         x: "  padded  ".into(),
     };
     let s = to_string(&cfg).unwrap();
     let back: Cfg = from_str(&s).unwrap();
-    // The inner whitespace is gone — this is the trim behaviour.
-    assert_eq!(back.x, "padded");
+    assert_eq!(back.x, "  padded  ");
 }
 
 #[test]
