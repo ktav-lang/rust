@@ -2,8 +2,31 @@
 
 use crate::error::{Error, Result};
 use crate::parser::classify;
+use crate::value::Value;
 
 pub(super) const INDENT: &str = "    ";
+
+/// § 5.9.3 / § 5.0.1: a top-level Array must be wrapped in `[` / `]`
+/// whenever its first item, rendered on its own line, would itself
+/// parse as a complete, different root on its own — a `{...}` / `[...]`
+/// object or array, empty or not. Only the *first* item matters:
+/// root-kind detection looks at the first content line only, so
+/// `Array([{..}])` is indistinguishable from a root Object unless
+/// wrapped, while `Array(["x", {..}])` is already unambiguous (a bare
+/// scalar first line means "root is an Array") and does not need
+/// wrapping.
+///
+/// Empty compounds need this too, not just non-empty ones: bare
+/// `Array([{}])` renders as the single line `{}`, which is exactly
+/// what an empty Object root renders as — so it reads back as
+/// `Object({})`, one item short. And if more items follow, the empty
+/// compound is read as a full document, and there is no "next line"
+/// slot for them: `Array([{}, "x"])` renders as `"{}\nx\n"`, which
+/// fails to parse (`OrphanLineAfterTopLevelInline`) rather than losing
+/// data quietly.
+pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
+    matches!(item, Value::Object(_) | Value::Array(_))
+}
 
 /// Emit a key (flat, single-segment — the byte string stored on the
 /// Object) into `out`, re-escaping `\`, `.`, `:` per spec 0.6.0 § 3.7

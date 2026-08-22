@@ -59,7 +59,7 @@ fn emit_object_pairs(obj: &ObjectMap, indent: usize, out: &mut String) -> Result
 /// Emit a root-level Array. Items are bare at indent 0 unless the first
 /// item is itself a non-empty compound (§ 5.9.3 lone-`{`/`[` wrap).
 fn emit_array_root(items: &[Value], out: &mut String) -> Result<()> {
-    let needs_wrap = !items.is_empty() && first_item_needs_wrap(&items[0]);
+    let needs_wrap = !items.is_empty() && crate::render::helpers::first_item_needs_wrap(&items[0]);
     if needs_wrap {
         out.push_str("[\n");
         for item in items {
@@ -72,15 +72,6 @@ fn emit_array_root(items: &[Value], out: &mut String) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// § 5.9.3: if the first array item, rendered on its own line, would be
-/// detected by § 5.0.1 as a root opener (lone `{` or lone `[`), the
-/// writer wraps the root in `[` / `]`. Non-empty Object/Array items
-/// render as `{`/`[` on their own line, which triggers this.
-fn first_item_needs_wrap(item: &Value) -> bool {
-    matches!(item, Value::Object(o) if !o.is_empty())
-        || matches!(item, Value::Array(a) if !a.is_empty())
 }
 
 // ---------------------------------------------------------------------------

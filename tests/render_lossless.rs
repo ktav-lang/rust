@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+use ktav::render::render;
 use ktav::{emit_canonical, from_str, parse, to_string, to_string_force_strings, ObjectMap, Value};
 use serde::{Deserialize, Serialize};
 
@@ -354,4 +355,96 @@ fn serde_keeps_double_paren_body_with_indented_line() {
 #[test]
 fn force_strings_keeps_double_paren_body_with_indented_line() {
     assert_force_strings_roundtrip(&obj(&[("k", s("))\n  x\ny"))]));
+}
+
+// ---------------------------------------------------------------------------
+// Top-level Array root ambiguity: `render` / `to_string_force_strings`
+// must wrap in `[...]` whenever the bare form would read back as a
+// different root — a compound first item, empty or not (§ 5.9.3 /
+// § 5.0.1). `emit_canonical` already gets this right; these pin the
+// same property on the plain renderer.
+// ---------------------------------------------------------------------------
+
+fn assert_render_roundtrip(v: &Value) {
+    let text = ktav::render::render(v).unwrap_or_else(|e| panic!("render({v:?}): {e}"));
+    let back = parse(&text).unwrap_or_else(|e| panic!("parse({text:?}): {e}"));
+    assert_eq!(&back, v, "rendered text was {text:?}");
+}
+
+#[test]
+fn render_wraps_single_object_item() {
+    assert_render_roundtrip(&Value::Array(vec![obj(&[("k", s("v"))])]));
+}
+
+#[test]
+fn render_wraps_multiple_object_items() {
+    assert_render_roundtrip(&Value::Array(vec![
+        obj(&[("k", s("v"))]),
+        obj(&[("k2", s("v2"))]),
+    ]));
+}
+
+#[test]
+fn render_wraps_when_object_item_is_followed_by_a_scalar() {
+    assert_render_roundtrip(&Value::Array(vec![obj(&[("k", s("v"))]), s("tail")]));
+}
+
+#[test]
+fn render_does_not_wrap_when_first_item_is_a_scalar() {
+    // Already unambiguous: a bare scalar first line means the root is
+    // an Array, so an object item later on is read as a normal item.
+    let v = Value::Array(vec![s("head"), obj(&[("k", s("v"))])]);
+    let text = render(&v).unwrap();
+    assert!(
+        !text.starts_with('['),
+        "did not need wrapping, but got {text:?}"
+    );
+    assert_render_roundtrip(&v);
+}
+
+#[test]
+fn render_wraps_nested_array_item() {
+    assert_render_roundtrip(&Value::Array(vec![Value::Array(vec![s("x")])]));
+}
+
+#[test]
+fn render_wraps_single_empty_object_item() {
+    // Bare `{}` is indistinguishable from an empty Object root.
+    assert_render_roundtrip(&Value::Array(vec![Value::Object(ObjectMap::default())]));
+}
+
+#[test]
+fn render_wraps_single_empty_array_item() {
+    assert_render_roundtrip(&Value::Array(vec![Value::Array(vec![])]));
+}
+
+#[test]
+fn render_wraps_empty_compound_item_followed_by_more_items() {
+    // Without wrapping this doesn't just lose data, it fails to parse
+    // at all: the bare `{}` line reads as a complete top-level
+    // document, leaving the next line an orphan.
+    assert_render_roundtrip(&Value::Array(vec![
+        Value::Object(ObjectMap::default()),
+        s("tail"),
+    ]));
+}
+
+#[test]
+fn render_emits_bracket_form_for_a_truly_empty_array_root() {
+    // Zero items give the renderer no shape to work from; omitting the
+    // brackets entirely used to emit nothing, which parses back as
+    // `Object({})` (§ 5.0.1's default for content-free input) rather
+    // than `Array([])`.
+    let v = Value::Array(vec![]);
+    let text = render(&v).unwrap();
+    assert_eq!(text, "[]\n");
+    assert_render_roundtrip(&v);
+}
+
+#[test]
+fn force_strings_wraps_single_object_item() {
+    // Every leaf is already a String — asserting round-trip against
+    // the original `Value` is valid here (unlike a typed scalar,
+    // which `to_string_force_strings` deliberately coerces).
+    assert_force_strings_roundtrip(&Value::Array(vec![obj(&[("k", s("v"))])]));
 }

@@ -4,12 +4,21 @@ use crate::error::{Error, Result};
 use crate::value::{ObjectMap, Value};
 
 use super::array_item::render_array_item;
+use super::helpers::first_item_needs_wrap;
 use super::object::render_object_body;
 
 /// Serializes `value` as a top-level Ktav document. The top-level
 /// value must be an Object or an Array (spec § 5.0.1, added 0.1.1).
-/// Top-level Arrays render as bare item-per-line — no surrounding
-/// `[...]` brackets.
+///
+/// Top-level Arrays normally render as bare item-per-line, with no
+/// surrounding `[...]` brackets — the root-kind detection in § 5.0.1
+/// recovers the Array from the shape of the first line. But when the
+/// first item is itself a non-empty Object or Array, rendering it
+/// bare would start the document with a lone `{` / `[`, which § 5.0.1
+/// reads back as "the root itself is that compound" rather than "the
+/// first item of a root Array" — silently changing the root kind on
+/// re-parse. § 5.9.3 wraps the root in `[` / `]` in exactly this case;
+/// `emit_canonical` already does, and this now matches it.
 pub fn render(value: &Value) -> Result<String> {
     // Pre-size the output buffer so renders of medium-large documents
     // don't trigger 4–6 String reallocations on the way to their final
@@ -20,9 +29,24 @@ pub fn render(value: &Value) -> Result<String> {
     let mut out = String::with_capacity(estimate_size(value));
     match value {
         Value::Object(o) => render_object_body(o, 0, &mut out)?,
+        // § 5.9.3: an empty Array root has no items to give it shape,
+        // so it must be written explicitly — otherwise `render` emits
+        // nothing, and an empty document parses back as `Object({})`
+        // (§ 5.0.1's default for content-free input), not `Array([])`.
+        // `emit_canonical` already special-cases this; mirrored here.
+        Value::Array(items) if items.is_empty() => out.push_str("[]\n"),
         Value::Array(items) => {
-            for item in items {
-                render_array_item(item, 0, &mut out)?;
+            // Non-empty here (the empty case is the arm above).
+            if first_item_needs_wrap(&items[0]) {
+                out.push_str("[\n");
+                for item in items {
+                    render_array_item(item, 1, &mut out)?;
+                }
+                out.push_str("]\n");
+            } else {
+                for item in items {
+                    render_array_item(item, 0, &mut out)?;
+                }
             }
         }
         _ => {

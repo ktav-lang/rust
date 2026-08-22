@@ -585,13 +585,19 @@ its own line.
 Empty inline form: `key: ()` or `key: (())` — both yield the empty
 string (same as `key:`).
 
-Serialization: any string containing `\n` is emitted with `(( ... ))`
-so the round-trip is byte-for-byte lossless. Strings without newlines
-use the usual single-line form.
+Serialization: a string is emitted on a single line only when it has
+no `\n`, no leading/trailing whitespace, and no control byte other
+than `TAB`. Anything else — including a plain string with a stray edge
+space — takes the stripped form `( ... )` or, when stripped would
+change the content, the verbatim form `(( ... ))`; whichever the
+writer picks, the round-trip is byte-for-byte lossless.
 
-Limitation: a line whose trimmed content is exactly `)` / `))` always
-closes the block, so such a literal cannot appear as content without
-using an external file.
+Limitation: a body containing a line whose trimmed content is exactly
+`))` cannot use the verbatim form. It falls back to stripped instead —
+unless the body also has a sole-`)` line, a whitespace-only line, or
+every line indented (nothing to anchor the dedent at zero), in which
+case no form can hold it and serialization returns an error rather
+than emit a document that fails to round-trip.
 
 ### 10. Empty compounds
 
