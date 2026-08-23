@@ -1,6 +1,6 @@
 [package]
 name = "ktav"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 description = "Ktav — a plain configuration format. Three rules, zero indentation, zero quoting. Serde-native."
 license = "MIT OR Apache-2.0"
@@ -13,7 +13,7 @@ rust-version = "1.71"
 # Which version of the Ktav format specification this crate implements.
 # See https://github.com/ktav-lang/spec for the formal document.
 [package.metadata.ktav]
-spec-version = "0.6.0"
+spec-version = "0.6.4"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

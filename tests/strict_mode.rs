@@ -145,6 +145,22 @@ inline: {a: 1, b: 2.5}
 }
 
 #[test]
+fn canonical_writer_float_forms_pass_strict() {
+    let value = ktav::parse(
+        "small: 0.001\nmid: 0.0015\nnegative: -0.001\nlarge: 10000000.0\ninline: {small: 0.0015}\n",
+    )
+    .expect("source must parse");
+    let canonical = ktav::emit_canonical(&value).expect("canonical writer must succeed");
+
+    assert_eq!(
+        canonical,
+        "small: 1e-3\nmid: 1.5e-3\nnegative: -1e-3\nlarge: 1e7\ninline: {\n    small: 1.5e-3\n}\n"
+    );
+    let strict = ktav::parse_strict(&canonical).expect("writer output must be strict-canonical");
+    assert_eq!(strict, value);
+}
+
+#[test]
 fn non_strict_parse_behaviour_is_unchanged() {
     let doc = ktav::parse("version: 1.10\nzip: 01234\n").expect("valid lax Ktav");
     let Value::Object(top) = &doc else {

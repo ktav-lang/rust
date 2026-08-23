@@ -350,11 +350,11 @@ fn emit_multiline_stripped(segments: &[&str], indent: usize, is_pair: bool, out:
 /// Convert a stored float scalar (ryu shortest-decimal) to the spec § 5.9.8
 /// canonical form:
 /// - Use scientific notation when `abs(value) >= 1e7` or
-///   `0 < abs(value) < 1e-3`.
+///   `0 < abs(value) < 1e-2`.
 /// - Otherwise keep the ryu decimal form unchanged.
 /// - Scientific: lowercase `e`, no `+` in exponent, strip trailing `.0`
 ///   in mantissa (so `1.0e9` → `1e9`).
-fn canonical_float(s: &str) -> String {
+pub(crate) fn canonical_float(s: &str) -> String {
     // Parse the stored ryu string back to f64.
     let val: f64 = match s.parse() {
         Ok(v) => v,

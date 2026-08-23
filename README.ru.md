@@ -717,7 +717,7 @@ ktav/
 
 ```toml
 [dependencies]
-ktav = "0.6.0"
+ktav = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 

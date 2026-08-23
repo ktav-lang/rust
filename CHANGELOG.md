@@ -9,6 +9,23 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.6.4] — 2026-08-23
+
+### Fixed
+
+- **Strict parsing now accepts the canonical notation emitted by the
+  writer for Float values.** Scientific forms such as `1e-3`, `1.5e-3`,
+  `-1e-3`, and `1e7` are compared against the § 5.9.8 writer policy,
+  while the stored value remains the same Ryu form used by ordinary
+  `parse()`.
+
+### Changed
+
+- The crate is released as `0.6.4` and pins the conformance specification
+  to `0.6.4`.
+- The `ktav-lang/spec` submodule is pinned to the matching 0.6.4
+  specification commit, including the float notation-boundary fixture.
+
 ## [0.6.3] — 2026-08-23
 
 ### Fixed

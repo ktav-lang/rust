@@ -314,12 +314,17 @@ fn classify_inline_scalar(
         if let Some(val) = parse_float_value(body) {
             let mut buf = ryu::Buffer::new();
             let canonical = buf.format(val);
+            let rendered = crate::render::canonical::canonical_float(canonical);
+            if strict {
+                if rendered != body {
+                    return Err(lossy_scalar(body, &rendered, line_num, span));
+                }
+                // Strict acceptance still stores the same Ryu form as lax parse().
+                return Ok(Value::Float(canonical.into()));
+            }
             // If ryu reproduces the input, use it directly.
             if canonical == body {
                 return Ok(Value::Float(body.into()));
-            }
-            if strict {
-                return Err(lossy_scalar(body, canonical, line_num, span));
             }
             return Ok(Value::Float(canonical.into()));
         }

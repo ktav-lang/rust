@@ -11,6 +11,20 @@
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
 
+## [0.6.4] —— 2026-08-23
+
+### 修复
+
+- **严格解析现在接受 writer 为 Float 输出的规范形式。** `1e-3`、
+  `1.5e-3`、`-1e-3` 与 `1e7` 等科学形式按 § 5.9.8 policy 比较,
+  但存储的值仍保持与普通 `parse()` 相同的 Ryu 形式。
+
+### 变更
+
+- crate 版本为 `0.6.4`,conformance 规范固定为 `0.6.4`。
+- `ktav-lang/spec` submodule 固定到对应的 0.6.4 规范 commit,
+  包含 float 表示边界 fixture。
+
 ## [0.6.3] —— 2026-08-23
 
 ### 修复

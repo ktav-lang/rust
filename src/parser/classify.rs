@@ -133,13 +133,18 @@ pub(super) fn classify_value_start(
         if let Some(val) = parse_float_value(trimmed) {
             let mut buf = ryu::Buffer::new();
             let canonical = buf.format(val);
+            let rendered = crate::render::canonical::canonical_float(canonical);
+            if strict {
+                if rendered != trimmed {
+                    return Err(lossy_scalar(trimmed, &rendered, line_num, trimmed_span));
+                }
+                // Strict acceptance still stores the same Ryu form as lax parse().
+                return Ok(ValueStart::Float(canonical.into()));
+            }
             // If ryu reproduces the input, the original slice is already
             // canonical — skip the Scalar heap allocation.
             if canonical == trimmed {
                 return Ok(ValueStart::Float(trimmed.into()));
-            }
-            if strict {
-                return Err(lossy_scalar(trimmed, canonical, line_num, trimmed_span));
             }
             return Ok(ValueStart::Float(canonical.into()));
         }
