@@ -122,7 +122,20 @@ fn canonical_rejects_padded_sole_double_paren_line() {
 
 #[test]
 fn canonical_keeps_representable_tricky_keys() {
-    for key in ["a.b", "a:b", "#note", "x##y", "first name", "a\tb", "путь"] {
+    // `a\b` closes the emit side of the § 3.7 set: with the seven in
+    // the test below plus `a.b` / `a:b` here, all ten escapes are now
+    // pinned on the emit side as well as the parse side
+    // (tests/key_escaping.rs).
+    for key in [
+        "a.b",
+        "a:b",
+        "a\\b",
+        "#note",
+        "x##y",
+        "first name",
+        "a\tb",
+        "путь",
+    ] {
         assert_canonical_roundtrip(&obj(&[(key, s("x"))]));
     }
 }
