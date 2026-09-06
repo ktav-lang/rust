@@ -6,6 +6,7 @@ pub(crate) mod helpers;
 mod object;
 mod pair;
 mod render;
+mod representable;
 
 pub use canonical::emit_canonical;
 pub use render::{render, to_string_force_strings};

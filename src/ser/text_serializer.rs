@@ -57,6 +57,11 @@ fn top_err() -> Error {
     <Error as ser::Error>::custom("top-level value must be an object")
 }
 
+/// A bare scalar root is exactly the § 5.9.0 `ScalarRoot` case.
+fn scalar_root_err() -> Error {
+    Error::Unrepresentable(crate::error::ReasonCode::ScalarRoot)
+}
+
 fn key_err() -> Error {
     <Error as ser::Error>::custom("map keys must serialize to strings")
 }
@@ -99,8 +104,8 @@ fn push_float_body(out: &mut String, s: &str) {
 /// always contains a decimal point. NaN / ±Infinity return an error.
 pub(crate) fn format_f64(v: f64) -> Result<String> {
     if v.is_nan() || v.is_infinite() {
-        return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav",
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
         ));
     }
     let mut buf = ryu::Buffer::new();
@@ -112,8 +117,8 @@ pub(crate) fn format_f64(v: f64) -> Result<String> {
 /// Produce the textual form of an `f32` value suitable for Ktav output.
 pub(crate) fn format_f32(v: f32) -> Result<String> {
     if v.is_nan() || v.is_infinite() {
-        return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav",
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
         ));
     }
     let mut buf = ryu::Buffer::new();
@@ -144,8 +149,8 @@ fn push_int_item<I: itoa::Integer>(out: &mut String, v: I) {
 /// Under spec 0.5.0, floats use plain `: ` (no `:f` marker).
 fn push_f64_pair(out: &mut String, v: f64) -> Result<()> {
     if v.is_nan() || v.is_infinite() {
-        return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav",
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
         ));
     }
     out.push_str(": ");
@@ -157,8 +162,8 @@ fn push_f64_pair(out: &mut String, v: f64) -> Result<()> {
 
 fn push_f32_pair(out: &mut String, v: f32) -> Result<()> {
     if v.is_nan() || v.is_infinite() {
-        return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav",
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
         ));
     }
     out.push_str(": ");
@@ -172,8 +177,8 @@ fn push_f32_pair(out: &mut String, v: f32) -> Result<()> {
 /// float items are inferred from the lexical form.
 fn push_f64_item(out: &mut String, v: f64) -> Result<()> {
     if v.is_nan() || v.is_infinite() {
-        return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav",
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
         ));
     }
     let mut buf = ryu::Buffer::new();
@@ -184,8 +189,8 @@ fn push_f64_item(out: &mut String, v: f64) -> Result<()> {
 
 fn push_f32_item(out: &mut String, v: f32) -> Result<()> {
     if v.is_nan() || v.is_infinite() {
-        return Err(<Error as ser::Error>::custom(
-            "NaN / Infinity is not representable in Ktav",
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
         ));
     }
     let mut buf = ryu::Buffer::new();
@@ -215,61 +220,63 @@ impl<'a> ser::Serializer for RootSer<'a> {
     type SerializeStructVariant = UnreachableCompound;
 
     fn serialize_bool(self, _: bool) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_i8(self, _: i8) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_i16(self, _: i16) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_i32(self, _: i32) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_i64(self, _: i64) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_u8(self, _: u8) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_u16(self, _: u16) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_u32(self, _: u32) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_u64(self, _: u64) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_f32(self, _: f32) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_f64(self, _: f64) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_char(self, _: char) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_str(self, _: &str) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_bytes(self, _: &[u8]) -> Result<()> {
         Err(top_err())
     }
     fn serialize_none(self) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_some<T: ?Sized + Serialize>(self, v: &T) -> Result<()> {
         v.serialize(self)
     }
     fn serialize_unit(self) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_unit_struct(self, _: &'static str) -> Result<()> {
-        Err(top_err())
+        Err(scalar_root_err())
     }
     fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> Result<()> {
-        Err(top_err())
+        // A unit variant root serializes as a bare string scalar,
+        // i.e. exactly the ScalarRoot case (spec § 5.9.0).
+        Err(scalar_root_err())
     }
     fn serialize_newtype_struct<T: ?Sized + Serialize>(self, _: &'static str, v: &T) -> Result<()> {
         v.serialize(self)
@@ -381,6 +388,11 @@ impl<'a> SerializeStruct for ObjectCompound<'a> {
         key: &'static str,
         value: &T,
     ) -> Result<()> {
+        if key.is_empty() {
+            return Err(Error::Unrepresentable(
+                crate::error::ReasonCode::EmptyKeyName,
+            ));
+        }
         // Capture BEFORE clearing `empty_so_far`: the § 5.9.10 rule
         // (c) U+FEFF guard applies only to the root Object's first
         // serialized key, which is the only one at byte offset 0.
@@ -418,6 +430,11 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
         let key = self.pending_key.take().ok_or_else(|| {
             <Error as ser::Error>::custom("serialize_value without preceding key")
         })?;
+        if key.is_empty() {
+            return Err(Error::Unrepresentable(
+                crate::error::ReasonCode::EmptyKeyName,
+            ));
+        }
         // See serialize_field: only the root Object's first serialized
         // key takes the § 5.9.10 rule (c) guard.
         let root_first_key = self.is_root && self.empty_so_far;

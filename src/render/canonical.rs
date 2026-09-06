@@ -10,6 +10,13 @@
 //! - Numbers in canonical form (Integer: base-10; Float: shortest decimal).
 //! - Multi-line strings prefer verbatim `((…))`.
 //!
+//! A non-representable Value — a scalar root, an empty key name, a
+//! non-finite Float, a `CR` byte, or one of the three multi-line
+//! collision cases — is rejected per § 5.9.0 with a
+//! [`crate::error::ReasonCode`]-coded `Error::Unrepresentable` before
+//! any bytes are emitted; partial output followed by failure never
+//! happens.
+//!
 //! Two writer-conforming implementations fed the same Value MUST produce
 //! identical output (§ 8.2).
 
@@ -23,23 +30,22 @@ use crate::value::{ObjectMap, Value};
 /// Emit a canonical Ktav serialisation of `value` (spec § 5.9).
 ///
 /// The top-level value must be an Object or an Array (§ 5.0.1).
-/// Returns an error for any other variant, or if a String contains a
-/// `CR` byte (not representable in canonical form, § 5.9.7).
+/// Non-representable Values are rejected per § 5.9.0 with an
+/// `Error::Unrepresentable` carrying a [`crate::error::ReasonCode`] —
+/// scalar roots, empty key names, non-finite floats, `CR` bytes, and
+/// the three multi-line collision cases. The check runs before any
+/// bytes are emitted, so a rejection produces no partial output.
 pub fn emit_canonical(value: &Value) -> Result<String> {
+    super::representable::check_representable(value)?;
     let mut out = String::with_capacity(estimate_size(value));
     match value {
-        Value::Object(o) if o.is_empty() => { /* § 5.9.3: empty Object → zero bytes */ }
         Value::Object(o) => emit_object_pairs(o, 0, true, &mut out)?,
         Value::Array(items) if items.is_empty() => {
             // § 5.9.3: empty Array root → `[]\n`
             out.push_str("[]\n");
         }
         Value::Array(items) => emit_array_root(items, &mut out)?,
-        _ => {
-            return Err(Error::Message(
-                "top-level value must be an Object or an Array".into(),
-            ))
-        }
+        _ => return Err(Error::Unrepresentable(crate::error::ReasonCode::ScalarRoot)),
     }
     Ok(out)
 }

@@ -116,6 +116,85 @@ pub enum Error {
     /// A custom message produced by `serde` during (de)serialization —
     /// for example a type mismatch or a missing field.
     Message(String),
+    /// A writer rejected a non-representable Value (spec 0.7 § 5.9.0):
+    /// nothing was serialised — partial output followed by failure is
+    /// never permitted.
+    Unrepresentable(ReasonCode),
+}
+
+/// Spec 0.7 § 5.9.0 reason codes for writer-side rejection of a
+/// non-representable Value. Only the code names and the case each
+/// identifies are normative; this enum is the API shape this crate
+/// surfaces them through.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReasonCode {
+    /// The document root is not an Object or an Array.
+    ScalarRoot,
+    /// An Object pair's name is the empty string.
+    EmptyKeyName,
+    /// A Float is NaN or ±Infinity.
+    NonFiniteFloat,
+    /// A String contains a `CR` byte (§ 5.9.7).
+    CRByte,
+    /// A String's multi-line body needs both forms — a segment
+    /// trimming to `))` and a segment trimming to `)` (§ 5.9.7).
+    BothFormsRequired,
+    /// A segment trims to `))` and some content line has trailing
+    /// whitespace (§ 5.9.7).
+    TrailingWhitespaceCollision,
+    /// A segment trims to `))` and every non-blank segment shares
+    /// leading whitespace at the same position (§ 5.9.7).
+    LeadingWhitespaceCollision,
+}
+
+impl ReasonCode {
+    /// The exact spec spelling of this reason code.
+    pub fn code_name(&self) -> &'static str {
+        match self {
+            ReasonCode::ScalarRoot => "ScalarRoot",
+            ReasonCode::EmptyKeyName => "EmptyKeyName",
+            ReasonCode::NonFiniteFloat => "NonFiniteFloat",
+            ReasonCode::CRByte => "CRByte",
+            ReasonCode::BothFormsRequired => "BothFormsRequired",
+            ReasonCode::TrailingWhitespaceCollision => "TrailingWhitespaceCollision",
+            ReasonCode::LeadingWhitespaceCollision => "LeadingWhitespaceCollision",
+        }
+    }
+}
+
+impl Display for ReasonCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReasonCode::ScalarRoot => write!(
+                f,
+                "ScalarRoot: the document root is not an Object or an Array (spec § 5.9.0)"
+            ),
+            ReasonCode::EmptyKeyName => write!(
+                f,
+                "EmptyKeyName: an Object pair's name is the empty string (spec § 5.9.0)"
+            ),
+            ReasonCode::NonFiniteFloat => {
+                write!(f, "NonFiniteFloat: a Float is NaN or ±Infinity (spec § 5.9.0)")
+            }
+            ReasonCode::CRByte => write!(
+                f,
+                "CRByte: a String contains a CR byte (spec § 5.9.0 / § 5.9.7)"
+            ),
+            ReasonCode::BothFormsRequired => write!(
+                f,
+                "BothFormsRequired: the multi-line String needs both forms, a segment trimming to '))' and a segment trimming to ')' (spec § 5.9.7)"
+            ),
+            ReasonCode::TrailingWhitespaceCollision => write!(
+                f,
+                "TrailingWhitespaceCollision: a segment trims to '))' and some content line has trailing whitespace (spec § 5.9.7)"
+            ),
+            ReasonCode::LeadingWhitespaceCollision => write!(
+                f,
+                "LeadingWhitespaceCollision: a segment trims to '))' and every non-blank segment shares leading whitespace at the same position (spec § 5.9.7)"
+            ),
+        }
+    }
 }
 
 /// Structured parse-error category. Each variant carries the
@@ -406,6 +485,7 @@ impl Display for Error {
             Error::Structured(k) => write!(f, "Syntax error: {}", k),
             Error::Syntax(m) => write!(f, "Syntax error: {}", m),
             Error::Message(m) => write!(f, "{}", m),
+            Error::Unrepresentable(code) => write!(f, "{}", code),
         }
     }
 }
@@ -454,6 +534,15 @@ impl Error {
     pub fn span(&self) -> Option<Span> {
         match self {
             Error::Structured(k) => Some(k.span()),
+            _ => None,
+        }
+    }
+
+    /// Returns the § 5.9.0 reason code if this is an
+    /// [`Error::Unrepresentable`] writer rejection, else `None`.
+    pub fn reason_code(&self) -> Option<ReasonCode> {
+        match self {
+            Error::Unrepresentable(code) => Some(*code),
             _ => None,
         }
     }

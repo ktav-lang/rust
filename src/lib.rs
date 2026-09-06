@@ -97,7 +97,7 @@ pub mod ser;
 pub mod thin;
 pub mod value;
 
-pub use error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
+pub use error::{CompoundKind, ConflictKind, Error, ErrorKind, ReasonCode, Result, Span};
 pub use thin::{parse_events, ParseEvent};
 pub use value::{ObjectMap, Value};
 

@@ -21,7 +21,12 @@ use super::object::render_object_body;
 /// case the root is wrapped in explicit `[` / `]`; see
 /// `helpers::first_item_needs_wrap` for the full § 5.0.1 / § 5.9.3
 /// story. The same shared check drives `emit_canonical`.
+///
+/// Non-representable Values are rejected up-front per § 5.9.0 with an
+/// `Error::Unrepresentable` carrying a [`crate::error::ReasonCode`],
+/// before any bytes are emitted — no partial output on rejection.
 pub fn render(value: &Value) -> Result<String> {
+    super::representable::check_representable(value)?;
     // Pre-size the output buffer so renders of medium-large documents
     // don't trigger 4–6 String reallocations on the way to their final
     // size. The estimate is a lower bound (it omits indentation and
@@ -58,11 +63,7 @@ pub fn render(value: &Value) -> Result<String> {
                 }
             }
         }
-        _ => {
-            return Err(Error::Message(
-                "top-level value must be an Object or an Array".into(),
-            ))
-        }
+        _ => return Err(Error::Unrepresentable(crate::error::ReasonCode::ScalarRoot)),
     }
     Ok(out)
 }
@@ -79,6 +80,11 @@ pub fn render(value: &Value) -> Result<String> {
 ///
 /// Compounds (Object / Array) preserve their structure; only leaf
 /// scalars are coerced.
+///
+/// Note this renders the COERCED value: Float scalars become Strings
+/// before the § 5.9.0 check, so `NonFiniteFloat` cannot fire here,
+/// while the root / `EmptyKeyName` / `CRByte` / collision checks still
+/// apply.
 pub fn to_string_force_strings(value: &Value) -> Result<String> {
     let coerced = coerce_scalars_to_strings(value);
     render(&coerced)

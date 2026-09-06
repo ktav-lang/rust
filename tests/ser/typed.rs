@@ -2,7 +2,7 @@
 //! `: ` (no `:i` marker) and floats use plain `: ` (no `:f` marker).
 //! Number literals are inferred from their lexical form by the parser.
 
-use ktav::{to_string, Error};
+use ktav::{to_string, ReasonCode};
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
@@ -188,11 +188,7 @@ fn f64_nan_errors() {
         x: f64,
     }
     let err = to_string(&Cfg { x: f64::NAN }).unwrap_err();
-    assert!(
-        matches!(err, Error::Message(ref m) if m.contains("NaN")),
-        "got: {:?}",
-        err
-    );
+    assert_eq!(err.reason_code(), Some(ReasonCode::NonFiniteFloat));
 }
 
 #[test]
@@ -202,11 +198,7 @@ fn f64_infinity_errors() {
         x: f64,
     }
     let err = to_string(&Cfg { x: f64::INFINITY }).unwrap_err();
-    assert!(
-        matches!(err, Error::Message(ref m) if m.contains("Infinity")),
-        "got: {:?}",
-        err
-    );
+    assert_eq!(err.reason_code(), Some(ReasonCode::NonFiniteFloat));
 }
 
 #[test]
@@ -219,11 +211,7 @@ fn f64_neg_infinity_errors() {
         x: f64::NEG_INFINITY,
     })
     .unwrap_err();
-    assert!(
-        matches!(err, Error::Message(ref m) if m.contains("Infinity")),
-        "got: {:?}",
-        err
-    );
+    assert_eq!(err.reason_code(), Some(ReasonCode::NonFiniteFloat));
 }
 
 #[test]
@@ -233,11 +221,7 @@ fn f32_nan_errors() {
         x: f32,
     }
     let err = to_string(&Cfg { x: f32::NAN }).unwrap_err();
-    assert!(
-        matches!(err, Error::Message(ref m) if m.contains("NaN")),
-        "got: {:?}",
-        err
-    );
+    assert_eq!(err.reason_code(), Some(ReasonCode::NonFiniteFloat));
 }
 
 // ---------------------------------------------------------------------------

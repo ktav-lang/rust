@@ -1,6 +1,6 @@
 //! Small primitives shared by the rendering functions.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ReasonCode, Result};
 use crate::parser::classify;
 use crate::value::Value;
 
@@ -234,17 +234,16 @@ pub(crate) fn string_needs_multiline(s: &str) -> bool {
         || s.bytes().any(|b| b < 0x20 && b != b'\t')
 }
 
-/// The § 5.9.7 error for a `CR` byte in a String: no text form can
-/// hold it (verbatim blocks split on line terminators), so the writer
-/// must reject the Value rather than emit a document that parses to a
-/// different one.
+/// The § 5.9.7 / § 5.9.0 error for a `CR` byte in a String, coded
+/// [`ReasonCode::CRByte`]: no text form can hold it (verbatim blocks
+/// split on line terminators), so the writer must reject the Value
+/// rather than emit a document that parses to a different one.
 pub(crate) fn cr_error() -> Error {
-    Error::Message(
-        "String containing CR (0x0D) is not representable in canonical form (§ 5.9.7)".into(),
-    )
+    Error::Unrepresentable(ReasonCode::CRByte)
 }
 
 /// Which multi-line form a String body should take.
+#[derive(Debug)]
 pub(crate) enum MultilineForm {
     /// `(` … `)` — parser dedents by the common leading whitespace.
     Stripped,
@@ -253,7 +252,8 @@ pub(crate) enum MultilineForm {
 }
 
 /// Pick the multi-line form that reproduces `s` byte-for-byte on
-/// re-parse, or error when neither form can (spec § 5.6.1).
+/// re-parse, or return `Error::Unrepresentable` with the matching
+/// § 5.9.0 reason code when neither form can (spec § 5.6.1 / § 5.9.0).
 ///
 /// Verbatim breaks on a content line trimming to `))` (it would close
 /// the block). Stripped breaks on a line trimming to `)` (it would
@@ -306,14 +306,25 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
     } else if stripped_lossless {
         Ok(MultilineForm::Stripped)
     } else {
-        Err(Error::Message(
-            "String has no lossless multi-line form (§ 5.6.1): a sole-`))` \
-             content line closes the verbatim block, and the stripped block \
-             cannot hold this body (a sole-`)` line, a whitespace-only line, \
-             a line with trailing whitespace, or every line indented). Split the value across adjacent \
-             multi-line pairs."
-                .into(),
-        ))
+        // § 5.9.7 / § 5.9.0: verbatim is blocked (a segment trims to
+        // `))`) and stripped cannot hold the body losslessly. The
+        // remaining blockers map onto the three named collision codes:
+        // - a segment trimming to `)`        → BothFormsRequired
+        // - any line with trailing whitespace → TrailingWhitespaceCollision
+        // - otherwise every non-blank line is indented
+        //                                     → LeadingWhitespaceCollision
+        // A whitespace-only line always sets `trailing_ws_line` above
+        // (its every byte is trailing whitespace and § 5.6's stripped
+        // form blanks it), so the whitespace-only-line case reports as
+        // TrailingWhitespaceCollision rather than an unnamed eighth case.
+        let code = if sole_single {
+            ReasonCode::BothFormsRequired
+        } else if trailing_ws_line {
+            ReasonCode::TrailingWhitespaceCollision
+        } else {
+            ReasonCode::LeadingWhitespaceCollision
+        };
+        Err(Error::Unrepresentable(code))
     }
 }
 
