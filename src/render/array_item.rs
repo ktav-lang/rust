@@ -87,7 +87,7 @@ pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) 
                 out.push_str("{}\n");
             } else {
                 out.push_str("{\n");
-                render_object_body(obj, indent + 1, out)?;
+                render_object_body(obj, indent + 1, false, out)?;
                 push_indent(out, indent);
                 out.push_str("}\n");
             }

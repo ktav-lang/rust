@@ -30,7 +30,10 @@ pub fn render(value: &Value) -> Result<String> {
     // every realloc.
     let mut out = String::with_capacity(estimate_size(value));
     match value {
-        Value::Object(o) => render_object_body(o, 0, &mut out)?,
+        // The root Object is the only caller passing `is_root = true`
+        // — its first pair's key is the only one that can land at byte
+        // offset 0 (§ 5.9.10 rule (c) / § 5.9.12).
+        Value::Object(o) => render_object_body(o, 0, true, &mut out)?,
         // § 5.9.3: an empty Array root has no items to give it shape,
         // so it must be written explicitly — otherwise `render` emits
         // nothing, and an empty document parses back as `Object({})`

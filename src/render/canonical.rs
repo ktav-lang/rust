@@ -29,7 +29,7 @@ pub fn emit_canonical(value: &Value) -> Result<String> {
     let mut out = String::with_capacity(estimate_size(value));
     match value {
         Value::Object(o) if o.is_empty() => { /* § 5.9.3: empty Object → zero bytes */ }
-        Value::Object(o) => emit_object_pairs(o, 0, &mut out)?,
+        Value::Object(o) => emit_object_pairs(o, 0, true, &mut out)?,
         Value::Array(items) if items.is_empty() => {
             // § 5.9.3: empty Array root → `[]\n`
             out.push_str("[]\n");
@@ -49,9 +49,19 @@ pub fn emit_canonical(value: &Value) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Emit an Object's pairs at the given indent level (root uses 0).
-fn emit_object_pairs(obj: &ObjectMap, indent: usize, out: &mut String) -> Result<()> {
-    for (k, v) in obj {
-        emit_pair(k, v, indent, out)?;
+///
+/// `is_root` is true ONLY for the document-root Object; it lets the
+/// first pair's key take the § 5.9.10 rule (c) U+FEFF guard (which
+/// only applies at byte offset 0, § 5.9.12). Every nested call passes
+/// `false` — an interior Object's first key never lands at offset 0.
+fn emit_object_pairs(
+    obj: &ObjectMap,
+    indent: usize,
+    is_root: bool,
+    out: &mut String,
+) -> Result<()> {
+    for (index, (k, v)) in obj.iter().enumerate() {
+        emit_pair(k, v, indent, is_root && index == 0, out)?;
     }
     Ok(())
 }
@@ -79,10 +89,19 @@ fn emit_array_root(items: &[Value], out: &mut String) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Emit a single `key: value` / `key:: value` / compound pair.
-fn emit_pair(key: &str, value: &Value, indent: usize, out: &mut String) -> Result<()> {
+///
+/// `root_first_key` forwards the § 5.9.10 rule (c) guard for the
+/// root Object's first-serialized key.
+fn emit_pair(
+    key: &str,
+    value: &Value,
+    indent: usize,
+    root_first_key: bool,
+    out: &mut String,
+) -> Result<()> {
     push_indent(out, indent);
-    // Spec 0.6.0 § 3.7 — re-escape `\`, `.`, `:` in the key.
-    crate::render::helpers::push_escaped_key_segment(key, out);
+    // Spec 0.7 § 5.9.10 — bare/quoted form selection + re-escape.
+    crate::render::helpers::push_escaped_key_segment(key, root_first_key, out);
     match value {
         Value::Null => {
             // § 5.9.9
@@ -126,7 +145,7 @@ fn emit_pair(key: &str, value: &Value, indent: usize, out: &mut String) -> Resul
                 out.push_str(": {}\n");
             } else {
                 out.push_str(": {\n");
-                emit_object_pairs(obj, indent + 1, out)?;
+                emit_object_pairs(obj, indent + 1, false, out)?;
                 push_indent(out, indent);
                 out.push_str("}\n");
             }
@@ -178,7 +197,7 @@ fn emit_array_item(value: &Value, indent: usize, out: &mut String) -> Result<()>
                 out.push_str("{}\n");
             } else {
                 out.push_str("{\n");
-                emit_object_pairs(obj, indent + 1, out)?;
+                emit_object_pairs(obj, indent + 1, false, out)?;
                 push_indent(out, indent);
                 out.push_str("}\n");
             }
@@ -773,5 +792,134 @@ mixed: [
         assert!(needs_raw_marker("1e9"));
         assert!(!needs_raw_marker("1."));
         assert!(!needs_raw_marker(".5"));
+    }
+
+    // --- 0.7 § 5.9.10: key form selection + re-escape -------------------
+    // Exact-oracle expectations verified against the 0.7 corpus
+    // fixtures (spec/versions/0.7/tests/valid/{key_escaping,quoted_keys}).
+
+    /// Structural bytes (`.` `:` `,` `{` `}` `[` `]` `(` `)`) route the
+    /// key to quoted form (§ 5.9.10 rule (a)) — bare `\.` is the old
+    /// 0.6 spelling, never the 0.7 canonical output.
+    #[test]
+    fn structural_bytes_force_quoted() {
+        for key in [
+            "a.b", "a:b", "a,b", "a{b", "a}b", "a[b", "a]b", "a(b",
+        ] {
+            let v = obj(vec![(key, s("v"))]);
+            let expected = format!("\"{}\": v\n", key);
+            assert_eq!(emit_canonical(&v).unwrap(), expected, "key: {key}");
+        }
+    }
+
+    /// A literal backslash alone stays BARE — quoted form needs the
+    /// identical `\\` escape, so quoting buys nothing (§ 5.9.10).
+    #[test]
+    fn literal_backslash_stays_bare() {
+        let v = obj(vec![("path\\to", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "path\\\\to: v\n");
+    }
+
+    /// A leading `"` forces quoted form (rule (b)); the interior
+    /// delimiter occurrences need only `\"` (§ 5.9.10 `port` example).
+    #[test]
+    fn leading_quote_forces_quoted() {
+        let v = obj(vec![("\"port\"", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "\"\\\"port\\\"\": v\n");
+    }
+
+    /// A leading `##` forces quoted form (rule (d)) — no bare escape
+    /// changes the raw first two bytes § 5.1 rule 2 inspects.
+    #[test]
+    fn leading_double_hash_forces_quoted() {
+        let v = obj(vec![("##a:b", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "\"##a:b\": v\n");
+        let v = obj(vec![("##tag", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "\"##tag\": v\n");
+    }
+
+    /// LF/CR inside a key stay BARE with the named escapes `\n`/`\r` —
+    /// a quoted segment never admits them raw, so quoting buys nothing.
+    #[test]
+    fn interior_newline_and_cr_stay_bare() {
+        let v = obj(vec![("a\nb", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "a\\nb: v\n");
+        let v = obj(vec![("a\rb", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "a\\rb: v\n");
+    }
+
+    /// Edge LF/CR stay BARE too (edge-whitespace exemption, same
+    /// quoted-excludes-them-anyway argument) — corpus
+    /// `key_escaping/edge_newline_in_key`.
+    #[test]
+    fn edge_newline_and_cr_stay_bare() {
+        for key in ["\nlf", "lf\n", "\rcr", "cr\r"] {
+            let v = obj(vec![(key, s("v"))]);
+            let expected = format!("{}: v\n", key.replace('\n', "\\n").replace('\r', "\\r"));
+            assert_eq!(emit_canonical(&v).unwrap(), expected, "key: {key:?}");
+        }
+    }
+
+    /// Interior tab (and any interior § 3.3 whitespace) stays raw.
+    #[test]
+    fn interior_tab_stays_bare_raw() {
+        let v = obj(vec![("a\tb", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "a\tb: v\n");
+    }
+
+    /// Control bytes and DEL use `\uXXXX` with four UPPERCASE hex
+    /// digits, bare form (corpus `unicode_escape_nul_in_key`).
+    #[test]
+    fn control_bytes_use_uppercase_unicode_escape() {
+        let v = obj(vec![("a\u{1}b", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "a\\u0001b: v\n");
+        let v = obj(vec![("a\u{0}b", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "a\\u0000b: v\n");
+        let v = obj(vec![("a\u{7F}b", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "a\\u007Fb: v\n");
+    }
+
+    /// Edge § 3.3 whitespace (other than LF/CR) forces quoted form —
+    /// quoted content is never trimmed (§ 5.3.3), and the whitespace
+    /// is emitted raw inside the quotes (corpus
+    /// `quoted_keys/edge_whitespace_preserved`).
+    #[test]
+    fn edge_whitespace_forces_quoted() {
+        for key in ["a ", " a", " "] {
+            let v = obj(vec![(key, s("v"))]);
+            let expected = format!("\"{}\": v\n", key);
+            assert_eq!(emit_canonical(&v).unwrap(), expected, "key: {key:?}");
+        }
+        let v = obj(vec![("\tx", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "\"\tx\": v\n");
+    }
+
+    /// U+FEFF at the start of the ROOT Object's FIRST key forces
+    /// quoted form (rule (c) — byte-offset-0 BOM collision, § 5.9.12),
+    /// with the U+FEFF raw inside the quotes. The same key at any
+    /// other pair position is emitted bare.
+    #[test]
+    fn bom_root_first_key_quoted_elsewhere_bare() {
+        // Root, first pair → quoted.
+        let v = obj(vec![("\u{FEFF}host", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "\"\u{FEFF}host\": v\n");
+        // Root, SECOND pair → bare.
+        let v = obj(vec![("ok", s("v")), ("\u{FEFF}host", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "ok: v\n\u{FEFF}host: v\n");
+        // First pair of a NESTED object → bare.
+        let v = obj(vec![("outer", obj(vec![("\u{FEFF}host", s("v"))]))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "outer: {\n    \u{FEFF}host: v\n}\n");
+        // U+FEFF not the first code point → bare always.
+        let v = obj(vec![("a\u{FEFF}host", s("v"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "a\u{FEFF}host: v\n");
+    }
+
+    /// The root_first flag is keyed on PAIR POSITION, not content: a
+    /// root object's first key still takes form selection (quoting for
+    /// a structural byte) even when followed by more pairs.
+    #[test]
+    fn root_first_key_with_structural_byte_still_quoted_among_pairs() {
+        let v = obj(vec![("a.b", s("v")), ("c", s("w"))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "\"a.b\": v\nc: w\n");
     }
 }

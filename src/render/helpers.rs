@@ -33,44 +33,190 @@ pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
     matches!(item, Value::Object(_) | Value::Array(_))
 }
 
+/// The § 3.3 whitespace set: exactly twenty-five code points, the
+/// Unicode `White_Space` property as of Unicode 6.3, fixed as a
+/// closed list. The spec forbids delegating to a host-language
+/// Unicode-whitespace primitive (`char::is_whitespace()`) — the list
+/// here is exhaustive, no more and no fewer.
+pub(crate) fn is_ktav_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}' | '\u{000A}' | '\u{000B}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+            | '\u{0085}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}'
+            | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+    )
+}
+
+/// Push `\u` followed by exactly four UPPERCASE hex digits naming
+/// `ch` (§ 3.7.1). Used only where no named escape exists.
+fn push_unicode_escape(out: &mut String, ch: char) {
+    out.push_str(&format!("\\u{:04X}", ch as u32));
+}
+
 /// Emit a key (flat, single-segment — the byte string stored on the
-/// Object) into `out`, re-escaping `\`, `.`, `:` per spec 0.6.0 § 3.7
-/// so the parser reads the same segment back.
+/// Object) into `out`, choosing **bare** or **quoted** form per spec
+/// 0.7 § 5.9.10 and applying the corresponding re-escape recipe so
+/// the parser reads the same segment back.
+///
+/// Form selection (§ 5.9.10): quoted (delimiter `"` unconditional)
+/// iff any of —
+/// - (a) the segment contains a structural byte (`.` `:` `,` `{` `}`
+///   `[` `]` `(` `)`) anywhere, or its first/last code point is a
+///   § 3.3 whitespace code point other than LF/CR (a quoted segment
+///   is never trimmed, and never admits LF/CR raw at all, so quoting
+///   buys nothing for those two); or
+/// - (b) the segment begins with `"`, `'`, or `` ` `` — a leading
+///   quote character would open a `<quoted-segment>` on re-parse; or
+/// - (c) `root_first_key` is set and the segment begins with U+FEFF —
+///   bare form would place the BOM encoding at byte offset 0 of the
+///   document, indistinguishable from the metadata byte-order mark
+///   (§ 5.9.12); or
+/// - (d) the segment begins with the two-byte sequence `##` — no bare
+///   escape changes the raw first two bytes § 5.1 rule 2 inspects, so
+///   only quoted form avoids the comment dispatch.
+///
+/// Escaping a backslash, LF, CR, a control byte, or DEL does NOT
+/// trigger quoted form by itself: quoted form escapes those
+/// identically, so quoting buys nothing.
+///
+/// `root_first_key` is true ONLY when this key is the first-
+/// serialized key of the ROOT Object at byte offset 0 of the
+/// document (rule (c) / § 5.9.12).
 ///
 /// This is used for the leaf key of a pair (and any non-dotted
 /// segment). Callers that want to emit a dotted path (multiple
 /// segments separated by an UNescaped `.`) join multiple calls with a
 /// literal `.` between them.
-pub(crate) fn push_escaped_key_segment(key: &str, out: &mut String) {
-    // Fast path: most keys don't contain any of the § 3.7 escape-
-    // worthy bytes.
-    let bytes = key.as_bytes();
-    let needs_escape = bytes.iter().any(|&b| {
+pub(crate) fn push_escaped_key_segment(key: &str, root_first_key: bool, out: &mut String) {
+    if key_segment_needs_quotes(key, root_first_key) {
+        push_quoted_key(key, out);
+    } else {
+        push_bare_key(key, out);
+    }
+}
+
+/// § 5.9.10 form selection — see [`push_escaped_key_segment`].
+fn key_segment_needs_quotes(key: &str, root_first_key: bool) -> bool {
+    let first = key.chars().next();
+    let last = key.chars().next_back();
+
+    // (b) leading quote character.
+    if matches!(first, Some('"') | Some('\'') | Some('`')) {
+        return true;
+    }
+    // (c) root's first-serialized key beginning with U+FEFF.
+    if root_first_key && first == Some('\u{FEFF}') {
+        return true;
+    }
+    // (d) leading `##` comment collision.
+    if key.as_bytes().starts_with(b"##") {
+        return true;
+    }
+    // (a) structural bytes anywhere.
+    if key.bytes().any(|b| {
         matches!(
             b,
-            b'\\' | b',' | b'}' | b']' | b'{' | b'[' | b'\n' | b'\r' | b'.' | b':'
+            b'.' | b':' | b',' | b'{' | b'}' | b'[' | b']' | b'(' | b')'
         )
-    });
-    if !needs_escape {
+    }) {
+        return true;
+    }
+    // (a) edge whitespace — except LF/CR, which a quoted segment never
+    // admits raw, so quoting buys nothing for them.
+    let edge_ws = |c: Option<char>| {
+        c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r')
+    };
+    edge_ws(first) || edge_ws(last)
+}
+
+/// Bare form (§ 5.9.10 bullet recipe): named escapes for `\` `.` `:`
+/// `,` `{` `}` `[` `]` LF CR; `\uXXXX` for other control bytes < 0x20
+/// (except tab/VT/FF) and DEL; `\uXXXX` also for a § 3.3 whitespace
+/// code point at the first or last code-point position (named `\n`/
+/// `\r` when applicable) — unescaped it would be trimmed away on
+/// re-parse. Interior whitespace (including tab) stays raw.
+fn push_bare_key(key: &str, out: &mut String) {
+    let first_ch = key.chars().next();
+    let last_ch = key.chars().next_back();
+    let edge_ws = |c: Option<char>| {
+        c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r')
+    };
+
+    // Fast path: nothing to escape anywhere, and neither edge code
+    // point is § 3.3 whitespace → push the whole string verbatim.
+    let needs_rewrite = key.bytes().any(|b| {
+        matches!(
+            b,
+            b'\\' | b'.' | b':' | b',' | b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\n' | b'\r'
+        ) || (b < 0x20 && !matches!(b, b'\t' | 0x0B | 0x0C))
+            || b == 0x7F
+    }) || edge_ws(first_ch)
+        || edge_ws(last_ch);
+    if !needs_rewrite {
         out.push_str(key);
         return;
     }
-    out.reserve(key.len() + 4);
-    for ch in key.chars() {
+
+    out.reserve(key.len() + 8);
+    let last_idx = key
+        .char_indices()
+        .next_back()
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    for (i, ch) in key.char_indices() {
+        let at_edge = i == 0 || i == last_idx;
         match ch {
             '\\' => out.push_str("\\\\"),
-            ',' => out.push_str("\\,"),
-            '}' => out.push_str("\\}"),
-            ']' => out.push_str("\\]"),
-            '{' => out.push_str("\\{"),
-            '[' => out.push_str("\\["),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
+            // § 3.3 whitespace: raw in the interior, `\uXXXX` at an
+            // edge (named `\n`/`\r` already handled above). Unreachable
+            // at an edge in bare form — rule (a) routed the key to
+            // quoted form — but kept for completeness.
+            c if is_ktav_whitespace(c) => {
+                if at_edge {
+                    push_unicode_escape(out, c);
+                } else {
+                    out.push(c);
+                }
+            }
+            // Structural bytes: unreachable in bare form (rule (a)
+            // routed the key to quoted form), named escape if ever.
             '.' => out.push_str("\\."),
             ':' => out.push_str("\\:"),
-            other => out.push(other),
+            ',' => out.push_str("\\,"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            '[' => out.push_str("\\["),
+            ']' => out.push_str("\\]"),
+            c if (c as u32) < 0x20 || (c as u32) == 0x7F => push_unicode_escape(out, c),
+            c => out.push(c),
         }
     }
+}
+
+/// Quoted form (§ 5.9.10): `"` delimiter, escaping only `\"`, `\\`,
+/// `\n`, `\r`, control bytes < 0x20 (except tab/VT/FF, which
+/// `<dq-char>` admits raw) and DEL as `\uXXXX`. Structural bytes,
+/// other quote characters, and ANY edge whitespace stay raw — a
+/// quoted segment's content is never trimmed (§ 5.3.3).
+fn push_quoted_key(key: &str, out: &mut String) {
+    out.push('"');
+    for ch in key.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if ((c as u32) < 0x20 && !matches!(c, '\t' | '\u{0B}' | '\u{0C}'))
+                || (c as u32) == 0x7F =>
+            {
+                push_unicode_escape(out, c)
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// True if a one-line String body cannot be emitted on the value line

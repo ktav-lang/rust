@@ -342,6 +342,10 @@ struct ObjectCompound<'a> {
     close: Option<usize>, // Some(outer_indent) → write `<outer>}\n` at end.
     pending_key: Option<String>, // used by SerializeMap
     empty_so_far: bool,
+    /// True only for the document-root Object: its FIRST serialized
+    /// key is the only one that can land at byte offset 0, so it is
+    /// the only one eligible for the § 5.9.10 rule (c) U+FEFF guard.
+    is_root: bool,
 }
 
 impl<'a> ObjectCompound<'a> {
@@ -352,6 +356,7 @@ impl<'a> ObjectCompound<'a> {
             close: None,
             pending_key: None,
             empty_so_far: true,
+            is_root: true,
         }
     }
 
@@ -362,6 +367,7 @@ impl<'a> ObjectCompound<'a> {
             close: Some(close_indent),
             pending_key: None,
             empty_so_far: true,
+            is_root: false,
         }
     }
 }
@@ -375,9 +381,13 @@ impl<'a> SerializeStruct for ObjectCompound<'a> {
         key: &'static str,
         value: &T,
     ) -> Result<()> {
+        // Capture BEFORE clearing `empty_so_far`: the § 5.9.10 rule
+        // (c) U+FEFF guard applies only to the root Object's first
+        // serialized key, which is the only one at byte offset 0.
+        let root_first_key = self.is_root && self.empty_so_far;
         self.empty_so_far = false;
         write_indent(self.out, self.field_indent);
-        crate::render::helpers::push_escaped_key_segment(key, self.out);
+        crate::render::helpers::push_escaped_key_segment(key, root_first_key, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,
@@ -408,9 +418,12 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
         let key = self.pending_key.take().ok_or_else(|| {
             <Error as ser::Error>::custom("serialize_value without preceding key")
         })?;
+        // See serialize_field: only the root Object's first serialized
+        // key takes the § 5.9.10 rule (c) guard.
+        let root_first_key = self.is_root && self.empty_so_far;
         self.empty_so_far = false;
         write_indent(self.out, self.field_indent);
-        crate::render::helpers::push_escaped_key_segment(&key, self.out);
+        crate::render::helpers::push_escaped_key_segment(&key, root_first_key, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,
@@ -750,7 +763,11 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
         // Externally-tagged: `: {\n    VariantName: value\n}\n`
         self.out.push_str(": {\n");
         write_indent(self.out, self.indent + 1);
-        crate::render::helpers::push_escaped_key_segment(variant, self.out);
+        // Variant names are always emitted inside a `: {` wrapper, so
+        // they can never be the root Object's first-serialized key —
+        // the § 5.9.10 rule (c) guard never applies (RootSer rejects
+        // root enums outright).
+        crate::render::helpers::push_escaped_key_segment(variant, false, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.indent + 1,
@@ -786,7 +803,11 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
     ) -> Result<TupleVariantPair<'a>> {
         self.out.push_str(": {\n");
         write_indent(self.out, self.indent + 1);
-        crate::render::helpers::push_escaped_key_segment(variant, self.out);
+        // Variant names are always emitted inside a `: {` wrapper, so
+        // they can never be the root Object's first-serialized key —
+        // the § 5.9.10 rule (c) guard never applies (RootSer rejects
+        // root enums outright).
+        crate::render::helpers::push_escaped_key_segment(variant, false, self.out);
         self.out.push_str(": [\n");
         Ok(TupleVariantPair {
             out: self.out,
@@ -831,7 +852,11 @@ impl<'a> ser::Serializer for PairValueSer<'a> {
     ) -> Result<StructVariantPair<'a>> {
         self.out.push_str(": {\n");
         write_indent(self.out, self.indent + 1);
-        crate::render::helpers::push_escaped_key_segment(variant, self.out);
+        // Variant names are always emitted inside a `: {` wrapper, so
+        // they can never be the root Object's first-serialized key —
+        // the § 5.9.10 rule (c) guard never applies (RootSer rejects
+        // root enums outright).
+        crate::render::helpers::push_escaped_key_segment(variant, false, self.out);
         self.out.push_str(": {\n");
         Ok(StructVariantPair {
             out: self.out,
@@ -851,6 +876,7 @@ impl<'a> ObjectCompound<'a> {
             close: None,
             pending_key: None,
             empty_so_far: true,
+            is_root: false,
         }
     }
 }
@@ -1054,7 +1080,11 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
         write_indent(self.out, self.indent);
         self.out.push_str("{\n");
         write_indent(self.out, self.indent + 1);
-        crate::render::helpers::push_escaped_key_segment(variant, self.out);
+        // Variant names are always emitted inside a `: {` wrapper, so
+        // they can never be the root Object's first-serialized key —
+        // the § 5.9.10 rule (c) guard never applies (RootSer rejects
+        // root enums outright).
+        crate::render::helpers::push_escaped_key_segment(variant, false, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.indent + 1,
@@ -1092,7 +1122,11 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
         write_indent(self.out, self.indent);
         self.out.push_str("{\n");
         write_indent(self.out, self.indent + 1);
-        crate::render::helpers::push_escaped_key_segment(variant, self.out);
+        // Variant names are always emitted inside a `: {` wrapper, so
+        // they can never be the root Object's first-serialized key —
+        // the § 5.9.10 rule (c) guard never applies (RootSer rejects
+        // root enums outright).
+        crate::render::helpers::push_escaped_key_segment(variant, false, self.out);
         self.out.push_str(": [\n");
         Ok(TupleVariantItem {
             out: self.out,
@@ -1140,7 +1174,11 @@ impl<'a> ser::Serializer for ItemValueSer<'a> {
         write_indent(self.out, self.indent);
         self.out.push_str("{\n");
         write_indent(self.out, self.indent + 1);
-        crate::render::helpers::push_escaped_key_segment(variant, self.out);
+        // Variant names are always emitted inside a `: {` wrapper, so
+        // they can never be the root Object's first-serialized key —
+        // the § 5.9.10 rule (c) guard never applies (RootSer rejects
+        // root enums outright).
+        crate::render::helpers::push_escaped_key_segment(variant, false, self.out);
         self.out.push_str(": {\n");
         Ok(StructVariantItem {
             out: self.out,
@@ -1296,7 +1334,10 @@ impl<'a> SerializeStructVariant for StructVariantPair<'a> {
         value: &T,
     ) -> Result<()> {
         write_indent(self.out, self.field_indent);
-        crate::render::helpers::push_escaped_key_segment(name, self.out);
+        // Variant names are always emitted inside a `: {` wrapper — the
+        // § 5.9.10 rule (c) guard never applies (RootSer rejects root
+        // enums outright).
+        crate::render::helpers::push_escaped_key_segment(name, false, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,
@@ -1327,7 +1368,10 @@ impl<'a> SerializeStructVariant for StructVariantItem<'a> {
         value: &T,
     ) -> Result<()> {
         write_indent(self.out, self.field_indent);
-        crate::render::helpers::push_escaped_key_segment(name, self.out);
+        // Variant names are always emitted inside a `: {` wrapper — the
+        // § 5.9.10 rule (c) guard never applies (RootSer rejects root
+        // enums outright).
+        crate::render::helpers::push_escaped_key_segment(name, false, self.out);
         value.serialize(PairValueSer {
             out: self.out,
             indent: self.field_indent,

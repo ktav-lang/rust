@@ -299,6 +299,21 @@ fn valid_fixtures_roundtrip_losslessly() {
 
 // ---------------------------------------------------------------------------
 // Triple-test runner (§ 5.9 conformance)
+//
+// TRANSITIONAL BRIDGE (spec 0.6 → 0.7, § 5.9.10):
+// The 0.6 corpus's `valid/key_escaping/*.canonical.ktav` files pin the
+// SUPERSEDED 0.6 canonical spellings for keys containing structural
+// bytes (`a\.b: v` etc.). Spec 0.7 § 5.9.10 canonicalises those keys
+// to QUOTED form (`"a.b": v` — quoting is preferred once any
+// structural escape would be needed); the 0.7 changelog says those
+// fixtures "update accordingly (tracked separately from this text
+// change)", and the updated spellings live in the 0.7 corpus dir,
+// wired by a later capstone task. While SPEC_VERSION is still "0.6",
+// fixtures under `key_escaping/` are therefore run parse →
+// emit_canonical → reparse → Value-equality (roundtrip still holds —
+// the new output reparses to the same Value), but the byte-comparison
+// against the stale `.canonical.ktav` file is SKIPPED and the fixture
+// is counted separately in the summary line below.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -314,6 +329,7 @@ fn valid_fixtures_canonical_emit() {
 
     let mut failures: Vec<String> = Vec::new();
     let mut tested = 0;
+    let mut skipped_stale = 0;
 
     for ktav_path in &files {
         let canonical_path = ktav_path.with_extension("canonical.ktav");
@@ -330,7 +346,14 @@ fn valid_fixtures_canonical_emit() {
             }
         }
 
-        let rel = ktav_path.strip_prefix(&root).unwrap_or(ktav_path).display();
+        let rel_path = ktav_path.strip_prefix(&root).unwrap_or(ktav_path);
+        let rel = rel_path.display();
+        // Transitional bridge — see the block comment above this test.
+        let stale_06_canonical = SPEC_VERSION == "0.6"
+            && rel_path
+                .components()
+                .next()
+                .is_some_and(|c| c.as_os_str() == "key_escaping");
         let stem = ktav_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let canonical_path = ktav_path
             .parent()
@@ -368,7 +391,8 @@ fn valid_fixtures_canonical_emit() {
             }
         };
 
-        // Test 2: emit_canonical matches expected
+        // Test 2: emit_canonical matches expected — SKIPPED for the
+        // stale 0.6 `key_escaping` canonical spellings (bridge above).
         let actual_canonical = match ktav::render::emit_canonical(&value) {
             Ok(s) => s,
             Err(e) => {
@@ -376,7 +400,7 @@ fn valid_fixtures_canonical_emit() {
                 continue;
             }
         };
-        if actual_canonical != expected_canonical {
+        if !stale_06_canonical && actual_canonical != expected_canonical {
             failures.push(format!(
                 "canonical mismatch in {}:\n  expected:\n{}\n  actual:\n{}",
                 rel, expected_canonical, actual_canonical
@@ -400,7 +424,11 @@ fn valid_fixtures_canonical_emit() {
             continue;
         }
 
-        tested += 1;
+        if stale_06_canonical {
+            skipped_stale += 1;
+        } else {
+            tested += 1;
+        }
     }
 
     if !failures.is_empty() {
@@ -411,5 +439,10 @@ fn valid_fixtures_canonical_emit() {
             failures.join("\n")
         );
     }
-    eprintln!("spec_conformance::canonical: {} fixtures passed", tested);
+    eprintln!(
+        "spec_conformance::canonical: {} fixtures passed, {} key_escaping fixtures checked \
+         roundtrip-only (superseded 0.6 canonical spelling; spec 0.7 § 5.9.10 rewrites these \
+         keys to quoted form; 0.7 corpus wired by capstone task)",
+        tested, skipped_stale
+    );
 }

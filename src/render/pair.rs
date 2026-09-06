@@ -9,13 +9,21 @@ use super::array_item::render_array_item;
 use super::helpers::{needs_raw_marker, push_escaped_key_segment, push_indent};
 use super::object::render_object_body;
 
-pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut String) -> Result<()> {
+pub(super) fn render_pair(
+    key: &str,
+    value: &Value,
+    indent: usize,
+    root_first_key: bool,
+    out: &mut String,
+) -> Result<()> {
     push_indent(out, indent);
-    // Spec 0.6.0 § 3.7 — re-escape `\`, `.`, `:` in each key segment
-    // so the parser reads the same segment back. The Object value
-    // stores the *decoded* leaf key as a single byte string; the
-    // emitted form must escape any literal dot/colon.
-    push_escaped_key_segment(key, out);
+    // Spec 0.7 § 5.9.10 — bare/quoted form selection + re-escape per
+    // segment. The Object value stores the *decoded* leaf key as a
+    // single byte string; the emitted form must escape (or quote
+    // around) any literal structural byte. `root_first_key` is set
+    // only for the document-root Object's first-serialized key (the
+    // § 5.9.10 rule (c) U+FEFF guard, § 5.9.12).
+    push_escaped_key_segment(key, root_first_key, out);
     match value {
         Value::Null => {
             out.push_str(": null\n");
@@ -104,7 +112,7 @@ pub(super) fn render_pair(key: &str, value: &Value, indent: usize, out: &mut Str
                 out.push_str(": {}\n");
             } else {
                 out.push_str(": {\n");
-                render_object_body(obj, indent + 1, out)?;
+                render_object_body(obj, indent + 1, false, out)?;
                 push_indent(out, indent);
                 out.push_str("}\n");
             }
