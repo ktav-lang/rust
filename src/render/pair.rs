@@ -101,7 +101,8 @@ pub(super) fn render_pair(
             } else {
                 out.push_str(": [\n");
                 for item in items {
-                    render_array_item(item, indent + 1, out)?;
+                    // Nested items are never root-detected (§ 5.9.6).
+                    render_array_item(item, indent + 1, false, out)?;
                 }
                 push_indent(out, indent);
                 out.push_str("]\n");

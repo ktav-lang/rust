@@ -520,3 +520,33 @@ fn force_strings_wraps_single_object_item() {
     // which `to_string_force_strings` deliberately coerces).
     assert_force_strings_roundtrip(&Value::Array(vec![obj(&[("k", s("v"))])]));
 }
+
+// ---------------------------------------------------------------------------
+// § 5.9.6 / § 5.9.12 — Array root, first item safeguards (pretty writer).
+// Canonical and pretty agree on the marker choice — they differ only in
+// multi-line form preference — so the expected bytes are identical to
+// the `emit_canonical` unit tests.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_array_root_first_item_pair_candidate_takes_raw_marker() {
+    // Fixture oracle: quoted_keys/array_item_raw_marker_needed.
+    let v = Value::Array(vec![s("\"tis the season\": fa")]);
+    let text = render(&v).unwrap();
+    assert_eq!(text, ":: \"tis the season\": fa\n");
+    let back = parse(&text).unwrap();
+    assert_eq!(&back, &v);
+    assert_render_roundtrip(&v);
+}
+
+#[test]
+fn render_array_root_first_item_bom_takes_raw_marker() {
+    // § 5.9.12: bare form would place U+FEFF at byte offset 0, where
+    // readers strip it as a metadata BOM (§ 3.1).
+    let v = Value::Array(vec![s("\u{FEFF}host")]);
+    let text = render(&v).unwrap();
+    assert_eq!(text, ":: \u{FEFF}host\n");
+    let back = parse(&text).unwrap();
+    assert_eq!(&back, &v);
+    assert_render_roundtrip(&v);
+}

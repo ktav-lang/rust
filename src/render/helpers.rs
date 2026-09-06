@@ -323,6 +323,31 @@ pub(crate) fn item_needs_raw_marker(s: &str) -> bool {
     needs_raw_marker(s) || s.starts_with("##") || s.starts_with("::") || matches!(s, "]" | "}")
 }
 
+/// § 5.9.6 "Bare String item", first-item exclusion: when the item is
+/// the FIRST item of an Array root, the bare form is additionally not
+/// used if the body satisfies § 5.0.1 rule 6's phase-1 pair-candidate
+/// test — a first unescaped `:` or `::` separator (§ 4's
+/// separator-scanning rule) with a non-empty raw prefix before it,
+/// where a plain `:` is satisfied only when followed by whitespace or
+/// end-of-line. Only the Array root's first item is exposed to
+/// § 5.0.1's root-kind detection, so only that position is tested.
+///
+/// § 5.9.6 tests the BARE one-line body against the parser's test.
+/// A bare one-line array item never has edge whitespace
+/// (`string_needs_multiline` already routed those to the multi-line
+/// form), so `body` is exactly the parser's trimmed first content
+/// line, and the two tests share one implementation by construction:
+/// this delegates to the parser's own
+/// [`crate::parser::classify::is_pair_shape`].
+///
+/// Note that an unterminated leading quote makes the separator scan
+/// return no separator at all (the quote swallows the colon), so such
+/// bodies stay bare — fixture:
+/// `quoted_keys/unterminated_double_quote_first_line_falls_back`.
+pub(crate) fn bare_item_is_pair_candidate(body: &str) -> bool {
+    crate::parser::classify::is_pair_shape(body)
+}
+
 /// True if the value must be emitted with `::` so that the parser does not
 /// re-interpret it as a compound (`{...}` / `[...]`), a JSON keyword
 /// (`null` / `true` / `false`), a number literal (§ 3.6), or a multi-line

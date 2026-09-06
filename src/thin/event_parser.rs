@@ -17,11 +17,10 @@ use bumpalo::Bump;
 use memchr::{memchr, memchr2};
 
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
-use crate::parser::classify::{is_float_literal, try_parse_integer};
+use crate::parser::classify::{is_float_literal, is_pair_shape, try_parse_integer};
 use crate::parser::leading_bom_len;
 use crate::parser::inline::{
-    ColonScan, decode_key_segment, find_unescaped_colon, key_is_single_segment, scan_unescaped_colon,
-    split_key_path,
+    ColonScan, decode_key_segment, key_is_single_segment, scan_unescaped_colon, split_key_path,
 };
 use crate::parser::validate::{check_key, KeyValidity};
 
@@ -171,23 +170,6 @@ fn classify_first_line_root_kind(trimmed: &str) -> RootKind {
     } else {
         RootKind::Array
     }
-}
-
-/// Check if the trimmed line looks like a pair shape.
-/// Spec 0.6.0 § 5.3 — the separator is the first UNescaped `:`.
-fn is_pair_shape(trimmed: &str) -> bool {
-    let Some(colon_idx) = find_unescaped_colon(trimmed) else {
-        return false;
-    };
-    let key_part = trimmed[..colon_idx].trim_end();
-    if key_part.is_empty() {
-        return false;
-    }
-    let after = &trimmed[colon_idx + 1..];
-    if after.starts_with(':') {
-        return true;
-    }
-    after.is_empty() || after.starts_with([' ', '\t'])
 }
 
 // ---------------------------------------------------------------------------

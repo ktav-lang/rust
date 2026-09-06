@@ -43,14 +43,18 @@ pub fn render(value: &Value) -> Result<String> {
         Value::Array(items) => {
             // Non-empty here (the empty case is the arm above).
             if first_item_needs_wrap(&items[0]) {
+                // The wrapped branch's first content line is `[` itself,
+                // so no item line is ever root-detected (§ 5.9.6).
                 out.push_str("[\n");
                 for item in items {
-                    render_array_item(item, 1, &mut out)?;
+                    render_array_item(item, 1, false, &mut out)?;
                 }
                 out.push_str("]\n");
             } else {
-                for item in items {
-                    render_array_item(item, 0, &mut out)?;
+                for (index, item) in items.iter().enumerate() {
+                    // § 5.9.6 / § 5.9.12: only index 0 of the unwrapped
+                    // root Array is exposed to root-kind detection.
+                    render_array_item(item, 0, index == 0, &mut out)?;
                 }
             }
         }

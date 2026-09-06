@@ -624,3 +624,39 @@ fn check_trailing_backslash(s: &str, line_num: usize, span: Span) -> Result<(), 
     }
     Ok(())
 }
+
+/// Check if the trimmed line looks like a pair shape (has a `:` with a
+/// non-empty key before it and whitespace/EOL after it, or a `::` raw
+/// marker).
+///
+/// Spec 0.6.0 § 5.3 — the separator is the first UNescaped `:` (§ 4's
+/// separator-scanning rule). [`find_unescaped_colon`] returns `None` for
+/// an unterminated quoted segment, so a quote-swallowed first line falls
+/// through to the Array root per § 5.0.1 rules 6/7 — intended
+/// (spec 0.7 § 5.3.3).
+///
+/// This is the single phase-1 pair-candidate test shared by the two
+/// parsers' root-kind detection (§ 5.0.1 rule 6) and — via
+/// [`crate::render::helpers::bare_item_is_pair_candidate`] — by the
+/// writers' Array-root first-item safeguard (spec 0.7 § 5.9.6).
+pub(crate) fn is_pair_shape(trimmed: &str) -> bool {
+    use super::inline::find_unescaped_colon;
+
+    let Some(colon_idx) = find_unescaped_colon(trimmed) else {
+        return false;
+    };
+    // Empty prefix before `:` → array-item shape
+    let key_part = trimmed[..colon_idx].trim_end();
+    if key_part.is_empty() {
+        return false;
+    }
+    let after = &trimmed[colon_idx + 1..];
+    // `key::` (raw marker) → pair shape (even glued)
+    if after.starts_with(':') {
+        return true;
+    }
+    // Plain `key: ` separator — body must start with whitespace or be
+    // empty. Anything else (e.g. `http://...`) means the `:` is part of
+    // a value and there's no real pair.
+    after.is_empty() || after.starts_with([' ', '\t'])
+}

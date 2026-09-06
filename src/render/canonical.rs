@@ -71,14 +71,19 @@ fn emit_object_pairs(
 fn emit_array_root(items: &[Value], out: &mut String) -> Result<()> {
     let needs_wrap = !items.is_empty() && crate::render::helpers::first_item_needs_wrap(&items[0]);
     if needs_wrap {
+        // The wrapped branch's first content line is `[` itself, so no
+        // item line is ever read as the root's first line — no item is
+        // exposed to root-kind detection here (§ 5.9.6 / § 5.9.3).
         out.push_str("[\n");
         for item in items {
-            emit_array_item(item, 1, out)?;
+            emit_array_item(item, 1, false, out)?;
         }
         out.push_str("]\n");
     } else {
-        for item in items {
-            emit_array_item(item, 0, out)?;
+        for (index, item) in items.iter().enumerate() {
+            // § 5.9.6 / § 5.9.12: only index 0 of the unwrapped root
+            // Array is exposed to root-kind detection.
+            emit_array_item(item, 0, index == 0, out)?;
         }
     }
     Ok(())
@@ -134,7 +139,7 @@ fn emit_pair(
             } else {
                 out.push_str(": [\n");
                 for item in items {
-                    emit_array_item(item, indent + 1, out)?;
+                    emit_array_item(item, indent + 1, false, out)?;
                 }
                 push_indent(out, indent);
                 out.push_str("]\n");
@@ -159,7 +164,17 @@ fn emit_pair(
 // ---------------------------------------------------------------------------
 
 /// Emit one array item at the given indent level.
-fn emit_array_item(value: &Value, indent: usize, out: &mut String) -> Result<()> {
+///
+/// `is_root_array_first` is TRUE only for index 0 of an unwrapped
+/// Array root — the sole item position whose body is exposed to
+/// § 5.0.1's root-kind detection, and therefore the sole position to
+/// which § 5.9.6's first-item safeguard applies.
+fn emit_array_item(
+    value: &Value,
+    indent: usize,
+    is_root_array_first: bool,
+    out: &mut String,
+) -> Result<()> {
     push_indent(out, indent);
     match value {
         Value::Null => {
@@ -178,7 +193,7 @@ fn emit_array_item(value: &Value, indent: usize, out: &mut String) -> Result<()>
             out.push('\n');
         }
         Value::String(s) => {
-            emit_string_as_item(s, indent, out)?;
+            emit_string_as_item(s, indent, is_root_array_first, out)?;
         }
         Value::Array(items) => {
             if items.is_empty() {
@@ -186,7 +201,8 @@ fn emit_array_item(value: &Value, indent: usize, out: &mut String) -> Result<()>
             } else {
                 out.push_str("[\n");
                 for item in items {
-                    emit_array_item(item, indent + 1, out)?;
+                    // Nested items are never root-detected (§ 5.9.6).
+                    emit_array_item(item, indent + 1, false, out)?;
                 }
                 push_indent(out, indent);
                 out.push_str("]\n");
@@ -259,7 +275,12 @@ fn emit_string_in_pair(s: &str, indent: usize, out: &mut String) -> Result<()> {
 /// - `:: body` (one-line raw — would reclassify)
 /// - `((\n...\n))` (verbatim multi-line)
 /// - `(\n...\n)` (stripped multi-line, fallback)
-fn emit_string_as_item(s: &str, indent: usize, out: &mut String) -> Result<()> {
+fn emit_string_as_item(
+    s: &str,
+    indent: usize,
+    is_root_array_first: bool,
+    out: &mut String,
+) -> Result<()> {
     if s.is_empty() {
         // § 5.9.7: empty String item → `::` with no body.
         // Wait — looking at fixtures, canonical `empty_stripped.canonical.ktav`
@@ -281,7 +302,22 @@ fn emit_string_as_item(s: &str, indent: usize, out: &mut String) -> Result<()> {
 
     // One-line string. Check if it needs the raw marker — the item
     // form has extra collisions (`##`, `::`, sole `]` / `}`).
-    if crate::render::helpers::item_needs_raw_marker(s) {
+    //
+    // § 5.9.6 / § 5.9.12: when this is the FIRST item of an Array
+    // root, the bare form is additionally not used if the body
+    // satisfies § 5.0.1 rule 6's phase-1 pair-candidate test (it
+    // would otherwise be re-read as the root Object's first pair), OR
+    // — independently of the pair-candidate test — the body begins
+    // with U+FEFF (bare form would place it at byte offset 0, where
+    // § 3.1 makes readers strip it as a metadata BOM). Both exclusions
+    // sit after the empty (`::`) and multi-line branches: § 5.9.12
+    // scopes them to bodies whose canonical form would otherwise be
+    // the bare one-line form (multi-line bodies put `((` at byte 0;
+    // empty bodies emit `::`).
+    if crate::render::helpers::item_needs_raw_marker(s)
+        || (is_root_array_first
+            && (crate::render::helpers::bare_item_is_pair_candidate(s) || s.starts_with('\u{FEFF}')))
+    {
         out.push_str(":: ");
         out.push_str(s);
         out.push('\n');
@@ -921,5 +957,98 @@ mixed: [
     fn root_first_key_with_structural_byte_still_quoted_among_pairs() {
         let v = obj(vec![("a.b", s("v")), ("c", s("w"))]);
         assert_eq!(emit_canonical(&v).unwrap(), "\"a.b\": v\nc: w\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // § 5.9.6 / § 5.9.12 — Array root, first item safeguards
+    // -----------------------------------------------------------------------
+
+    /// A first item whose body is a pair candidate is read by § 5.0.1
+    /// rule 6 as the root Object's first pair, so the raw-marker form
+    /// must be used instead. Fixture oracle:
+    /// `quoted_keys/array_item_raw_marker_needed.canonical.ktav`.
+    #[test]
+    fn array_root_first_item_pair_candidate_takes_raw_marker() {
+        let v = arr(vec![s("\"tis the season\": fa")]);
+        let text = emit_canonical(&v).unwrap();
+        assert_eq!(text, ":: \"tis the season\": fa\n");
+        let back = crate::parse(&text).unwrap();
+        assert_eq!(back, v);
+    }
+
+    /// An unterminated leading quote swallows the colon
+    /// (`find_unescaped_colon` returns no separator), so the body is
+    /// NOT a pair candidate and stays bare. Fixture oracles:
+    /// `quoted_keys/unterminated_double_quote_first_line_falls_back` /
+    /// `unterminated_leading_quote_falls_back_to_array_item`.
+    #[test]
+    fn array_root_first_item_unterminated_quote_stays_bare() {
+        let v = arr(vec![s("\"tis the season: fa")]);
+        assert_eq!(emit_canonical(&v).unwrap(), "\"tis the season: fa\n");
+        let v = arr(vec![s("'tis the season: fa")]);
+        assert_eq!(emit_canonical(&v).unwrap(), "'tis the season: fa\n");
+    }
+
+    /// Plain glued `:` fails `<sep-end>` — not a pair candidate. Glued
+    /// `::` (raw marker) and `: ` (whitespace-terminated) ARE.
+    #[test]
+    fn array_root_first_item_glued_colon_stays_bare() {
+        assert_eq!(emit_canonical(&arr(vec![s("a:b")])).unwrap(), "a:b\n");
+        assert_eq!(
+            emit_canonical(&arr(vec![s("a::b")])).unwrap(),
+            ":: a::b\n"
+        );
+        assert_eq!(emit_canonical(&arr(vec![s("a: b")])).unwrap(), ":: a: b\n");
+    }
+
+    /// Only the FIRST item of an Array root is exposed to root-kind
+    /// detection — later items are dispatched directly as array-item
+    /// lines (§ 5.0.1 rules 7–8).
+    #[test]
+    fn array_root_second_item_not_guarded() {
+        let v = arr(vec![s("head"), s("a: b")]);
+        assert_eq!(emit_canonical(&v).unwrap(), "head\na: b\n");
+    }
+
+    /// Nested array items are never root-detected.
+    #[test]
+    fn nested_array_first_item_not_guarded() {
+        let v = obj(vec![("arr", arr(vec![s("a: b")]))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "arr: [\n    a: b\n]\n");
+    }
+
+    /// § 5.9.12: a first item beginning with U+FEFF takes the
+    /// raw-marker form independently of the pair-candidate test —
+    /// bare form would place the BOM at byte offset 0, where readers
+    /// strip it per § 3.1. Every other position stays bare.
+    #[test]
+    fn array_root_first_item_bom_takes_raw_marker() {
+        assert_eq!(
+            emit_canonical(&arr(vec![s("\u{FEFF}host")])).unwrap(),
+            ":: \u{FEFF}host\n"
+        );
+        // Second position → bare.
+        let v = arr(vec![s("x"), s("\u{FEFF}host")]);
+        assert_eq!(emit_canonical(&v).unwrap(), "x\n\u{FEFF}host\n");
+        // Nested array → bare.
+        let v = obj(vec![("arr", arr(vec![s("\u{FEFF}host")]))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "arr: [\n    \u{FEFF}host\n]\n");
+    }
+
+    /// A plain scalar first item is unaffected by the safeguards.
+    #[test]
+    fn array_root_first_item_plain_scalar_unaffected() {
+        let v = arr(vec![s("plain"), s("a: b")]);
+        assert_eq!(emit_canonical(&v).unwrap(), "plain\na: b\n");
+    }
+
+    /// The wrapped form is untouched: when the first item is a
+    /// compound, the root wraps in `[...]` and the first content line
+    /// is `[` itself — no item is root-detected, so no string guard
+    /// applies (§ 5.9.3 / § 5.9.6).
+    #[test]
+    fn array_root_wrapped_form_untouched_by_first_item_guard() {
+        let v = arr(vec![obj(vec![("k", s("v"))])]);
+        assert_eq!(emit_canonical(&v).unwrap(), "[\n    {\n        k: v\n    }\n]\n");
     }
 }

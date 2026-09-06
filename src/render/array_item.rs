@@ -3,10 +3,21 @@
 use crate::error::Result;
 use crate::value::Value;
 
-use super::helpers::{item_needs_raw_marker, push_indent};
+use super::helpers::{bare_item_is_pair_candidate, item_needs_raw_marker, push_indent};
 use super::object::render_object_body;
 
-pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) -> Result<()> {
+/// Render one line of an array (item can be scalar, object, or nested array).
+///
+/// `is_root_array_first` is TRUE only for index 0 of an unwrapped Array
+/// root — the sole item position exposed to § 5.0.1's root-kind
+/// detection, and therefore the sole position to which § 5.9.6's /
+/// § 5.9.12's first-item safeguards apply.
+pub(super) fn render_array_item(
+    value: &Value,
+    indent: usize,
+    is_root_array_first: bool,
+    out: &mut String,
+) -> Result<()> {
     push_indent(out, indent);
     match value {
         Value::Null => {
@@ -63,7 +74,19 @@ pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) 
                 // recognisable literal-string entry.
                 out.push_str("::\n");
             } else {
-                if item_needs_raw_marker(s) {
+                // § 5.9.6 / § 5.9.12: when this is the FIRST item of an
+                // Array root, the bare form is additionally not used if
+                // the body satisfies § 5.0.1 rule 6's phase-1
+                // pair-candidate test, OR — independently of that test —
+                // the body begins with U+FEFF (bare form would place it
+                // at byte offset 0, where § 3.1 makes readers strip it
+                // as a metadata BOM). Both exclusions sit after the
+                // empty (`::`) and multi-line branches, scoped to bodies
+                // whose canonical form would otherwise be bare one-line.
+                if item_needs_raw_marker(s)
+                    || (is_root_array_first
+                        && (bare_item_is_pair_candidate(s) || s.starts_with('\u{FEFF}')))
+                {
                     out.push_str(":: ");
                 }
                 out.push_str(s);
@@ -76,7 +99,8 @@ pub(super) fn render_array_item(value: &Value, indent: usize, out: &mut String) 
             } else {
                 out.push_str("[\n");
                 for item in items {
-                    render_array_item(item, indent + 1, out)?;
+                    // Nested items are never root-detected (§ 5.9.6).
+                    render_array_item(item, indent + 1, false, out)?;
                 }
                 push_indent(out, indent);
                 out.push_str("]\n");

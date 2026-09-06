@@ -4,11 +4,11 @@ use crate::error::{CompoundKind, Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
 
 use super::bracket::Bracket;
-use super::classify::classify_value_start;
+use super::classify::{classify_value_start, is_pair_shape};
 use super::collecting::{Collecting, MultilineMode};
 use super::frame::Frame;
 use super::inline;
-use super::inline::{ColonScan, find_unescaped_colon, scan_unescaped_colon};
+use super::inline::{ColonScan, scan_unescaped_colon};
 use super::insert::insert_value;
 use super::value_start::ValueStart;
 
@@ -734,32 +734,6 @@ fn classify_root_kind_050(
     }
 }
 
-/// Check if the trimmed line looks like a pair shape (has a `:` with
-/// a non-empty key before it and whitespace/EOL after it, or `::` raw
-/// marker).
-fn is_pair_shape(trimmed: &str) -> bool {
-    // Spec 0.6.0 § 5.3 — pair separator is the first UNescaped `:`.
-    // `find_unescaped_colon` returns `None` for an unterminated quoted
-    // segment, so a quote-swallowed first line falls through to the
-    // Array root per § 5.0.1 rules 6/7 — intended (spec 0.7 § 5.3.3).
-    let Some(colon_idx) = find_unescaped_colon(trimmed) else {
-        return false;
-    };
-    // Empty prefix before `:` → array-item shape
-    let key_part = trimmed[..colon_idx].trim_end();
-    if key_part.is_empty() {
-        return false;
-    }
-    let after = &trimmed[colon_idx + 1..];
-    // `key::` (raw marker) → pair shape
-    if after.starts_with(':') {
-        return true;
-    }
-    // Plain `key: ` separator — body must start with whitespace or
-    // be empty. Anything else (e.g. `http://...`) means the `:` is
-    // part of a value and there's no real pair.
-    after.is_empty() || after.starts_with([' ', '\t'])
-}
 
 fn classify_separator(after_colon: &str) -> Separator<'_> {
     if let Some(rest) = after_colon.strip_prefix(':') {
