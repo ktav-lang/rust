@@ -120,6 +120,21 @@ pub enum Error {
     /// nothing was serialised — partial output followed by failure is
     /// never permitted.
     Unrepresentable(ReasonCode),
+    /// A byte-level input (currently only [`crate::from_file`]) is not
+    /// valid UTF-8 (spec 0.7 § 6.15). This is a top-level variant rather
+    /// than an [`ErrorKind`] case because the check runs before any
+    /// line-oriented processing — there is no meaningful line number,
+    /// exactly as for `Unrepresentable`. The `&str`-taking entry points
+    /// (`parse`, `parse_strict`, `from_str`, `parse_events`) cannot
+    /// produce this error: a Rust `&str` is valid UTF-8 by construction.
+    InvalidUtf8 {
+        /// Byte offset of the first invalid UTF-8 sequence — the input
+        /// is valid UTF-8 up to this point
+        /// (`std::str::Utf8Error::valid_up_to`). The spec's error-span
+        /// SHOULD points here; [`Error::span`] reports it as an
+        /// insertion-point [`Span`].
+        valid_up_to: usize,
+    },
 }
 
 /// Spec 0.7 § 5.9.0 reason codes for writer-side rejection of a
@@ -486,6 +501,11 @@ impl Display for Error {
             Error::Syntax(m) => write!(f, "Syntax error: {}", m),
             Error::Message(m) => write!(f, "{}", m),
             Error::Unrepresentable(code) => write!(f, "{}", code),
+            Error::InvalidUtf8 { valid_up_to } => write!(
+                f,
+                "InvalidUtf8: input is not valid UTF-8; first invalid byte sequence at byte offset {}",
+                valid_up_to
+            ),
         }
     }
 }
@@ -517,7 +537,8 @@ impl serde::de::Error for Error {
 impl Error {
     /// Returns the 1-based line number associated with the error, if
     /// available. `None` for [`Error::Io`], [`Error::Message`], free-
-    /// form [`Error::Syntax`], EOF-detected `UnclosedCompound`, and
+    /// form [`Error::Syntax`], [`Error::Unrepresentable`],
+    /// [`Error::InvalidUtf8`], EOF-detected `UnclosedCompound`, and
     /// the parser-internal `Other` variants that lack a line number.
     pub fn line(&self) -> Option<u32> {
         match self {
@@ -528,12 +549,20 @@ impl Error {
 
     /// Returns the byte-offset span associated with the error, if
     /// available. `None` for [`Error::Io`], [`Error::Message`] and
-    /// [`Error::Syntax`]. May return `Some(Span::EMPTY)` for an
+    /// [`Error::Syntax`]. [`Error::InvalidUtf8`] returns an
+    /// insertion-point span at the byte offset of the first invalid
+    /// UTF-8 sequence. May return `Some(Span::EMPTY)` for an
     /// internal-state structured error that has no meaningful source
     /// range.
     pub fn span(&self) -> Option<Span> {
         match self {
             Error::Structured(k) => Some(k.span()),
+            Error::InvalidUtf8 { valid_up_to } => {
+                // `Span` is u32-based; a >4 GiB document is beyond what
+                // `Span` can address anywhere in this crate, so saturate.
+                let offset = u32::try_from(*valid_up_to).unwrap_or(u32::MAX);
+                Some(Span::new(offset, offset))
+            }
             _ => None,
         }
     }
@@ -543,6 +572,15 @@ impl Error {
     pub fn reason_code(&self) -> Option<ReasonCode> {
         match self {
             Error::Unrepresentable(code) => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// Byte offset of the first invalid UTF-8 sequence if this is an
+    /// [`Error::InvalidUtf8`] error, else `None`.
+    pub fn valid_up_to(&self) -> Option<usize> {
+        match self {
+            Error::InvalidUtf8 { valid_up_to } => Some(*valid_up_to),
             _ => None,
         }
     }

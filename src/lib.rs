@@ -147,9 +147,17 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
 }
 
 /// Parse a Ktav document from a file path and deserialize it into `T`.
+///
+/// The file's raw bytes are validated as UTF-8 before parsing (spec
+/// 0.7 § 6.15): invalid UTF-8 fails as [`Error::InvalidUtf8`] carrying
+/// the byte offset of the first invalid sequence, while genuine I/O
+/// failures (file not found, permission denied) remain [`Error::Io`].
 pub fn from_file<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T> {
-    let text = fs::read_to_string(path)?;
-    from_str(&text)
+    let bytes = fs::read(path)?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| Error::InvalidUtf8 {
+        valid_up_to: e.valid_up_to(),
+    })?;
+    from_str(text)
 }
 
 /// Serialize `value` as a Ktav document string. Uses the direct text
