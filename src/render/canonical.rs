@@ -316,7 +316,8 @@ fn emit_string_as_item(
     // empty bodies emit `::`).
     if crate::render::helpers::item_needs_raw_marker(s)
         || (is_root_array_first
-            && (crate::render::helpers::bare_item_is_pair_candidate(s) || s.starts_with('\u{FEFF}')))
+            && (crate::render::helpers::bare_item_is_pair_candidate(s)
+                || s.starts_with('\u{FEFF}')))
     {
         out.push_str(":: ");
         out.push_str(s);
@@ -839,9 +840,7 @@ mixed: [
     /// 0.6 spelling, never the 0.7 canonical output.
     #[test]
     fn structural_bytes_force_quoted() {
-        for key in [
-            "a.b", "a:b", "a,b", "a{b", "a}b", "a[b", "a]b", "a(b",
-        ] {
+        for key in ["a.b", "a:b", "a,b", "a{b", "a}b", "a[b", "a]b", "a(b"] {
             let v = obj(vec![(key, s("v"))]);
             let expected = format!("\"{}\": v\n", key);
             assert_eq!(emit_canonical(&v).unwrap(), expected, "key: {key}");
@@ -944,7 +943,10 @@ mixed: [
         assert_eq!(emit_canonical(&v).unwrap(), "ok: v\n\u{FEFF}host: v\n");
         // First pair of a NESTED object → bare.
         let v = obj(vec![("outer", obj(vec![("\u{FEFF}host", s("v"))]))]);
-        assert_eq!(emit_canonical(&v).unwrap(), "outer: {\n    \u{FEFF}host: v\n}\n");
+        assert_eq!(
+            emit_canonical(&v).unwrap(),
+            "outer: {\n    \u{FEFF}host: v\n}\n"
+        );
         // U+FEFF not the first code point → bare always.
         let v = obj(vec![("a\u{FEFF}host", s("v"))]);
         assert_eq!(emit_canonical(&v).unwrap(), "a\u{FEFF}host: v\n");
@@ -994,10 +996,7 @@ mixed: [
     #[test]
     fn array_root_first_item_glued_colon_stays_bare() {
         assert_eq!(emit_canonical(&arr(vec![s("a:b")])).unwrap(), "a:b\n");
-        assert_eq!(
-            emit_canonical(&arr(vec![s("a::b")])).unwrap(),
-            ":: a::b\n"
-        );
+        assert_eq!(emit_canonical(&arr(vec![s("a::b")])).unwrap(), ":: a::b\n");
         assert_eq!(emit_canonical(&arr(vec![s("a: b")])).unwrap(), ":: a: b\n");
     }
 
@@ -1049,6 +1048,9 @@ mixed: [
     #[test]
     fn array_root_wrapped_form_untouched_by_first_item_guard() {
         let v = arr(vec![obj(vec![("k", s("v"))])]);
-        assert_eq!(emit_canonical(&v).unwrap(), "[\n    {\n        k: v\n    }\n]\n");
+        assert_eq!(
+            emit_canonical(&v).unwrap(),
+            "[\n    {\n        k: v\n    }\n]\n"
+        );
     }
 }

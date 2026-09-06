@@ -41,9 +41,17 @@ pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
 pub(crate) fn is_ktav_whitespace(c: char) -> bool {
     matches!(
         c,
-        '\u{0009}' | '\u{000A}' | '\u{000B}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
-            | '\u{0085}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}'
-            | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+        '\u{0009}'
+            | '\u{000A}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000D}'
+            | '\u{0020}'
+            | '\u{0085}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
     )
 }
 
@@ -123,9 +131,8 @@ fn key_segment_needs_quotes(key: &str, root_first_key: bool) -> bool {
     }
     // (a) edge whitespace — except LF/CR, which a quoted segment never
     // admits raw, so quoting buys nothing for them.
-    let edge_ws = |c: Option<char>| {
-        c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r')
-    };
+    let edge_ws =
+        |c: Option<char>| c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r');
     edge_ws(first) || edge_ws(last)
 }
 
@@ -138,9 +145,8 @@ fn key_segment_needs_quotes(key: &str, root_first_key: bool) -> bool {
 fn push_bare_key(key: &str, out: &mut String) {
     let first_ch = key.chars().next();
     let last_ch = key.chars().next_back();
-    let edge_ws = |c: Option<char>| {
-        c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r')
-    };
+    let edge_ws =
+        |c: Option<char>| c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r');
 
     // Fast path: nothing to escape anywhere, and neither edge code
     // point is § 3.3 whitespace → push the whole string verbatim.
@@ -158,11 +164,7 @@ fn push_bare_key(key: &str, out: &mut String) {
     }
 
     out.reserve(key.len() + 8);
-    let last_idx = key
-        .char_indices()
-        .next_back()
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+    let last_idx = key.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
     for (i, ch) in key.char_indices() {
         let at_edge = i == 0 || i == last_idx;
         match ch {

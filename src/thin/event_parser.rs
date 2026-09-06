@@ -18,10 +18,10 @@ use memchr::{memchr, memchr2};
 
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 use crate::parser::classify::{is_float_literal, is_pair_shape, try_parse_integer};
-use crate::parser::leading_bom_len;
 use crate::parser::inline::{
-    ColonScan, decode_key_segment, key_is_single_segment, scan_unescaped_colon, split_key_path,
+    decode_key_segment, key_is_single_segment, scan_unescaped_colon, split_key_path, ColonScan,
 };
+use crate::parser::leading_bom_len;
 use crate::parser::validate::{check_key, KeyValidity};
 
 use super::event::{Event, EventSink, EventStream};
