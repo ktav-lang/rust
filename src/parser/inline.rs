@@ -266,9 +266,18 @@ fn parse_inline_value_raw(
         }));
     }
 
-    // Plain inline scalar — process escapes, then classify per section 5.2
+    // Plain inline scalar — process escapes, then classify per section 5.2.
+    // 0.7 § 3.7 / § 5.2: a recognised escape anywhere in the raw body
+    // forces String (rule 15) — the decoded body is never re-classified as
+    // keyword/numeric. `process_escapes` errors on every unrecognised `\X`
+    // form, so a `\` byte surviving in `trimmed` is exactly the "had at
+    // least one recognised escape" signal.
     let processed = process_escapes(trimmed, line_num, span)?;
     let body = processed.trim();
+
+    if trimmed.contains('\\') {
+        return Ok(Value::String(body.into()));
+    }
 
     classify_inline_scalar(body, line_num, span, strict)
 }

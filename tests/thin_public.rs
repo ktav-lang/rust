@@ -161,6 +161,24 @@ fn escaped_colon_in_key_is_decoded_in_event_stream() {
 }
 
 #[test]
+fn escape_in_inline_scalar_forces_string_event() {
+    let src = "cfg: {v: 1\\.0}";
+    let events = collect(src);
+    assert_eq!(
+        events,
+        vec![
+            Owned::BeginObject,
+            Owned::Key("cfg".into()),
+            Owned::BeginObject,
+            Owned::Key("v".into()),
+            Owned::Str("1.0".into()),
+            Owned::EndObject,
+            Owned::EndObject,
+        ]
+    );
+}
+
+#[test]
 fn mixed_dotted_path_with_literal_dot_in_leaf_segment() {
     // `x.y\.z: v` splits on the FIRST (unescaped) dot only; the second
     // dot is escaped and stays inside the leaf segment.

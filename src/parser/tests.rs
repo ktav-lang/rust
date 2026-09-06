@@ -483,6 +483,50 @@ fn parse_inline_escape_newline() {
     );
 }
 
+// --- 0.7 § 3.7 / § 5.2: a recognised escape forces String ----------------
+
+#[test]
+fn parse_inline_escape_forces_string_not_float() {
+    let v = crate::parse("cfg: {v: 1\\.0}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("v"), Some(&Value::String("1.0".into())));
+}
+
+#[test]
+fn parse_inline_escape_forces_string_not_float_exponent() {
+    let v = crate::parse("cfg: {v: 1\\.e2}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("v"), Some(&Value::String("1.e2".into())));
+}
+
+#[test]
+fn parse_inline_escape_forces_string_in_array_item() {
+    let v = crate::parse("cfg: [1\\.0]").unwrap();
+    let obj = v.as_object().unwrap();
+    let arr = obj.get("cfg").unwrap().as_array().unwrap();
+    assert_eq!(arr[0], Value::String("1.0".into()));
+}
+
+#[test]
+fn parse_inline_unescaped_float_still_classifies_float() {
+    let v = crate::parse("cfg: {v: 1.5}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("v"), Some(&Value::Float("1.5".into())));
+}
+
+#[test]
+fn parse_inline_keywords_still_classify() {
+    let v = crate::parse("cfg: {t: true, f: false, n: null}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("t"), Some(&Value::Bool(true)));
+    assert_eq!(cfg.get("f"), Some(&Value::Bool(false)));
+    assert_eq!(cfg.get("n"), Some(&Value::Null));
+}
+
 #[test]
 fn parse_inline_nested_arrays() {
     let v = crate::parse("matrix: [[1, 2], [3, 4], [5, 6]]").unwrap();
