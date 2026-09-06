@@ -31,6 +31,11 @@ fn parse_str_impl(text: &str, strict: bool) -> Result<Value, Error> {
     let mut parser = Parser::new(strict);
     let bytes = text.as_bytes();
 
+    // Spec § 3.1: skip exactly one leading U+FEFF before any other
+    // byte is examined. Line offsets stay in original-input
+    // coordinates so error Spans still slice the caller's text.
+    let start = super::leading_bom_len(text);
+
     // Fast path for the overwhelmingly common case: LF-only input
     // (no CR bytes). This avoids the per-byte branch on `\r` in the
     // inner scan loop and lets the compiler emit a tighter scan.
@@ -38,7 +43,7 @@ fn parse_str_impl(text: &str, strict: bool) -> Result<Value, Error> {
         // LF-only fast path: memchr-backed `\n` splitting that mirrors
         // `text.split('\n')` exactly (including the trailing empty line
         // after a final `\n`).
-        let mut line_start: usize = 0;
+        let mut line_start: usize = start;
         let mut line_num: usize = 0;
         loop {
             let end = memchr(b'\n', &bytes[line_start..])
@@ -55,7 +60,7 @@ fn parse_str_impl(text: &str, strict: bool) -> Result<Value, Error> {
         return parser.finish(bytes.len() as u32);
     }
 
-    let mut line_start: usize = 0;
+    let mut line_start: usize = start;
     let mut line_num: usize = 0;
     while line_start <= bytes.len() {
         if line_start == bytes.len() {

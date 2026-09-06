@@ -18,6 +18,7 @@ use memchr::{memchr, memchr2};
 
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 use crate::parser::classify::{is_float_literal, try_parse_integer};
+use crate::parser::leading_bom_len;
 use crate::parser::inline::{
     decode_key_segment, find_unescaped_colon, key_is_single_segment, split_key_path,
 };
@@ -35,7 +36,14 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     // Spec § 5.0.1 (0.5.0): scan ahead to the first content line,
     // classify it per the 8 rules.
     let bytes = text.as_bytes();
-    let root_kind = detect_root_kind(text, bytes);
+
+    // Spec § 3.1: skip exactly one leading U+FEFF before any other
+    // byte is examined — root-kind detection and line splitting
+    // alike. Line offsets stay in original-input coordinates so
+    // error Spans still slice the caller's text.
+    let start = leading_bom_len(text);
+
+    let root_kind = detect_root_kind(text, bytes, start);
     EventSink::push(
         &mut events,
         match root_kind {
@@ -53,7 +61,7 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     if memchr(b'\r', bytes).is_none() {
         // LF-only fast path: memchr-backed `\n` splitting.
         let mut line_num: usize = 0;
-        let mut line_start: usize = 0;
+        let mut line_start: usize = start;
         while line_start <= bytes.len() {
             let end = memchr(b'\n', &bytes[line_start..])
                 .map(|p| line_start + p)
@@ -67,7 +75,7 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
             line_start = end + 1;
         }
     } else {
-        let mut line_start: usize = 0;
+        let mut line_start: usize = start;
         let mut line_num: usize = 0;
         while line_start < bytes.len() {
             // memchr2 → SIMD-accelerated scan for next `\n` or `\r`.
@@ -104,8 +112,13 @@ pub(crate) enum RootKind {
     Array,
 }
 
-fn detect_root_kind(text: &str, bytes: &[u8]) -> RootKind {
-    let mut i = 0;
+/// Per spec § 5.0.1: scan forward to the first non-blank, non-comment
+/// line and classify it as Object (pair shape) or Array (anything
+/// else). Empty / comments-only documents default to Object.
+///
+/// The `start` argument skips a leading byte-order mark per spec § 3.1.
+fn detect_root_kind(text: &str, bytes: &[u8], start: usize) -> RootKind {
+    let mut i = start;
     while i < bytes.len() {
         let line_start = i;
         // Find next line terminator (CR / LF / CR LF) via SIMD memchr2.
