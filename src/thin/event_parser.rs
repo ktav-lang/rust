@@ -757,9 +757,11 @@ impl<'a> EventParser<'a> {
         Ok(leaf)
     }
 
-    /// Decode a key segment per § 3.7. If the input contains no `\`,
-    /// the source slice is returned as-is (zero-copy fast path); else
-    /// the decoded byte string is allocated in the bump arena so the
+    /// Decode a key segment per § 3.7 / § 5.3.3. Bare segments without
+    /// a `\` return the source slice as-is (zero-copy fast path); a
+    /// quoted segment (§ 5.3.3) always decodes — its outer delimiters
+    /// must be stripped — as does any segment containing a `\`. The
+    /// decoded byte string is allocated in the bump arena so the
     /// returned `&'a str` outlives the call.
     fn decode_key_in_arena(
         &self,
@@ -767,7 +769,11 @@ impl<'a> EventParser<'a> {
         line_num: usize,
         key_span: Span,
     ) -> Result<&'a str> {
-        if !seg.as_bytes().contains(&b'\\') {
+        let is_quoted = seg
+            .as_bytes()
+            .first()
+            .is_some_and(|&b| b == b'"' || b == b'\'' || b == b'`');
+        if !is_quoted && !seg.as_bytes().contains(&b'\\') {
             return Ok(seg);
         }
         let decoded = decode_key_segment(seg, line_num, key_span)?;
