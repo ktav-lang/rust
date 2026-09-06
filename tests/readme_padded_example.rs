@@ -12,23 +12,26 @@ fn obj(key: &str, val: &str) -> Value {
 }
 
 /// The READMEs show *two* blocks to make the point that the form
-/// depends on which side the whitespace is on. Both are pinned here,
+/// depends on which side the whitespace is on. Both force the verbatim
+/// form as of 0.7; both are pinned here,
 /// byte for byte, along with the round-trip claim that follows them.
 #[test]
-fn readme_trailing_space_uses_the_stripped_form() {
-    // Stripping removes only the common leading indent, so a trailing
-    // space survives it — this is why the example is not verbatim.
+fn readme_trailing_space_uses_the_verbatim_form() {
+    // As of 0.7 the stripped form strips trailing whitespace from every
+    // content line (§ 5.6), so a trailing space forces the verbatim form —
+    // which preserves it byte-for-byte.
     let v = obj("password", "hunter2 ");
     let text = render(&v).unwrap();
-    assert_eq!(text, "password: (\n    hunter2 \n)\n");
+    assert_eq!(text, "password: ((\nhunter2 \n))\n");
     assert_eq!(parse(&text).unwrap(), v);
 }
 
 #[test]
 fn readme_leading_space_forces_the_verbatim_form() {
-    // Stripping would eat the leading spaces, so the writer must reach
-    // for `(( ))` here. Pinning this stops the two README examples from
-    // silently collapsing into the same form.
+    // Both leading and trailing whitespace force the verbatim form as
+    // of 0.7: stripping would eat the leading spaces, and 0.7 § 5.6
+    // strips trailing whitespace from every content line. Pinning both
+    // examples keeps the READMEs honest about the writer's actual output.
     let v = obj("indent", "  padded");
     let text = render(&v).unwrap();
     assert_eq!(text, "indent: ((\n  padded\n))\n");

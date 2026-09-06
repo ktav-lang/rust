@@ -1222,7 +1222,7 @@ fn finalize_multiline<'a>(c: Collecting<'a>, bump: &'a Bump) -> &'a str {
             if only.trim().is_empty() {
                 ""
             } else {
-                only.trim_start()
+                only.trim_start().trim_end()
             }
         }
         MultilineMode::Stripped => {
@@ -1245,9 +1245,9 @@ fn dedent(lines: &[&str]) -> String {
         if l.trim().is_empty() {
             // blank line
         } else if common_len > 0 && l.len() >= common_len {
-            out.push_str(&l[common_len..]);
+            out.push_str(l[common_len..].trim_end());
         } else {
-            out.push_str(l);
+            out.push_str(l.trim_end());
         }
     }
     out

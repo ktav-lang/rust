@@ -254,3 +254,35 @@ fn keywords_become_typed_events() {
         ]
     );
 }
+
+#[test]
+fn thin_stripped_multiline_strips_trailing_whitespace() {
+    // Spec 0.7 § 5.6: the thin parser's duplicate finalize logic must
+    // strip trailing whitespace just like the main parser.
+    let src = "body: (\nline one  \nline two\t\n)\n";
+    assert_eq!(
+        collect(src),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("body".into()),
+            Owned::Str("line one\nline two".into()),
+            Owned::EndObject,
+        ]
+    );
+}
+
+#[test]
+fn thin_verbatim_multiline_preserves_trailing_whitespace() {
+    // The verbatim form is untouched by the 0.7 change — trailing
+    // whitespace survives byte-for-byte.
+    let src = "block: ((\nalpha  \nbeta\t\n))\n";
+    assert_eq!(
+        collect(src),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("block".into()),
+            Owned::Str("alpha  \nbeta\t".into()),
+            Owned::EndObject,
+        ]
+    );
+}

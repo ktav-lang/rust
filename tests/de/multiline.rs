@@ -116,3 +116,57 @@ fn preserves_relative_indent_inside_stripped() {
     let cfg: Cfg = from_str(src).unwrap();
     assert_eq!(cfg.value, "root\n  child\nback");
 }
+
+#[test]
+fn stripped_form_strips_trailing_whitespace() {
+    // Spec 0.7 § 5.6: the stripped form strips trailing whitespace from
+    // every content line — spaces and tabs alike.
+    #[derive(Deserialize)]
+    struct Cfg {
+        body: String,
+    }
+    let src = "body: (\nline one  \nline two\t\n)\n";
+    let cfg: Cfg = from_str(src).unwrap();
+    assert_eq!(cfg.body, "line one\nline two");
+}
+
+#[test]
+fn stripped_form_strips_trailing_whitespace_and_common_indent() {
+    // Spec 0.7 § 5.6: common indent (4) is removed first and beta keeps
+    // its relative 2-space indent; trailing whitespace is stripped
+    // independently of the dedent.
+    #[derive(Deserialize)]
+    struct Cfg {
+        value: String,
+    }
+    let src = "value: (\n    alpha  \n      beta\t\n    gamma \n)\n";
+    let cfg: Cfg = from_str(src).unwrap();
+    assert_eq!(cfg.value, "alpha\n  beta\ngamma");
+}
+
+#[test]
+fn verbatim_form_preserves_trailing_whitespace() {
+    // Divergence proof: the verbatim `(( ))` form is untouched by the
+    // 0.7 change — it still copies every line byte-for-byte.
+    #[derive(Deserialize)]
+    struct Cfg {
+        block: String,
+    }
+    let src = "block: ((\nalpha  \nbeta\t\n))\n";
+    let cfg: Cfg = from_str(src).unwrap();
+    assert_eq!(cfg.block, "alpha  \nbeta\t");
+}
+
+#[test]
+fn stripped_form_strips_trailing_unicode_whitespace() {
+    // U+00A0 NBSP and U+3000 ideographic space are both in § 3.3's
+    // fixed 25-code-point whitespace set, so they count as trailing
+    // whitespace for the 0.7 § 5.6 strip.
+    #[derive(Deserialize)]
+    struct Cfg {
+        value: String,
+    }
+    let src = "value: (\ntext\u{00A0}\nmore\u{3000}\n)\n";
+    let cfg: Cfg = from_str(src).unwrap();
+    assert_eq!(cfg.value, "text\nmore");
+}

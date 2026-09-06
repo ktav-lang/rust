@@ -50,13 +50,14 @@ impl<'a> Collecting<'a> {
             MultilineMode::Stripped => {
                 // Avoid the full dedent scan when there is only one line —
                 // the common leading whitespace is just that line's leading
-                // whitespace, so the result is `line.trim_start()`.
+                // whitespace, so the line is trimmed on both edges — trim_start then
+                // trim_end (spec 0.7 § 5.6) — not just `line.trim_start()`.
                 if self.lines.len() == 1 {
                     let only = self.lines[0];
                     if only.trim().is_empty() {
                         String::new()
                     } else {
-                        only.trim_start().to_string()
+                        only.trim_start().trim_end().to_string()
                     }
                 } else {
                     dedent(&self.lines)
@@ -68,7 +69,8 @@ impl<'a> Collecting<'a> {
 
 // ---------------------------------------------------------------------------
 // Dedent: strip the longest common leading-whitespace prefix from every
-// non-empty line. Blank lines become the empty string.
+// non-empty line, then strip trailing whitespace. Blank lines become the
+// empty string.
 // ---------------------------------------------------------------------------
 
 fn dedent(lines: &[&str]) -> String {
@@ -90,9 +92,9 @@ fn dedent(lines: &[&str]) -> String {
             // SAFETY (soundness): common_len was computed from leading
             // whitespace bytes (ASCII by construction), so slicing at that
             // byte boundary is on a valid UTF-8 char boundary.
-            out.push_str(&l[common_len..]);
+            out.push_str(l[common_len..].trim_end());
         } else {
-            out.push_str(l);
+            out.push_str(l.trim_end());
         }
     }
     out

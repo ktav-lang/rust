@@ -550,7 +550,8 @@ supported — they get confused with the value too easily.
 Values that span multiple lines go inside parentheses. The opening and
 closing lines are NOT part of the value.
 
-`(` ... `)` — common leading whitespace is stripped, so you can indent
+`(` ... `)` — common leading whitespace is stripped and, as of 0.7,
+trailing whitespace is stripped from each line, so you can indent
 the block to match its surroundings without contaminating the content:
 
 ```text
@@ -588,25 +589,27 @@ string (same as `key:`).
 Serialization: a string is emitted on a single line only when it has
 no `\n`, no leading/trailing whitespace, and no control byte other
 than `TAB`. Anything else — including a plain string with a stray edge
-space — takes the stripped form `( ... )` or, when stripped would
-change the content, the verbatim form `(( ... ))`; whichever the
+space — takes a multi-line form: verbatim `(( ... ))` when the content
+has edge whitespace that stripped would alter, stripped `( ... )`
+otherwise; whichever the
 writer picks, the round-trip is byte-for-byte lossless.
 
-Which block form you get depends on *where* the whitespace is. A
-trailing space survives the stripped form, since stripping only removes
-the common **leading** indent:
+Which block form you get depends on *where* the whitespace is. As of
+0.7 the stripped form strips trailing whitespace from every content
+line (§ 5.6), so a trailing space forces the verbatim form, which
+preserves it byte-for-byte:
 
 ```json5
 { password: "hunter2 " }
 ```
 ```text
-password: (
-    hunter2 
-)
+password: ((
+hunter2 
+))
 ```
 
-Leading whitespace is what forces the verbatim form — stripping would
-eat it:
+Leading whitespace — and, since 0.7, trailing whitespace — is what
+forces the verbatim form: stripping would eat the leading indent:
 
 ```json5
 { indent: "  padded" }
@@ -621,7 +624,8 @@ Either way, reading it back gives you the original bytes.
 
 Limitation: a body containing a line whose trimmed content is exactly
 `))` cannot use the verbatim form. It falls back to stripped instead —
-unless the body also has a sole-`)` line, a whitespace-only line, or
+unless the body also has a sole-`)` line, a whitespace-only line, a
+line with trailing whitespace, or
 every line indented (nothing to anchor the dedent at zero), in which
 case no form can hold it and serialization returns an error rather
 than emit a document that fails to round-trip.

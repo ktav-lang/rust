@@ -5,7 +5,7 @@
 //! contains a sole-`)` line that would close stripped prematurely.
 
 use ktav::to_string;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[test]
 fn plain_multiline_uses_stripped_form_with_indent() {
@@ -153,4 +153,22 @@ fn string_preserving_leading_indentation_round_trips_verbatim() {
     };
     let s = to_string(&cfg).unwrap();
     assert_eq!(s, "body: ((\n   a\n      b\n))\n");
+}
+
+#[test]
+fn trailing_whitespace_body_uses_verbatim_form() {
+    // As of 0.7 the stripped form strips trailing whitespace from every
+    // content line (§ 5.6), so a body with trailing whitespace must take
+    // the verbatim form to round-trip byte-for-byte.
+    #[derive(Serialize, Deserialize)]
+    struct Cfg {
+        sig: String,
+    }
+    let cfg = Cfg {
+        sig: "alpha  \nbeta\t".into(),
+    };
+    let s = to_string(&cfg).unwrap();
+    assert_eq!(s, "sig: ((\nalpha  \nbeta\t\n))\n");
+    let back: Cfg = ktav::from_str(&s).unwrap();
+    assert_eq!(back.sig, cfg.sig);
 }

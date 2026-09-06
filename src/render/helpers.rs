@@ -108,11 +108,12 @@ pub(crate) enum MultilineForm {
 /// re-parse, or error when neither form can (spec § 5.6.1).
 ///
 /// Verbatim breaks on a content line trimming to `))` (it would close
-/// the block). Stripped breaks on a line trimming to `)` (same), on a
-/// whitespace-only line (§ 5.6 blanks it), and — because the parser
-/// dedents by the COMMON leading whitespace — it loses per-line
-/// indentation unless at least one non-blank line is unindented and
-/// pins the common indent to zero.
+/// the block). Stripped breaks on a line trimming to `)` (it would
+/// close the block too), on a whitespace-only line (§ 5.6 blanks it),
+/// and on a line with trailing whitespace (spec 0.7 § 5.6 strips it).
+/// Stripped also loses per-line indentation, because the parser
+/// dedents by the COMMON leading whitespace, unless at least one
+/// non-blank line is unindented and pins the common indent to zero.
 ///
 /// `prefer_stripped` keeps the pretty renderers' historical choice
 /// (indented stripped output when it is unconditionally safe); the
@@ -123,6 +124,7 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
     let mut ws_only_line = false;
     let mut indented_line = false;
     let mut unindented_line = false;
+    let mut trailing_ws_line = false;
     for line in s.split('\n') {
         let trimmed = line.trim();
         match trimmed {
@@ -140,10 +142,13 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
         } else {
             unindented_line = true;
         }
+        if line.trim_end().len() != line.len() {
+            trailing_ws_line = true;
+        }
     }
 
-    let stripped_safe = !sole_single && !ws_only_line && !indented_line;
-    let stripped_lossless = !sole_single && !ws_only_line && unindented_line;
+    let stripped_safe = !sole_single && !ws_only_line && !indented_line && !trailing_ws_line;
+    let stripped_lossless = !sole_single && !ws_only_line && unindented_line && !trailing_ws_line;
     let verbatim_ok = !sole_double;
 
     if prefer_stripped && stripped_safe {
@@ -157,7 +162,7 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
             "String has no lossless multi-line form (§ 5.6.1): a sole-`))` \
              content line closes the verbatim block, and the stripped block \
              cannot hold this body (a sole-`)` line, a whitespace-only line, \
-             or every line indented). Split the value across adjacent \
+             a line with trailing whitespace, or every line indented). Split the value across adjacent \
              multi-line pairs."
                 .into(),
         ))
