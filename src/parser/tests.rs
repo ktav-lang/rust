@@ -747,3 +747,241 @@ fn parse_inline_backslash_at_eol() {
         other => panic!("expected BadEscapeSequence, got: {}", other),
     }
 }
+
+// --- 0.7 § 3.7 / § 3.7.1 / § 6.13: \uXXXX unicode escapes -----------------
+
+#[test]
+fn parse_unicode_escape_basic_inline() {
+    let v = crate::parse("cfg: {a: \\u0041}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("a"), Some(&Value::String("A".into())));
+}
+
+#[test]
+fn parse_unicode_escape_not_greedy_inline() {
+    let v = crate::parse("cfg: {a: \\u00411}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("a"), Some(&Value::String("A1".into())));
+}
+
+#[test]
+fn parse_unicode_escape_not_greedy_in_key() {
+    let v = crate::parse("k\\u00411: v").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("kA1"), Some(&Value::String("v".into())));
+}
+
+#[test]
+fn parse_unicode_escape_hex_case_insensitive() {
+    let v = crate::parse("cfg: {a: \\u00e9, b: \\u00E9, c: \\uAbCd}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("a"), Some(&Value::String("\u{e9}".into())));
+    assert_eq!(cfg.get("b"), Some(&Value::String("\u{e9}".into())));
+    assert_eq!(cfg.get("c"), Some(&Value::String("\u{ABCD}".into())));
+}
+
+#[test]
+fn parse_unicode_escape_too_few_digits() {
+    let err = crate::parse("cfg: {a: \\u12}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_too_few_digits_at_value_end() {
+    let err = crate::parse("cfg: [\\u12]").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_non_hex_before_fourth_digit() {
+    let err = crate::parse("cfg: {a: \\u12g4}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_surrogate_pair() {
+    let v = crate::parse("cfg: {a: \\uD83D\\uDE00}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("a"), Some(&Value::String("\u{1F600}".into())));
+}
+
+#[test]
+fn parse_unicode_escape_lone_high_surrogate() {
+    let err = crate::parse("cfg: {a: \\uD800}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_lone_high_surrogate_before_literal() {
+    let err = crate::parse("cfg: {a: \\uD800x}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_high_surrogate_then_non_low_escape() {
+    let err = crate::parse("cfg: {a: \\uD800\\u0041}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_high_surrogate_then_high_surrogate() {
+    let err = crate::parse("cfg: {a: \\uD800\\uD801}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_lone_low_surrogate() {
+    let err = crate::parse("cfg: {a: \\uDC00}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_boundaries_around_surrogate_range() {
+    let v = crate::parse("cfg: {a: \\uD7FF, b: \\uE000}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("a"), Some(&Value::String("\u{D7FF}".into())));
+    assert_eq!(cfg.get("b"), Some(&Value::String("\u{E000}".into())));
+}
+
+#[test]
+fn parse_unicode_escape_in_key() {
+    let v = crate::parse("\\u0041b: v").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("Ab"), Some(&Value::String("v".into())));
+}
+
+#[test]
+fn parse_unicode_escape_decoded_dot_is_not_structural() {
+    let v = crate::parse("a\\u002Eb: v").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("a.b"), Some(&Value::String("v".into())));
+    assert!(obj.get("a").is_none());
+}
+
+#[test]
+fn parse_unicode_escape_decoded_colon_is_not_structural() {
+    let v = crate::parse("\\u003A: v").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get(":"), Some(&Value::String("v".into())));
+}
+
+#[test]
+fn parse_unicode_escape_malformed_in_key_still_errors() {
+    let err = crate::parse("a\\u12.b: v").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_not_processed_in_plain_body() {
+    let v = crate::parse("note: \\u0041").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("note"), Some(&Value::String("\\u0041".into())));
+}
+
+#[test]
+fn parse_unicode_escape_not_processed_in_multiline_string() {
+    let v = crate::parse("note: (\n\\u0041\n)").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("note"), Some(&Value::String("\\u0041".into())));
+}
+
+#[test]
+fn parse_uppercase_u_is_not_unicode_escape() {
+    let err = crate::parse("cfg: {a: \\U0041}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_forces_string_not_integer() {
+    let v = crate::parse("cfg: {v: \\u0030}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("v"), Some(&Value::String("0".into())));
+}
+
+#[test]
+fn parse_named_escapes_still_work_regression() {
+    let v = crate::parse(
+        "cfg: {a: \\\\, b: \\,, c: \\}, d: \\], e: \\{, f: \\[, g: \\n, h: \\r, i: \\., j: \\:}",
+    )
+    .unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("a"), Some(&Value::String("\\".into())));
+    assert_eq!(cfg.get("b"), Some(&Value::String(",".into())));
+    assert_eq!(cfg.get("c"), Some(&Value::String("}".into())));
+    assert_eq!(cfg.get("d"), Some(&Value::String("]".into())));
+    assert_eq!(cfg.get("e"), Some(&Value::String("{".into())));
+    assert_eq!(cfg.get("f"), Some(&Value::String("[".into())));
+    // § 5.2 (spec.md 857-860): inline scalar bodies are trimmed AFTER
+    // escape processing, so `\n`/`\r` decode to whitespace-only values
+    // that trim to the empty string (spec-mandated decode→trim order).
+    assert_eq!(cfg.get("g"), Some(&Value::String("".into())));
+    assert_eq!(cfg.get("h"), Some(&Value::String("".into())));
+    assert_eq!(cfg.get("i"), Some(&Value::String(".".into())));
+    assert_eq!(cfg.get("j"), Some(&Value::String(":".into())));
+}
+
+#[test]
+fn parse_unicode_escape_high_then_malformed_low_errors() {
+    let err = crate::parse("cfg: {a: \\uD800\\uZZ}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::BadEscapeSequence { .. }) => {}
+        other => panic!("expected BadEscapeSequence, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_unicode_escape_trimmed_after_decode() {
+    // § 5.2: trim applies AFTER escape processing, so decoded edge
+    // whitespace (here U+0009 tabs) is removed.
+    let v = crate::parse("cfg: {v: \\u0009A\\u0009}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("v"), Some(&Value::String("A".into())));
+}
+
+#[test]
+fn parse_unicode_escape_interior_whitespace_preserved() {
+    // § 5.2: trimming removes edge whitespace only; a decoded newline
+    // in the interior survives.
+    let v = crate::parse("cfg: {v: A\\nB}").unwrap();
+    let obj = v.as_object().unwrap();
+    let cfg = obj.get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("v"), Some(&Value::String("A\nB".into())));
+}

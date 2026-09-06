@@ -367,8 +367,12 @@ fn parse_float_value(s: &str) -> Option<f64> {
 
 /// Process escape sequences in an inline scalar value.
 ///
-/// Recognised sequences (10, spec 0.6.0 § 3.7):
-///   `\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`, `\.`, `\:`.
+/// Recognised sequences (15, spec 0.7 § 3.7 / § 3.7.1):
+///   `\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`, `\.`, `\:` and
+///   `\uXXXX` (exactly four hex digits, case-insensitive). A `\uXXXX`
+///   in the high-surrogate range must be immediately followed by a low
+///   surrogate `\uXXXX` (combined into a single scalar value); lone
+///   surrogates and malformed `\u` forms are `BadEscapeSequence`.
 /// Any other `\X` is a `BadEscapeSequence` error.
 pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Result<String, Error> {
     // Fast path: if no backslash, the input is already clean — return a
@@ -403,6 +407,66 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
                 b'r' => out.push('\r'),
                 b'.' => out.push('.'),
                 b':' => out.push(':'),
+                b'u' => {
+                    // `\uXXXX`: exactly four ASCII hex digits (spec 0.7
+                    // § 3.7.1). Validate up-front so nothing is consumed
+                    // on a malformed escape.
+                    if i + 6 > bytes.len()
+                        || !bytes[i + 2..i + 6].iter().all(|b| b.is_ascii_hexdigit())
+                    {
+                        return Err(Error::Structured(ErrorKind::BadEscapeSequence {
+                            line: line_num as u32,
+                            span,
+                            sequence: render_malformed_unicode_escape(bytes, i),
+                        }));
+                    }
+                    // All-ASCII validated slice: byte-offset indexing is
+                    // char-boundary-safe.
+                    let hex = &input[i + 2..i + 6];
+                    let value = u32::from_str_radix(hex, 16).expect("4 ASCII hex digits");
+                    if (0xD800..=0xDBFF).contains(&value) {
+                        // High surrogate: must pair with an immediately
+                        // following low-surrogate `\uXXXX` (12 bytes total).
+                        if i + 12 <= bytes.len()
+                            && bytes[i + 6] == b'\\'
+                            && bytes[i + 7] == b'u'
+                            && bytes[i + 8..i + 12].iter().all(|b| b.is_ascii_hexdigit())
+                        {
+                            let low_hex = &input[i + 8..i + 12];
+                            let low = u32::from_str_radix(low_hex, 16).expect("4 ASCII hex digits");
+                            if (0xDC00..=0xDFFF).contains(&low) {
+                                let combined =
+                                    0x10000 + (value - 0xD800) * 0x400 + (low - 0xDC00);
+                                // 0x10000..=0x10FFFF by construction.
+                                let ch = char::from_u32(combined).expect("valid surrogate pair");
+                                out.push(ch);
+                                // +12 total: skips the shared `i += 2` below.
+                                i += 12;
+                                continue;
+                            }
+                        }
+                        // Lone high surrogate (end of input, non-`\u` text,
+                        // malformed second escape, or non-low value).
+                        return Err(Error::Structured(ErrorKind::BadEscapeSequence {
+                            line: line_num as u32,
+                            span,
+                            sequence: render_malformed_unicode_escape(bytes, i),
+                        }));
+                    }
+                    if (0xDC00..=0xDFFF).contains(&value) {
+                        // Lone low surrogate.
+                        return Err(Error::Structured(ErrorKind::BadEscapeSequence {
+                            line: line_num as u32,
+                            span,
+                            sequence: render_malformed_unicode_escape(bytes, i),
+                        }));
+                    }
+                    // Ordinary BMP code point.
+                    let ch = char::from_u32(value).expect("BMP non-surrogate value");
+                    out.push(ch);
+                    // +6 total: the shared `i += 2` below finishes the escape.
+                    i += 4;
+                }
                 _ => {
                     // Invalid escape
                     let seq = if next < 0x80 {
@@ -427,6 +491,22 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
     }
 
     Ok(out)
+}
+
+/// Render a malformed `\u` escape for the error payload: `\u` followed
+/// by up to four raw bytes from the input; ASCII bytes as chars, others
+/// as `<0xXX>`.
+fn render_malformed_unicode_escape(bytes: &[u8], i: usize) -> String {
+    let end = usize::min(i + 6, bytes.len());
+    let mut seq = String::from("\\u");
+    for &b in &bytes[i + 2..end] {
+        if b < 0x80 {
+            seq.push(b as char);
+        } else {
+            seq.push_str(&format!("<0x{:02X}>", b));
+        }
+    }
+    seq
 }
 
 // ---------------------------------------------------------------------------
