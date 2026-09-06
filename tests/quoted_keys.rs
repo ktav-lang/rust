@@ -424,3 +424,48 @@ fn array_items_unaffected() {
     assert_eq!(items[1], Value::String("\"b".into()));
     assert_eq!(items[2], Value::String("c\"".into()));
 }
+
+// ---------------------------------------------------------------------------
+// Nested inline compounds with quoted keys
+// ---------------------------------------------------------------------------
+
+#[test]
+fn quoted_key_brace_triple_nested() {
+    let value = parse("v: {a: {b: {\"c}d\": 1}}}\n").unwrap();
+    let Value::Object(v) = value else { panic!("expected Object") };
+    let Some(Value::Object(a)) = v.get("v") else { panic!("expected `v`") };
+    let Some(Value::Object(b)) = a.get("a") else { panic!("expected `a`") };
+    let Value::Object(inner) = b.get("b").expect("expected `b`") else {
+        panic!("expected Object under `b`");
+    };
+    assert_eq!(inner.get("c}d"), Some(&Value::Integer("1".into())));
+    assert_eq!(inner.len(), 1);
+}
+
+#[test]
+fn quoted_key_brace_two_levels_still_parses() {
+    let value = parse("v: {a: {\"b}c\": 1}}\n").unwrap();
+    let Value::Object(v) = value else { panic!("expected Object") };
+    let Some(Value::Object(a)) = v.get("v") else { panic!("expected `v`") };
+    let Value::Object(inner) = a.get("a").expect("expected `a`") else {
+        panic!("expected Object under `a`");
+    };
+    assert_eq!(inner.get("b}c"), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_key_brace_deep_with_sibling_and_inner_comma() {
+    let value = parse("v: {a: {b: {\"c}d\": 1, x: 2}, e: 3}}\n").unwrap();
+    let Value::Object(v) = value else { panic!("expected Object") };
+    let Some(Value::Object(a)) = v.get("v") else { panic!("expected `v`") };
+    let Value::Object(a_body) = a.get("a").expect("expected `a`") else {
+        panic!("expected Object under `a`");
+    };
+    let Value::Object(inner) = a_body.get("b").expect("expected `b`") else {
+        panic!("expected Object under `b`");
+    };
+    assert_eq!(inner.len(), 2);
+    assert_eq!(inner.get("c}d"), Some(&Value::Integer("1".into())));
+    assert_eq!(inner.get("x"), Some(&Value::Integer("2".into())));
+    assert_eq!(a_body.get("e"), Some(&Value::Integer("3".into())));
+}

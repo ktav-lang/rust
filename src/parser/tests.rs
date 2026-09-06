@@ -1203,6 +1203,16 @@ fn quoted_find_matching_close_object_mode() {
     assert_eq!(find_matching_close("[\"a]b\"]", b'[', b']'), Some(3));
 }
 
+#[test]
+fn quoted_find_matching_close_triple_nested() {
+    // A `{` opens a fresh pair list at any nesting level, so quoted-key
+    // recognition must be tracked per level (spec 0.7 § 5.3.3).
+    let input = r#"{a: {b: {"c}d": 1}}}"#;
+    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+    let input = r#"{b: {"c}d": 1}}"#;
+    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+}
+
 // --- quoted keys: parse-level (spec 0.7 § 5.3.3) ----------------------------
 
 #[test]

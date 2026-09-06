@@ -100,3 +100,16 @@ fn thin_value_quotes_ordinary() {
     .unwrap();
     assert_eq!(strings, ["\"b\""]);
 }
+
+#[test]
+fn thin_triple_nested_quoted_key() {
+    let src = "v: {a: {b: {\"c}d\": 1}}}\n";
+    let mut keys = Vec::new();
+    parse_events(src, |ev| {
+        if let ParseEvent::Key(k) = ev {
+            keys.push(k.to_string());
+        }
+    })
+    .unwrap();
+    assert_eq!(keys.last().map(String::as_str), Some("c}d"));
+}

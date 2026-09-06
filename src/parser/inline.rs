@@ -1012,7 +1012,9 @@ fn split_top_level_fast(input: &str) -> Vec<&str> {
 /// segments are opaque to bracket-balance counting (spec 0.7 § 5.3.3:
 /// same reason an escaped bracket is). For array bodies (`open ==
 /// b'['`) every position is a value position, so quotes are content
-/// and never tracked (§ 5.3.3 "Keys only").
+/// and never tracked (§ 5.3.3 "Keys only"). Key-position tracking is
+/// per nesting level: every `{` opens a fresh pair list, so the
+/// enclosing level's key context is saved and restored around it.
 pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
     let bytes = input.as_bytes();
     if bytes.is_empty() || bytes[0] != open {
@@ -1046,12 +1048,14 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
         return None;
     }
 
-    // Slow path (object body with quote bytes): same in_key/seg_start
-    // tracking as [`split_top_level`].
+    // Slow path (object body with quote bytes): key-position tracking,
+    // PER NESTING LEVEL — every `{` opens a fresh pair list, so the
+    // enclosing level's in_key state is saved and restored around it.
     let mut depth: i32 = 0;
     let mut i = 0;
     let mut in_key = true;
     let mut seg_start = true;
+    let mut key_stack: Vec<bool> = Vec::new();
     while i < bytes.len() {
         if in_key && seg_start {
             i = skip_segment_ws(input, i);
@@ -1084,17 +1088,24 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
             }
             b if b == open => {
                 depth += 1;
-                // The first pair's key starts right after the body's
-                // opening `{`.
-                if in_key {
-                    seg_start = true;
-                }
+                // A `{` opens a fresh pair list at any level: save the
+                // enclosing key-position state and restart tracking for
+                // the nested body.
+                key_stack.push(in_key);
+                in_key = true;
+                seg_start = true;
             }
             b if b == close => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(i);
                 }
+                // Matching close of a nested object: restore the
+                // enclosing pair list's key-position state. The `}`
+                // itself consumed a position, so segment-start tracking
+                // stays off until the next re-arm.
+                in_key = key_stack.pop().unwrap_or(true);
+                seg_start = false;
             }
             _ => {}
         }
