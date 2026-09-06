@@ -69,7 +69,7 @@ fn parse_inline_object_inner(
         return Ok(Value::Object(ObjectMap::default()));
     }
 
-    let segments = split_top_level(inner, line_num, span)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Object)?;
 
     let mut map = ObjectMap::default();
     let n = segments.len();
@@ -160,7 +160,7 @@ fn parse_inline_array_inner(
         return Ok(Value::Array(Vec::new()));
     }
 
-    let segments = split_top_level(inner, line_num, span)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Array)?;
 
     let mut items: Vec<Value> = Vec::new();
     let n = segments.len();
@@ -519,18 +519,108 @@ fn render_malformed_unicode_escape(bytes: &[u8], i: usize) -> String {
 // Key-context escape processing (spec 0.6.0 § 3.7 + § 5.3)
 // ---------------------------------------------------------------------------
 
-/// Find the byte offset of the first **unescaped** `:` in `s`. Returns
-/// `None` if every `:` is preceded by `\`. Spec 0.6.0 § 5.3 — the pair
-/// separator is the first unescaped `:` (or `::`).
-///
-/// `\` consumes the next byte; pairs of `\\` reset to "no pending
-/// escape". This intentionally does not validate the escape sequence —
-/// validation is deferred to `decode_key_segment` so a glued
-/// `BadEscapeSequence` error fires at the right call site.
-pub(crate) fn find_unescaped_colon(s: &str) -> Option<usize> {
-    // SIMD-accelerated escape-aware scan: memchr2 jumps to the next
-    // candidate byte (`\` or `:`). When we land on `\` we skip the
-    // escaped byte and resume; when we land on `:` we return it.
+/// Outcome of scanning key text for the pair separator (spec 0.7 § 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColonScan {
+    /// Byte offset of the first unescaped `:` outside quoted segments.
+    Found(usize),
+    /// No unescaped `:` anywhere outside quoted segments.
+    Absent,
+    /// A quoted segment opened at a segment-start position and never
+    /// closed: the rest of the line, colon included, is segment
+    /// content (§ 5.3.3 "Unterminated quoted segments").
+    UnterminatedQuote,
+}
+
+/// True iff `b` opens a quoted key segment (spec 0.7 § 5.3.3).
+fn is_quote_byte(b: u8) -> bool {
+    b == b'"' || b == b'\'' || b == b'`'
+}
+
+/// True iff `bytes` contains any quote byte. Cheap early-out for the
+/// scanners: without a quote byte, quoted-segment tracking cannot
+/// change the outcome, so callers keep their SIMD fast paths.
+fn has_quote_bytes(bytes: &[u8]) -> bool {
+    bytes.contains(&b'"') || bytes.contains(&b'\'') || bytes.contains(&b'`')
+}
+
+/// Skip line-bounded § 3.3 whitespace (the Unicode White_Space set;
+/// LF/CR cannot occur — lines are pre-split). Returns the index of the
+/// first non-whitespace byte at or after `i`. § 3.3 fixes the closed
+/// 25-code-point White_Space list, which Rust's `char::is_whitespace`
+/// matches exactly.
+fn skip_segment_ws(s: &str, mut i: usize) -> usize {
+    let bytes = s.as_bytes();
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b' ' || b == b'\t' || b == 0x0B || b == 0x0C {
+            i += 1;
+            continue;
+        }
+        if b < 0x80 {
+            break;
+        }
+        let ch = s[i..].chars().next().unwrap();
+        if ch.is_whitespace() {
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    i
+}
+
+/// Scan key text for the pair separator, treating quoted-segment
+/// content as opaque (spec 0.7 § 4's separator-scanning rule: the
+/// separator is the first unescaped `:`, with the content of any
+/// `<quoted-segment>` encountered along the way treated as opaque).
+/// A quoted segment only OPENS at a segment-start position: the very
+/// start of the text, or immediately after an unescaped `.` (plus
+/// line-bounded whitespace, since `<raw-segment> ::= (ws) <segment>
+/// (ws)`).
+pub(crate) fn scan_unescaped_colon(s: &str) -> ColonScan {
+    let bytes = s.as_bytes();
+    if !has_quote_bytes(bytes) {
+        // No quote bytes: segment tracking cannot change the outcome.
+        return match find_unescaped_colon_fast(s) {
+            Some(p) => ColonScan::Found(p),
+            None => ColonScan::Absent,
+        };
+    }
+    let mut i = 0;
+    let mut seg_start = true; // position 0 is a segment start
+    while i < bytes.len() {
+        if seg_start {
+            i = skip_segment_ws(s, i);
+            if i < bytes.len() && is_quote_byte(bytes[i]) {
+                return match quoted_span_end(bytes, i) {
+                    Some(end) => {
+                        i = end + 1;
+                        seg_start = false;
+                        continue;
+                    }
+                    None => ColonScan::UnterminatedQuote,
+                };
+            }
+            seg_start = false;
+        }
+        match bytes[i] {
+            b'\\' => i += 2, // escape lead: consume the escaped byte too (a lone trailing `\` overshoots `bytes.len()`, which the loop guard makes safe — scan just ends, as in `find_unescaped_colon`)
+            b'.' => {
+                seg_start = true;
+                i += 1;
+            }
+            b':' => return ColonScan::Found(i),
+            _ => i += 1,
+        }
+    }
+    ColonScan::Absent
+}
+
+/// SIMD-accelerated escape-aware `:` scan: memchr2 jumps to the next
+/// candidate byte (`\` or `:`). When we land on `\` we skip the
+/// escaped byte and resume; when we land on `:` we return it.
+fn find_unescaped_colon_fast(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -547,36 +637,98 @@ pub(crate) fn find_unescaped_colon(s: &str) -> Option<usize> {
     None
 }
 
+/// Find the byte offset of the first **unescaped** `:` in `s`. Returns
+/// `None` if every `:` is preceded by `\`, or if a quoted key segment
+/// opened at a segment-start position and swallowed the rest of the
+/// line (spec 0.7 § 5.3.3 "Unterminated quoted segments" — callers
+/// needing to distinguish that case use [`scan_unescaped_colon`]).
+/// Spec 0.6.0 § 5.3 — the pair separator is the first unescaped `:`
+/// (or `::`).
+///
+/// `\` consumes the next byte; pairs of `\\` reset to "no pending
+/// escape". This intentionally does not validate the escape sequence —
+/// validation is deferred to `decode_key_segment` so a glued
+/// `BadEscapeSequence` error fires at the right call site.
+pub(crate) fn find_unescaped_colon(s: &str) -> Option<usize> {
+    match scan_unescaped_colon(s) {
+        ColonScan::Found(p) => Some(p),
+        _ => None,
+    }
+}
+
 /// Split a key string into dotted segments at **unescaped** `.` bytes
 /// (spec 0.6.0 § 4 / § 5.3). The returned slices reference the input;
 /// callers run `decode_key_segment` on each segment to materialise the
 /// final byte form.
 pub(crate) fn split_key_path(s: &str) -> Vec<&str> {
-    // SIMD-accelerated escape-aware split: memchr2 jumps to the next
-    // candidate byte (`\` or `.`). On `\` skip the escaped byte; on
-    // `.` cut a segment.
     let bytes = s.as_bytes();
     let mut out = Vec::new();
+    if !has_quote_bytes(bytes) {
+        // SIMD-accelerated escape-aware split: memchr2 jumps to the next
+        // candidate byte (`\` or `.`). On `\` skip the escaped byte; on
+        // `.` cut a segment.
+        let mut start = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            let rel = match memchr2(b'\\', b'.', &bytes[i..]) {
+                Some(p) => p,
+                None => break,
+            };
+            let abs = i + rel;
+            if bytes[abs] == b'.' {
+                out.push(&s[start..abs]);
+                start = abs + 1;
+                i = abs + 1;
+            } else {
+                // `\` — escape consumes the next byte.
+                if abs + 1 < bytes.len() {
+                    i = abs + 2;
+                } else {
+                    // Lone trailing `\` — let decoding report it.
+                    i = abs + 1;
+                }
+            }
+        }
+        out.push(&s[start..]);
+        return out;
+    }
+    // Slow path (quote bytes present): quoted segments are opaque to
+    // `.` splitting (spec 0.7 § 5.3.3). A segment opens only at a
+    // segment-start position: position 0 or after an unescaped `.`
+    // (plus line-bounded whitespace).
     let mut start = 0;
     let mut i = 0;
+    let mut seg_start = true;
     while i < bytes.len() {
-        let rel = match memchr2(b'\\', b'.', &bytes[i..]) {
-            Some(p) => p,
-            None => break,
-        };
-        let abs = i + rel;
-        if bytes[abs] == b'.' {
-            out.push(&s[start..abs]);
-            start = abs + 1;
-            i = abs + 1;
-        } else {
-            // `\` — escape consumes the next byte.
-            if abs + 1 < bytes.len() {
-                i = abs + 2;
-            } else {
-                // Lone trailing `\` — let decoding report it.
-                i = abs + 1;
+        if seg_start {
+            i = skip_segment_ws(s, i);
+            if i < bytes.len() && is_quote_byte(bytes[i]) {
+                match quoted_span_end(bytes, i) {
+                    Some(end) => {
+                        i = end + 1;
+                        seg_start = false;
+                        continue;
+                    }
+                    None => {
+                        // Defensive: callers only reach here with
+                        // well-formed key text (the colon scan already
+                        // proved the separator exists), so an unterminated
+                        // span here keeps the remainder as one segment.
+                        break;
+                    }
+                }
             }
+            seg_start = false;
+        }
+        match bytes[i] {
+            b'\\' => i += 2, // escape consumes the next byte
+            b'.' => {
+                out.push(&s[start..i]);
+                start = i + 1;
+                i += 1;
+                seg_start = true;
+            }
+            _ => i += 1,
         }
     }
     out.push(&s[start..]);
@@ -588,20 +740,53 @@ pub(crate) fn split_key_path(s: &str) -> Vec<&str> {
 /// path; callers still need `decode_key_segment` to materialise the
 /// final byte form when the segment contains a `\`.
 pub(crate) fn key_is_single_segment(s: &str) -> bool {
-    // SIMD-accelerated escape-aware scan via memchr2.
     let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let rel = match memchr2(b'\\', b'.', &bytes[i..]) {
-            Some(p) => p,
-            None => return true,
-        };
-        let abs = i + rel;
-        if bytes[abs] == b'.' {
-            return false;
+    if !has_quote_bytes(bytes) {
+        // SIMD-accelerated escape-aware scan via memchr2.
+        let mut i = 0;
+        while i < bytes.len() {
+            let rel = match memchr2(b'\\', b'.', &bytes[i..]) {
+                Some(p) => p,
+                None => return true,
+            };
+            let abs = i + rel;
+            if bytes[abs] == b'.' {
+                return false;
+            }
+            // `\` — skip the escaped byte.
+            i = abs + 2;
         }
-        // `\` — skip the escaped byte.
-        i = abs + 2;
+        return true;
+    }
+    // Slow path (quote bytes present): dots inside quoted segments are
+    // not separators (spec 0.7 § 5.3.3). Segment-start tracking as in
+    // [`split_key_path`].
+    let mut i = 0;
+    let mut seg_start = true;
+    while i < bytes.len() {
+        if seg_start {
+            i = skip_segment_ws(s, i);
+            if i < bytes.len() && is_quote_byte(bytes[i]) {
+                match quoted_span_end(bytes, i) {
+                    Some(end) => {
+                        i = end + 1;
+                        seg_start = false;
+                        continue;
+                    }
+                    None => {
+                        // Defensive (see `split_key_path`): treat the
+                        // unterminated span as one segment.
+                        return true;
+                    }
+                }
+            }
+            seg_start = false;
+        }
+        match bytes[i] {
+            b'\\' => i += 2, // escape consumes the next byte
+            b'.' => return false,
+            _ => i += 1,
+        }
     }
     true
 }
@@ -667,6 +852,16 @@ pub(crate) fn decode_key_segment(
 // Splitting on top-level commas
 // ---------------------------------------------------------------------------
 
+/// Which inline-compound body is being split (spec 0.7 § 5.3.3
+/// "Keys only"): in an object body, quotes at key-segment-start are
+/// quoted KEYS and opaque to comma splitting; in an array body every
+/// position is a value position, so quotes are ordinary content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InlineBody {
+    Object,
+    Array,
+}
+
 /// Split `input` on unescaped `,` at nesting depth 0.
 ///
 /// Unlike a naive brace-counting approach, this correctly handles the
@@ -674,24 +869,67 @@ pub(crate) fn decode_key_segment(
 /// balanced compound is skipped over entirely. A `{` or `[` that doesn't
 /// have a matching closer is treated as literal (the value parser will
 /// handle it later per the mid-value-brace rule).
-fn split_top_level<'a>(
+///
+/// In [`InlineBody::Object`] mode, quoted key segments (spec 0.7
+/// § 5.3.3) are opaque to comma splitting — `\{"a,b": 1, c: 2\}`
+/// splits into two pairs — while quotes in value positions are
+/// ordinary content (`a: "x,y", b: 2` splits inside the quotes). An
+/// unterminated quoted key segment raises `UnterminatedInlineCompound`.
+pub(crate) fn split_top_level<'a>(
     input: &'a str,
-    _line_num: usize,
-    _span: Span,
+    line_num: usize,
+    span: Span,
+    body: InlineBody,
 ) -> Result<Vec<&'a str>, Error> {
     let bytes = input.as_bytes();
+    if body == InlineBody::Array || !has_quote_bytes(bytes) {
+        return Ok(split_top_level_fast(input));
+    }
+
+    // Slow path (object body with quote bytes): track key/value and
+    // segment-start state so quoted KEYS are comma-opaque.
     let mut segments: Vec<&'a str> = Vec::new();
     let mut start = 0;
     let mut i = 0;
+    let mut in_key = true;
+    let mut seg_start = true;
 
     while i < bytes.len() {
+        if in_key && seg_start {
+            i = skip_segment_ws(input, i);
+            if i < bytes.len() && is_quote_byte(bytes[i]) {
+                match quoted_span_end(bytes, i) {
+                    Some(end) => {
+                        i = end + 1;
+                        seg_start = false;
+                        continue;
+                    }
+                    None => {
+                        // Unterminated quoted key segment (§ 5.3.3).
+                        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                            line: line_num as u32,
+                            span,
+                        }));
+                    }
+                }
+            }
+            seg_start = false;
+        }
         match bytes[i] {
             b'\\' => {
                 // Skip escaped character. We validate escapes later
                 // during process_escapes; here we just need to not
                 // count `\,`, `\{`, `\}`, `\[`, `\]` as structural.
                 i += 2;
-                continue;
+            }
+            b'.' if in_key => {
+                seg_start = true;
+                i += 1;
+            }
+            b':' if in_key => {
+                // Key/value boundary — quotes after this are content.
+                in_key = false;
+                i += 1;
             }
             b'{' | b'[' => {
                 // Check if this opens a balanced nested compound.
@@ -704,6 +942,48 @@ fn split_top_level<'a>(
                 }
                 // Not balanced — treat as literal byte (mid-value brace).
                 // The value parser will handle it correctly per section 5.8.5.
+                i += 1;
+            }
+            b',' => {
+                segments.push(&input[start..i]);
+                start = i + 1;
+                i += 1;
+                // Next pair begins: back to key context.
+                in_key = true;
+                seg_start = true;
+                continue;
+            }
+            _ => i += 1,
+        }
+    }
+
+    // Last segment (after final comma, or the whole string if no comma)
+    segments.push(&input[start..]);
+
+    Ok(segments)
+}
+
+/// Quote-free fast path for [`split_top_level`] — the pre-0.7 loop,
+/// unchanged.
+fn split_top_level_fast(input: &str) -> Vec<&str> {
+    let bytes = input.as_bytes();
+    let mut segments: Vec<&str> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                i += 2;
+                continue;
+            }
+            b'{' | b'[' => {
+                let open = bytes[i];
+                let close = if open == b'{' { b'}' } else { b']' };
+                if let Some(close_pos) = find_matching_close(&input[i..], open, close) {
+                    i += close_pos + 1;
+                    continue;
+                }
             }
             b',' => {
                 segments.push(&input[start..i]);
@@ -716,10 +996,8 @@ fn split_top_level<'a>(
         i += 1;
     }
 
-    // Last segment (after final comma, or the whole string if no comma)
     segments.push(&input[start..]);
-
-    Ok(segments)
+    segments
 }
 
 // ---------------------------------------------------------------------------
@@ -729,22 +1007,88 @@ fn split_top_level<'a>(
 /// Check if `input` is a balanced inline compound: starts with `open`
 /// and has a matching `close` at the very end. Returns the last byte
 /// index if found.
-fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
+///
+/// For object bodies (`open == b'{'`), brackets inside quoted key
+/// segments are opaque to bracket-balance counting (spec 0.7 § 5.3.3:
+/// same reason an escaped bracket is). For array bodies (`open ==
+/// b'['`) every position is a value position, so quotes are content
+/// and never tracked (§ 5.3.3 "Keys only").
+pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
     let bytes = input.as_bytes();
     if bytes.is_empty() || bytes[0] != open {
         return None;
     }
 
+    let track_quotes = open == b'{' && has_quote_bytes(bytes);
+    if !track_quotes {
+        // Fast path: no quote tracking — the pre-0.7 loop, unchanged.
+        let mut depth: i32 = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => {
+                    i += 2; // skip escaped character
+                    continue;
+                }
+                b if b == open => {
+                    depth += 1;
+                }
+                b if b == close => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        return None;
+    }
+
+    // Slow path (object body with quote bytes): same in_key/seg_start
+    // tracking as [`split_top_level`].
     let mut depth: i32 = 0;
     let mut i = 0;
+    let mut in_key = true;
+    let mut seg_start = true;
     while i < bytes.len() {
+        if in_key && seg_start {
+            i = skip_segment_ws(input, i);
+            if i < bytes.len() && is_quote_byte(bytes[i]) {
+                // Unterminated span: the rest of the input is segment
+                // content (for bracket balance: no matching close).
+                let end = quoted_span_end(bytes, i)?;
+                i = end + 1;
+                seg_start = false;
+                continue;
+            }
+            seg_start = false;
+        }
         match bytes[i] {
             b'\\' => {
                 i += 2; // skip escaped character
                 continue;
             }
+            b'.' if in_key => {
+                seg_start = true;
+            }
+            b':' => {
+                // Key/value boundary: quotes after this are content.
+                in_key = false;
+            }
+            b',' => {
+                // Next pair begins: back to key context.
+                in_key = true;
+                seg_start = true;
+            }
             b if b == open => {
                 depth += 1;
+                // The first pair's key starts right after the body's
+                // opening `{`.
+                if in_key {
+                    seg_start = true;
+                }
             }
             b if b == close => {
                 depth -= 1;
@@ -761,11 +1105,50 @@ fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
 
 /// Find the first unescaped `:` in `s` that is at nesting depth 0.
 /// Used to split inline pairs into key and value.
-fn find_unescaped_colon_inline(s: &str) -> Option<usize> {
+///
+/// Quote-aware (spec 0.7 § 5.3.3): the content of a quoted key segment
+/// opened at a segment-start position is opaque to both `:` and the
+/// `{`/`[`/`}`/`]` depth counting. A span that never closes swallows
+/// the rest of the input — `None` is returned and the caller maps that
+/// to its unterminated/unparseable error of choice.
+pub(crate) fn find_unescaped_colon_inline(s: &str) -> Option<usize> {
     let bytes = s.as_bytes();
+    if !has_quote_bytes(bytes) {
+        // Fast path: no quote bytes — the pre-0.7 loop, unchanged.
+        let mut depth: i32 = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => {
+                    i += 2;
+                    continue;
+                }
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' => depth -= 1,
+                b':' if depth == 0 => return Some(i),
+                _ => {}
+            }
+            i += 1;
+        }
+        return None;
+    }
+    // Slow path (quote bytes present): quoted segments are opaque.
     let mut depth: i32 = 0;
     let mut i = 0;
+    let mut seg_start = true;
     while i < bytes.len() {
+        if seg_start {
+            i = skip_segment_ws(s, i);
+            if i < bytes.len() && is_quote_byte(bytes[i]) {
+                // Unterminated span: the rest of the input is segment
+                // content.
+                let end = quoted_span_end(bytes, i)?;
+                i = end + 1;
+                seg_start = false;
+                continue;
+            }
+            seg_start = false;
+        }
         match bytes[i] {
             b'\\' => {
                 i += 2;
@@ -774,6 +1157,7 @@ fn find_unescaped_colon_inline(s: &str) -> Option<usize> {
             b'{' | b'[' => depth += 1,
             b'}' | b']' => depth -= 1,
             b':' if depth == 0 => return Some(i),
+            b'.' => seg_start = true,
             _ => {}
         }
         i += 1;

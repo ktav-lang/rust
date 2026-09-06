@@ -20,7 +20,8 @@ use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 use crate::parser::classify::{is_float_literal, try_parse_integer};
 use crate::parser::leading_bom_len;
 use crate::parser::inline::{
-    decode_key_segment, find_unescaped_colon, key_is_single_segment, split_key_path,
+    ColonScan, decode_key_segment, find_unescaped_colon, key_is_single_segment, scan_unescaped_colon,
+    split_key_path,
 };
 use crate::parser::validate::{check_key, KeyValidity};
 
@@ -381,9 +382,18 @@ impl<'a> EventParser<'a> {
         events: &mut S,
     ) -> Result<()> {
         // Spec 0.6.0 § 5.3 — pair separator is the first UNescaped `:`.
-        let colon = match find_unescaped_colon(trimmed) {
-            Some(c) => c,
-            None => {
+        // Spec 0.7 § 5.3.3 / § 6.16: a quoted segment that never closes
+        // swallows the separator — that takes precedence over
+        // MissingSeparator.
+        let colon = match scan_unescaped_colon(trimmed) {
+            ColonScan::Found(c) => c,
+            ColonScan::UnterminatedQuote => {
+                return Err(Error::Structured(ErrorKind::UnterminatedQuotedKey {
+                    line: line_num as u32,
+                    span: trimmed_span,
+                }));
+            }
+            ColonScan::Absent => {
                 return Err(Error::Structured(ErrorKind::MissingSeparator {
                     line: line_num as u32,
                     span: trimmed_span,

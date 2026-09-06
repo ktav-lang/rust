@@ -1088,3 +1088,230 @@ fn parse_quoted_keys() {
     let cfg = v.as_object().unwrap().get("cfg").unwrap().as_object().unwrap();
     assert_eq!(cfg.get("v"), Some(&Value::String("say \"hi\"".into())));
 }
+
+// --- quoted keys: scanners (spec 0.7 § 5.3.3) -------------------------------
+
+use super::inline::find_matching_close;
+use super::inline::find_unescaped_colon_inline;
+use super::inline::split_top_level;
+use super::inline::InlineBody;
+use super::inline::{key_is_single_segment, scan_unescaped_colon, split_key_path};
+use super::inline::ColonScan;
+
+#[test]
+fn quoted_colon_scan_finds_colon_outside_spans() {
+    assert_eq!(scan_unescaped_colon("a: 1"), ColonScan::Found(1));
+    // Colon inside quotes is skipped.
+    assert_eq!(scan_unescaped_colon("\"a: b\": 1"), ColonScan::Found(6));
+    assert_eq!(scan_unescaped_colon("'a' : 1"), ColonScan::Found(4));
+    assert_eq!(scan_unescaped_colon("`a:b`: 1"), ColonScan::Found(5));
+    // Dotted path with a quoted middle segment.
+    assert_eq!(scan_unescaped_colon("a.\"b:c\".d: 1"), ColonScan::Found(9));
+    // Whitespace after the dot is skipped before the quote test.
+    assert_eq!(scan_unescaped_colon("a . \"b\": 1"), ColonScan::Found(7));
+}
+
+#[test]
+fn quoted_colon_scan_unterminated() {
+    assert_eq!(scan_unescaped_colon("\"unterm: 1"), ColonScan::UnterminatedQuote);
+    assert_eq!(scan_unescaped_colon("a.\"unterm"), ColonScan::UnterminatedQuote);
+}
+
+#[test]
+fn quoted_colon_scan_absent_and_escapes() {
+    assert_eq!(scan_unescaped_colon("no colon"), ColonScan::Absent);
+    // Escaped colon is not a separator.
+    assert_eq!(scan_unescaped_colon("a\\:b: 1"), ColonScan::Found(4));
+    // Escaped quote inside the span does not close it.
+    assert_eq!(scan_unescaped_colon("\"a\\\"b\": 1"), ColonScan::Found(6));
+    // Junk after the closer is still scanned normally.
+    assert_eq!(scan_unescaped_colon("\"a\"b: 1"), ColonScan::Found(4));
+}
+
+#[test]
+fn quoted_split_key_path_keeps_quotes_in_slices() {
+    assert_eq!(split_key_path("a.\"b.c\".d"), vec!["a", "\"b.c\"", "d"]);
+    assert_eq!(split_key_path("\"a\".\"b\""), vec!["\"a\"", "\"b\""]);
+    // Escaped dot is not a separator (no quote bytes → fast path).
+    assert_eq!(split_key_path("a\\.b"), vec!["a\\.b"]);
+    // Post-dot whitespace stays in the slice — callers trim.
+    assert_eq!(split_key_path("a. \"b\""), vec!["a", " \"b\""]);
+    assert_eq!(split_key_path("\"a.b\""), vec!["\"a.b\""]);
+}
+
+#[test]
+fn quoted_key_is_single_segment() {
+    assert!(key_is_single_segment("\"a.b\""));
+    assert!(!key_is_single_segment("a.\"b\".c"));
+    // Unterminated span swallows the rest — one segment (defensive).
+    assert!(key_is_single_segment("\"unterm"));
+}
+
+#[test]
+fn quoted_find_unescaped_colon_inline() {
+    // `}` inside a quoted key segment does not affect depth.
+    assert_eq!(find_unescaped_colon_inline("\"a}b\": 1"), Some(5));
+    // Span never closes — no colon found; caller maps to unterminated.
+    assert_eq!(find_unescaped_colon_inline("\"a: 1"), None);
+    // Value-side quotes are ignored.
+    assert_eq!(find_unescaped_colon_inline("a: \"b}"), Some(1));
+}
+
+#[test]
+fn quoted_split_top_level_object_mode() {
+    // Comma inside a quoted KEY does not split.
+    assert_eq!(
+        split_top_level("\"a}b\": 1, c: 2", 1, S, InlineBody::Object).unwrap(),
+        vec!["\"a}b\": 1", " c: 2"]
+    );
+    // Comma inside a quoted VALUE does split ("Keys only"): value
+    // quotes are ordinary content, so both commas are split points.
+    assert_eq!(
+        split_top_level("a: \"x,y\", b: 2", 1, S, InlineBody::Object).unwrap(),
+        vec!["a: \"x", "y\"", " b: 2"]
+    );
+    // Unterminated quoted key segment.
+    match split_top_level("\"a: 1", 1, S, InlineBody::Object) {
+        Err(crate::Error::Structured(crate::ErrorKind::UnterminatedInlineCompound { .. })) => {}
+        other => panic!("expected UnterminatedInlineCompound, got: {:?}", other.err()),
+    }
+}
+
+#[test]
+fn quoted_split_top_level_array_mode_ignores_quotes() {
+    // Array bodies never track quotes (value positions — "Keys only"):
+    // today's behaviour kept exactly, so the comma inside the quotes
+    // splits.
+    assert_eq!(
+        split_top_level("\"a,b\", c", 1, S, InlineBody::Array).unwrap(),
+        vec!["\"a", "b\"", " c"]
+    );
+}
+
+#[test]
+fn quoted_find_matching_close_object_mode() {
+    // `}` inside a quoted key segment is opaque to balance counting.
+    let input = "{\"a}b\": 1}";
+    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+    // Unterminated span → no matching close.
+    assert_eq!(find_matching_close("{\"a: 1}", b'{', b'}'), None);
+    let input = "{a: 1, \"b}c\": 2}";
+    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+    // Array bodies never track quotes: the `]` at depth 1 closes the
+    // compound — value-position quotes are content (spec "Keys only").
+    // This pins the pre-change behaviour.
+    assert_eq!(find_matching_close("[\"a]b\"]", b'[', b']'), Some(3));
+}
+
+// --- quoted keys: parse-level (spec 0.7 § 5.3.3) ----------------------------
+
+#[test]
+fn quoted_key_with_spaces() {
+    let v = crate::parse("\"a b\": 1").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("a b"), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_key_backtick_with_inner_quotes() {
+    let v = crate::parse("`it's \"quoted\"`: 1").unwrap();
+    let obj = v.as_object().unwrap();
+    let key = obj.keys().next().unwrap().clone();
+    assert_eq!(key, "it's \"quoted\"");
+    assert_eq!(key.len(), 13);
+}
+
+#[test]
+fn quoted_key_interior_not_trimmed() {
+    let v = crate::parse("\" a \": 1").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get(" a "), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_segment_in_dotted_path() {
+    let v = crate::parse("a.\"b.c\".d: 1").unwrap();
+    let obj = v.as_object().unwrap();
+    let a = obj.get("a").unwrap().as_object().unwrap();
+    let mid = a.get("b.c").unwrap().as_object().unwrap();
+    assert_eq!(mid.get("d"), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_adjacent_segments_decode() {
+    let v = crate::parse("\"a\".\"b\": 1").unwrap();
+    let obj = v.as_object().unwrap();
+    let a = obj.get("a").unwrap().as_object().unwrap();
+    assert_eq!(a.get("b"), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_key_comma_inside_inline_object() {
+    let v = crate::parse("k: {\"a,b\": 1, c: 2}").unwrap();
+    let k = v.as_object().unwrap().get("k").unwrap().as_object().unwrap();
+    assert_eq!(k.len(), 2);
+    assert_eq!(k.get("a,b"), Some(&Value::Integer("1".into())));
+    assert_eq!(k.get("c"), Some(&Value::Integer("2".into())));
+}
+
+#[test]
+fn quoted_key_brace_inside_inline_object() {
+    let v = crate::parse("k: {\"a}b\": 1, c: 2}").unwrap();
+    let k = v.as_object().unwrap().get("k").unwrap().as_object().unwrap();
+    assert_eq!(k.len(), 2);
+    assert_eq!(k.get("a}b"), Some(&Value::Integer("1".into())));
+    assert_eq!(k.get("c"), Some(&Value::Integer("2".into())));
+}
+
+#[test]
+fn quoted_key_brace_inside_root_inline_object() {
+    let v = crate::parse("{\"a}b\": 1, c: 2}").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.len(), 2);
+    assert_eq!(obj.get("a}b"), Some(&Value::Integer("1".into())));
+    assert_eq!(obj.get("c"), Some(&Value::Integer("2".into())));
+}
+
+#[test]
+fn quoted_key_unterminated_inline_root_is_unterminated_compound() {
+    let err = crate::parse("{\"a: 1}").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::UnterminatedInlineCompound { .. }) => {}
+        other => panic!("expected UnterminatedInlineCompound, got: {}", other),
+    }
+}
+
+#[test]
+fn quoted_key_unterminated_after_established_object() {
+    let err = crate::parse("y: 1\n'unterminated: 1").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::UnterminatedQuotedKey { .. }) => {}
+        other => panic!("expected UnterminatedQuotedKey, got: {}", other),
+    }
+}
+
+#[test]
+fn quoted_key_unterminated_in_root_pair_falls_to_array() {
+    // Unterminated quote swallows the colon, so the root line is
+    // array-item shape (§ 5.0.1 rule 7) and the line is stored verbatim.
+    let v = crate::parse("'tis the season: fa").unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0], Value::String("'tis the season: fa".into()));
+}
+
+#[test]
+fn quoted_root_object_key() {
+    let v = crate::parse("\"port\": 1").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("port"), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_key_unterminated_in_established_object_line() {
+    let err = crate::parse("cfg:\n  a: 1\n  \"unterminated: 1").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::UnterminatedQuotedKey { .. }) => {}
+        other => panic!("expected UnterminatedQuotedKey, got: {}", other),
+    }
+}

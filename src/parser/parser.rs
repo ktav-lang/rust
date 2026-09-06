@@ -8,7 +8,7 @@ use super::classify::classify_value_start;
 use super::collecting::{Collecting, MultilineMode};
 use super::frame::Frame;
 use super::inline;
-use super::inline::find_unescaped_colon;
+use super::inline::{ColonScan, find_unescaped_colon, scan_unescaped_colon};
 use super::insert::insert_value;
 use super::value_start::ValueStart;
 
@@ -254,9 +254,18 @@ impl<'a> Parser<'a> {
         let trimmed_off_in_raw = (trimmed_span.start - line_start) as usize;
 
         // Spec 0.6.0 § 5.3: the pair separator is the first UNescaped `:`.
-        let colon = match find_unescaped_colon(line) {
-            Some(c) => c,
-            None => {
+        // Spec 0.7 § 5.3.3 / § 6.16: a quoted segment that never closes
+        // swallows the separator — that takes precedence over
+        // MissingSeparator.
+        let colon = match scan_unescaped_colon(line) {
+            ColonScan::Found(c) => c,
+            ColonScan::UnterminatedQuote => {
+                return Err(Error::Structured(ErrorKind::UnterminatedQuotedKey {
+                    line: line_num as u32,
+                    span: trimmed_span,
+                }));
+            }
+            ColonScan::Absent => {
                 return Err(Error::Structured(ErrorKind::MissingSeparator {
                     line: line_num as u32,
                     span: trimmed_span,
@@ -730,6 +739,9 @@ fn classify_root_kind_050(
 /// marker).
 fn is_pair_shape(trimmed: &str) -> bool {
     // Spec 0.6.0 § 5.3 — pair separator is the first UNescaped `:`.
+    // `find_unescaped_colon` returns `None` for an unterminated quoted
+    // segment, so a quote-swallowed first line falls through to the
+    // Array root per § 5.0.1 rules 6/7 — intended (spec 0.7 § 5.3.3).
     let Some(colon_idx) = find_unescaped_colon(trimmed) else {
         return false;
     };
