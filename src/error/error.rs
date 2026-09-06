@@ -211,6 +211,12 @@ pub enum ErrorKind {
     /// A `{` or `[` in a value-position is not followed by a matching
     /// `}` / `]` on the same line. Spec § 6.11.
     UnterminatedInlineCompound { line: u32, span: Span },
+    /// A quote character (`"`, `'`, or `` ` ``) opened a key segment but
+    /// no matching unescaped closing delimiter was found before the end
+    /// of the line, on a line dispatched as a pair line inside an
+    /// established Object. Spec 0.7 § 6.16. Takes precedence over
+    /// `MissingSeparator`.
+    UnterminatedQuotedKey { line: u32, span: Span },
     /// A structural defect inside a closed inline compound — leading
     /// comma, double comma, empty array item, missing pair separator.
     /// Spec § 6.12.
@@ -366,6 +372,11 @@ impl Display for ErrorKind {
                 "Line {}: UnterminatedInlineCompound: inline compound not closed on the same line",
                 line
             ),
+            ErrorKind::UnterminatedQuotedKey { line, .. } => write!(
+                f,
+                "Line {}: UnterminatedQuotedKey: quoted key segment not closed on the same line",
+                line
+            ),
             ErrorKind::MalformedInlineCompound { line, detail, .. } => {
                 write!(
                     f,
@@ -464,6 +475,7 @@ impl ErrorKind {
             | ErrorKind::InlineNonEmptyCompound { line, .. }
             | ErrorKind::MissingSeparator { line, .. }
             | ErrorKind::UnterminatedInlineCompound { line, .. }
+            | ErrorKind::UnterminatedQuotedKey { line, .. }
             | ErrorKind::MalformedInlineCompound { line, .. }
             | ErrorKind::BadEscapeSequence { line, .. }
             | ErrorKind::OrphanLineAfterTopLevelInline { line, .. } => Some(*line),
@@ -487,6 +499,7 @@ impl ErrorKind {
             | ErrorKind::InlineNonEmptyCompound { span, .. }
             | ErrorKind::MissingSeparator { span, .. }
             | ErrorKind::UnterminatedInlineCompound { span, .. }
+            | ErrorKind::UnterminatedQuotedKey { span, .. }
             | ErrorKind::MalformedInlineCompound { span, .. }
             | ErrorKind::BadEscapeSequence { span, .. }
             | ErrorKind::OrphanLineAfterTopLevelInline { span, .. }

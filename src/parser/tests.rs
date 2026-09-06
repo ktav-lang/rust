@@ -985,3 +985,106 @@ fn parse_unicode_escape_interior_whitespace_preserved() {
     let cfg = obj.get("cfg").unwrap().as_object().unwrap();
     assert_eq!(cfg.get("v"), Some(&Value::String("A\nB".into())));
 }
+
+// --- validate (spec 0.7 quoted keys, § 5.3.3) --------------------------------
+
+use super::validate::{check_key, KeyValidity};
+use super::inline::{decode_key_segment, process_escapes};
+use crate::error::{Error, ErrorKind};
+
+#[test]
+fn check_key_quoted_segments() {
+    use KeyValidity::{Empty, Invalid, Valid};
+
+    // Bare still works.
+    assert_eq!(check_key("port"), Valid);
+    // Quoted: other quote chars and structural bytes are ordinary content.
+    assert_eq!(check_key("\"a b\""), Valid);
+    assert_eq!(check_key("`it's \"quoted\"`"), Valid);
+    assert_eq!(check_key("\"a,b{c}d[e]:f.g\""), Valid);
+    // Quoted content is never trimmed.
+    assert_eq!(check_key("\" a \""), Valid);
+    assert_eq!(check_key("\" \""), Valid);
+    // Empty quoted content is EmptyKey (§ 6.5), for all three delimiters.
+    assert_eq!(check_key("\"\""), Empty);
+    assert_eq!(check_key("''"), Empty);
+    assert_eq!(check_key("``"), Empty);
+    // Content after the closer (§ 6.4 "nothing may follow the closer").
+    assert_eq!(check_key("\"a\"b"), Invalid);
+    assert_eq!(check_key("\"a\" \"b\""), Invalid);
+    // Unterminated (normally diagnosed earlier as UnterminatedQuotedKey).
+    assert_eq!(check_key("'\"unbalanced"), Invalid);
+    // Bare forbidden control bytes / DEL (spec 0.7 § 4 <key-char>).
+    assert_eq!(check_key("\u{1}a"), Invalid);
+    assert_eq!(check_key("\u{7F}"), Invalid);
+    // VT (0x0B) and FF (0x0C) are ALLOWED (new under 0.7).
+    assert!(is_valid_key("a\u{B}b"));
+    assert!(is_valid_key("a\u{C}b"));
+    // Quoted forbidden control byte.
+    assert_eq!(check_key("\"\u{1}\""), Invalid);
+    // Quoted with escapes — structural bytes via escapes are fine.
+    assert_eq!(check_key(r#""a\.b\u{41}""#), Valid);
+}
+
+#[test]
+fn process_escapes_quote_escapes() {
+    assert_eq!(process_escapes(r#"a"b"#, 1, S).unwrap(), "a\"b");
+    assert_eq!(process_escapes(r"a\'b", 1, S).unwrap(), "a'b");
+    assert_eq!(process_escapes(r"a`b", 1, S).unwrap(), "a`b");
+    // Combined with the pre-existing escape set.
+    assert_eq!(process_escapes(r"a\:\.b", 1, S).unwrap(), "a:.b");
+}
+
+#[test]
+fn decode_key_segment_quoted() {
+    assert_eq!(decode_key_segment("\"a b\"", 1, S).unwrap(), "a b");
+    assert_eq!(decode_key_segment("`it's \"quoted\"`", 1, S).unwrap(), "it's \"quoted\"");
+    // Interior is NOT trimmed (spec 0.7 § 5.3.3).
+    assert_eq!(decode_key_segment("\" a \"", 1, S).unwrap(), " a ");
+    assert_eq!(decode_key_segment(r#""a\:b""#, 1, S).unwrap(), "a:b");
+    assert_eq!(decode_key_segment(r#""a\u0041b""#, 1, S).unwrap(), "aAb");
+}
+
+#[test]
+fn parse_quoted_keys() {
+    // Root-level quoted key.
+    let v = crate::parse("\"a\": 1").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("a"), Some(&Value::Integer("1".into())));
+
+    // A single space as the key — quoted content is never trimmed.
+    let v = crate::parse("\" \": 1").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get(" "), Some(&Value::Integer("1".into())));
+
+    // Empty quoted content → EmptyKey (§ 6.5).
+    let e = crate::parse("\"\": 1").unwrap_err();
+    assert!(matches!(
+        e,
+        Error::Structured(ErrorKind::EmptyKey { .. })
+    ));
+
+    // Content after the closer → InvalidKey (§ 6.4).
+    let e = crate::parse("\"a\"b: 1").unwrap_err();
+    assert!(matches!(
+        e,
+        Error::Structured(ErrorKind::InvalidKey { .. })
+    ));
+
+    // Quotes NOT in first position are ordinary key chars (unchanged).
+    let v = crate::parse("port\": 1").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("port\""),
+        Some(&Value::Integer("1".into()))
+    );
+    let v = crate::parse("a\"b: 1").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("a\"b"),
+        Some(&Value::Integer("1".into()))
+    );
+
+    // Value-side: quote escapes now decode inside inline scalar values.
+    let v = crate::parse("cfg: {v: say \"hi\"}").unwrap();
+    let cfg = v.as_object().unwrap().get("cfg").unwrap().as_object().unwrap();
+    assert_eq!(cfg.get("v"), Some(&Value::String("say \"hi\"".into())));
+}

@@ -12,7 +12,7 @@ use crate::error::{ConflictKind, Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
 
 use super::inline::{decode_key_segment, key_is_single_segment, split_key_path};
-use super::validate::is_valid_key;
+use super::validate::{check_key, KeyValidity};
 
 pub(super) fn insert_value(
     table: &mut ObjectMap,
@@ -32,15 +32,25 @@ pub(super) fn insert_value(
                 span,
             }));
         }
-        // Validate the RAW segment (forbidden bytes must be escaped)
-        // before decoding — `is_valid_key` needs to see which bytes
-        // were escaped, which the decoded form has already erased.
-        if !is_valid_key(trimmed_key) {
-            return Err(Error::Structured(ErrorKind::InvalidKey {
-                line: line_num as u32,
-                key: path.to_string(),
-                span,
-            }));
+        // Validate the RAW segment (forbidden bytes must be escaped,
+        // quoted segments checked against their own class) before
+        // decoding — `check_key` needs to see which bytes were
+        // escaped, which the decoded form has already erased.
+        match check_key(trimmed_key) {
+            KeyValidity::Valid => {}
+            KeyValidity::Empty => {
+                return Err(Error::Structured(ErrorKind::EmptyKey {
+                    line: line_num as u32,
+                    span,
+                }));
+            }
+            KeyValidity::Invalid => {
+                return Err(Error::Structured(ErrorKind::InvalidKey {
+                    line: line_num as u32,
+                    key: path.to_string(),
+                    span,
+                }));
+            }
         }
         let decoded = decode_key_segment(trimmed_key, line_num, span)?;
         return match table.entry(decoded.as_str().into()) {
@@ -94,12 +104,21 @@ fn insert_dotted(
                 span,
             }));
         }
-        if !is_valid_key(trimmed) {
-            return Err(Error::Structured(ErrorKind::InvalidKey {
-                line: line_num as u32,
-                key: full_path.to_string(),
-                span,
-            }));
+        match check_key(trimmed) {
+            KeyValidity::Valid => {}
+            KeyValidity::Empty => {
+                return Err(Error::Structured(ErrorKind::EmptyKey {
+                    line: line_num as u32,
+                    span,
+                }));
+            }
+            KeyValidity::Invalid => {
+                return Err(Error::Structured(ErrorKind::InvalidKey {
+                    line: line_num as u32,
+                    key: full_path.to_string(),
+                    span,
+                }));
+            }
         }
         let decoded = decode_key_segment(trimmed, line_num, span)?;
         let is_leaf = idx + 1 == n;

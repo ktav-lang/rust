@@ -22,7 +22,7 @@ use crate::parser::leading_bom_len;
 use crate::parser::inline::{
     decode_key_segment, find_unescaped_colon, key_is_single_segment, split_key_path,
 };
-use crate::parser::validate::is_valid_key;
+use crate::parser::validate::{check_key, KeyValidity};
 
 use super::event::{Event, EventSink, EventStream};
 
@@ -656,13 +656,23 @@ impl<'a> EventParser<'a> {
         if key_is_single_segment(key) {
             self.close_synthetics_to_real(events);
             // Validate the RAW segment (forbidden bytes must be
-            // escaped) before decoding — see `parser::validate`.
-            if !is_valid_key(key) {
-                return Err(Error::Structured(ErrorKind::InvalidKey {
-                    line: line_num as u32,
-                    key: key.to_string(),
-                    span: key_span,
-                }));
+            // escaped, quoted segments checked against their own
+            // class) before decoding — see `parser::validate`.
+            match check_key(key) {
+                KeyValidity::Valid => {}
+                KeyValidity::Empty => {
+                    return Err(Error::Structured(ErrorKind::EmptyKey {
+                        line: line_num as u32,
+                        span: key_span,
+                    }));
+                }
+                KeyValidity::Invalid => {
+                    return Err(Error::Structured(ErrorKind::InvalidKey {
+                        line: line_num as u32,
+                        key: key.to_string(),
+                        span: key_span,
+                    }));
+                }
             }
             let leaf = self.decode_key_in_arena(key, line_num, key_span)?;
             return Ok(leaf);
@@ -674,21 +684,24 @@ impl<'a> EventParser<'a> {
         debug_assert!(raw_segments.len() >= 2);
         let mut decoded_segments: Vec<&'a str> = Vec::with_capacity(raw_segments.len());
         for seg in &raw_segments {
-            // Empty segment → InvalidKey (`a..b`, leading/trailing `.`).
             let trimmed = seg.trim();
-            if trimmed.is_empty() {
-                return Err(Error::Structured(ErrorKind::InvalidKey {
-                    line: line_num as u32,
-                    key: key.to_string(),
-                    span: key_span,
-                }));
-            }
-            if !is_valid_key(trimmed) {
-                return Err(Error::Structured(ErrorKind::InvalidKey {
-                    line: line_num as u32,
-                    key: key.to_string(),
-                    span: key_span,
-                }));
+            // Empty segment → EmptyKey (`a..b`, leading/trailing `.`;
+            // spec 0.7 § 6.5 names `a..b` explicitly as EmptyKey).
+            match check_key(trimmed) {
+                KeyValidity::Valid => {}
+                KeyValidity::Empty => {
+                    return Err(Error::Structured(ErrorKind::EmptyKey {
+                        line: line_num as u32,
+                        span: key_span,
+                    }));
+                }
+                KeyValidity::Invalid => {
+                    return Err(Error::Structured(ErrorKind::InvalidKey {
+                        line: line_num as u32,
+                        key: key.to_string(),
+                        span: key_span,
+                    }));
+                }
             }
             let decoded = self.decode_key_in_arena(trimmed, line_num, key_span)?;
             decoded_segments.push(decoded);

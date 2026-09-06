@@ -367,12 +367,15 @@ fn parse_float_value(s: &str) -> Option<f64> {
 
 /// Process escape sequences in an inline scalar value.
 ///
-/// Recognised sequences (15, spec 0.7 § 3.7 / § 3.7.1):
-///   `\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`, `\.`, `\:` and
-///   `\uXXXX` (exactly four hex digits, case-insensitive). A `\uXXXX`
-///   in the high-surrogate range must be immediately followed by a low
-///   surrogate `\uXXXX` (combined into a single scalar value); lone
-///   surrogates and malformed `\u` forms are `BadEscapeSequence`.
+/// Recognised sequences (14, spec 0.7 § 3.7 / § 3.7.1):
+///   `\\`, `\,`, `\}`, `\]`, `\{`, `\[`, `\n`, `\r`, `\.`, `\:`,
+///   `\"`, `\'`, `` \` `` and `\uXXXX` (exactly four hex digits,
+///   case-insensitive). A `\uXXXX` in the high-surrogate range must be
+///   immediately followed by a low surrogate `\uXXXX` (combined into a
+///   single scalar value); lone surrogates and malformed `\u` forms are
+///   `BadEscapeSequence`. The three quote escapes exist for the quoted
+///   key form (§ 5.3.3) but are recognised in every context where
+///   escapes are recognised at all (§ 3.7).
 /// Any other `\X` is a `BadEscapeSequence` error.
 pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Result<String, Error> {
     // Fast path: if no backslash, the input is already clean — return a
@@ -407,6 +410,9 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
                 b'r' => out.push('\r'),
                 b'.' => out.push('.'),
                 b':' => out.push(':'),
+                b'"' => out.push('"'),
+                b'\'' => out.push('\''),
+                b'`' => out.push('`'),
                 b'u' => {
                     // `\uXXXX`: exactly four ASCII hex digits (spec 0.7
                     // § 3.7.1). Validate up-front so nothing is consumed
@@ -600,17 +606,57 @@ pub(crate) fn key_is_single_segment(s: &str) -> bool {
     true
 }
 
-/// Decode a single key segment per spec 0.6.0 § 3.7. The segment must
-/// not contain unescaped `.` or `:` (callers are expected to split on
-/// those first). Returns the decoded String on success or
-/// `BadEscapeSequence` on an unknown `\X`. Identical escape table to
-/// [`process_escapes`].
+/// Find the matching unescaped closer for a quoted key segment opened
+/// at `open_idx` (spec 0.7 § 5.3.3). `bytes[open_idx]` must be `"`,
+/// `'`, or `` ` ``. Backslash-escaped bytes are skipped (`\"` does not
+/// close a `"` segment). Returns `None` when no closer exists before
+/// the end of input — the segment then swallows the entire remainder.
+pub(crate) fn quoted_span_end(bytes: &[u8], open_idx: usize) -> Option<usize> {
+    let quote = bytes[open_idx];
+    let mut j = open_idx + 1;
+    while j < bytes.len() {
+        if bytes[j] == b'\\' {
+            j += 2;
+            continue;
+        }
+        if bytes[j] == quote {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Decode a single key segment per spec 0.7 § 3.7 / § 5.3.3. The
+/// segment must not contain unescaped `.` or `:` (callers are expected
+/// to split on those first). A segment whose first byte is `"`, `'`,
+/// or `` ` `` is a `<quoted-segment>` (§ 5.3.3): the outer delimiter
+/// pair is stripped and `process_escapes` is applied to the interior
+/// only, with NO trimming of the interior (quoted content is never
+/// trimmed — `" a "` decodes to the 3-char key ` a `). Callers must
+/// have validated the segment with `validate::check_key` first.
+/// Returns the decoded String on success or `BadEscapeSequence` on an
+/// unknown `\X`. Identical escape table to [`process_escapes`].
 pub(crate) fn decode_key_segment(
     input: &str,
     line_num: usize,
     span: Span,
 ) -> Result<String, Error> {
-    // Fast path: no backslash → input is already final.
+    // Quoted segment (spec 0.7 § 5.3.3): strip the outer delimiter pair,
+    // decode the interior only. Callers must have validated the segment
+    // with `check_key` (properly closed, nothing after the closer).
+    if !input.is_empty() {
+        let first = input.as_bytes()[0];
+        if first == b'"' || first == b'\'' || first == b'`' {
+            debug_assert!(input.len() >= 2 && input.as_bytes()[input.len() - 1] == first);
+            let interior = &input[1..input.len() - 1];
+            if !interior.as_bytes().contains(&b'\\') {
+                return Ok(interior.to_string());
+            }
+            return process_escapes(interior, line_num, span);
+        }
+    }
+    // Bare segment path (unchanged)
     if !input.as_bytes().contains(&b'\\') {
         return Ok(input.to_string());
     }
