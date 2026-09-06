@@ -527,6 +527,123 @@ fn parse_inline_keywords_still_classify() {
     assert_eq!(cfg.get("n"), Some(&Value::Null));
 }
 
+// --- 0.7 § 5.2 rule 14 / § 5.9.8: float domain floor (overflow→String,
+// underflow→±0.0 Float) and zero canonicalisation -------------------------
+
+#[test]
+fn parse_float_positive_overflow_to_string() {
+    let v = crate::parse("v: 1e9999").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("v"), Some(&Value::String("1e9999".into())));
+}
+
+#[test]
+fn parse_float_negative_overflow_to_string() {
+    let v = crate::parse("v: -1e9999").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("v"), Some(&Value::String("-1e9999".into())));
+}
+
+#[test]
+fn parse_float_underflow_to_positive_zero() {
+    let v = crate::parse("v: 1e-9999").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("v"), Some(&Value::Float("0.0".into())));
+}
+
+#[test]
+fn parse_float_negative_underflow_to_negative_zero() {
+    let v = crate::parse("v: -1e-9999").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("v"), Some(&Value::Float("-0.0".into())));
+}
+
+#[test]
+fn parse_float_finite_literals_still_float() {
+    let v = crate::parse("a: 3.14\nb: 1e6\nc: 1e-2").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("a"), Some(&Value::Float("3.14".into())));
+    assert_eq!(obj.get("b"), Some(&Value::Float("1000000.0".into())));
+    assert_eq!(obj.get("c"), Some(&Value::Float("0.01".into())));
+}
+
+#[test]
+fn parse_strict_float_overflow_to_string_same_as_lax() {
+    // Domain exclusion is not a lossy-form mismatch, so strict does not error.
+    let v = crate::parse_strict("v: 1e9999").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("v"), Some(&Value::String("1e9999".into())));
+    let v = crate::parse_strict("v: -1e9999").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("v"), Some(&Value::String("-1e9999".into())));
+}
+
+#[test]
+fn parse_strict_float_underflow_is_lossy_written_form() {
+    // Underflow is an ordinary finite Float, so strict's canonical-form
+    // check applies — distinct from overflow's domain exclusion.
+    match crate::parse_strict("v: 1e-9999") {
+        Err(crate::Error::Structured(crate::ErrorKind::LossyScalar { .. })) => {}
+        other => panic!("expected LossyScalar, got {:?}", other),
+    }
+}
+
+#[test]
+fn parse_inline_float_positive_overflow_to_string() {
+    let v = crate::parse("v: {x: 1e9999}").unwrap();
+    let obj = v.as_object().unwrap();
+    let inner = obj.get("v").unwrap().as_object().unwrap();
+    assert_eq!(inner.get("x"), Some(&Value::String("1e9999".into())));
+}
+
+#[test]
+fn parse_inline_float_negative_overflow_to_string() {
+    let v = crate::parse("v: {x: -1e9999}").unwrap();
+    let obj = v.as_object().unwrap();
+    let inner = obj.get("v").unwrap().as_object().unwrap();
+    assert_eq!(inner.get("x"), Some(&Value::String("-1e9999".into())));
+}
+
+#[test]
+fn parse_inline_float_underflow_to_positive_zero() {
+    let v = crate::parse("v: {x: 1e-9999}").unwrap();
+    let obj = v.as_object().unwrap();
+    let inner = obj.get("v").unwrap().as_object().unwrap();
+    assert_eq!(inner.get("x"), Some(&Value::Float("0.0".into())));
+}
+
+#[test]
+fn parse_inline_float_negative_underflow_to_negative_zero() {
+    let v = crate::parse("v: {x: -1e-9999}").unwrap();
+    let obj = v.as_object().unwrap();
+    let inner = obj.get("v").unwrap().as_object().unwrap();
+    assert_eq!(inner.get("x"), Some(&Value::Float("-0.0".into())));
+}
+
+#[test]
+fn parse_strict_inline_float_overflow_to_string_same_as_lax() {
+    let v = crate::parse_strict("v: {x: 1e9999}").unwrap();
+    let obj = v.as_object().unwrap();
+    let inner = obj.get("v").unwrap().as_object().unwrap();
+    assert_eq!(inner.get("x"), Some(&Value::String("1e9999".into())));
+}
+
+#[test]
+fn parse_float_zero_canonical_roundtrip() {
+    let v = crate::parse("z: 1e-9999\nnz: -1e-9999\n").unwrap();
+    let out = crate::emit_canonical(&v).unwrap();
+    assert_eq!(out, "z: 0.0\nnz: -0.0\n");
+    assert_eq!(crate::parse(&out).unwrap(), v);
+}
+
+#[test]
+fn parse_float_overflow_string_canonical_roundtrip() {
+    let v = crate::parse("v: 1e9999\nw: -1e9999\n").unwrap();
+    let out = crate::emit_canonical(&v).unwrap();
+    assert_eq!(out, "v:: 1e9999\nw:: -1e9999\n");
+    assert_eq!(crate::parse(&out).unwrap(), v);
+}
+
 #[test]
 fn parse_inline_nested_arrays() {
     let v = crate::parse("matrix: [[1, 2], [3, 4], [5, 6]]").unwrap();

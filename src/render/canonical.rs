@@ -547,6 +547,34 @@ mod tests {
         );
     }
 
+    // --- 0.7 § 5.2 rule 14 / § 5.9.8: zero canonicalisation and
+    // domain-floor scale magnitudes ---------------------------------------
+
+    #[test]
+    fn canonical_float_zero_forms_pass_through() {
+        assert_eq!(canonical_float("0.0"), "0.0");
+        assert_eq!(canonical_float("-0.0"), "-0.0");
+    }
+
+    #[test]
+    fn canonical_zero_emits_decimal_with_sign() {
+        let v = obj(vec![("z", float(0.0)), ("nz", float(-0.0))]);
+        assert_eq!(emit_canonical(&v).unwrap(), "z: 0.0\nnz: -0.0\n");
+    }
+
+    #[test]
+    fn canonical_min_positive_scale_magnitudes() {
+        let v = obj(vec![
+            ("k", float(f64::MIN_POSITIVE)),
+            ("mn", float(f64::from_bits(1))),
+            ("mnn", float(-f64::from_bits(1))),
+        ]);
+        assert_eq!(
+            emit_canonical(&v).unwrap(),
+            "k: 2.2250738585072014e-308\nmn: 5e-324\nmnn: -5e-324\n"
+        );
+    }
+
     #[test]
     fn empty_string_pair() {
         let v = obj(vec![("note", s(""))]);

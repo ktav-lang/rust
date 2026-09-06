@@ -304,3 +304,29 @@ fn thin_verbatim_multiline_preserves_trailing_whitespace() {
         ]
     );
 }
+
+#[test]
+fn float_overflow_falls_back_to_string_event() {
+    assert_eq!(
+        collect("v: 1e9999"),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("v".into()),
+            Owned::Str("1e9999".into()),
+            Owned::EndObject,
+        ]
+    );
+}
+
+#[test]
+fn float_negative_underflow_is_negative_zero_event() {
+    assert_eq!(
+        collect("v: -1e-9999"),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("v".into()),
+            Owned::Float("-0.0".into()),
+            Owned::EndObject,
+        ]
+    );
+}
