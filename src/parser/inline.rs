@@ -228,17 +228,26 @@ fn parse_inline_value_raw(
     let first_byte = trimmed.as_bytes()[0];
 
     if first_byte == b'{' {
-        // Check for balanced closing `}`
-        if let Some(close) = find_matching_close(trimmed, b'{', b'}') {
-            if close == trimmed.len() - 1 {
-                // Empty object?
-                let inner = &trimmed[1..trimmed.len() - 1];
-                if inner.trim().is_empty() {
-                    return Ok(Value::Object(ObjectMap::default()));
-                }
-                // Nested inline object
-                return parse_inline_object_inner(trimmed, line_num, span, depth + 1, strict);
+        // Check for balanced closing `}`. `find_matching_close` counts
+        // mid-scalar openers naively; when it finds no match, fall back
+        // to the value-start-aware `scan_inline_closer` (§ 5.8.5) so a
+        // body like `{a: hello{world, b: x}` — the trailing item of
+        // `[{a: hello{world, b: x}]` — is still recognized as closed.
+        let closed = match find_matching_close(trimmed, b'{', b'}') {
+            Some(close) => close == trimmed.len() - 1,
+            None => matches!(
+                scan_inline_closer(trimmed, b'{', b'}', line_num, span),
+                InlineCloserScan::Found(idx) if idx == trimmed.len() - 1
+            ),
+        };
+        if closed {
+            // Empty object?
+            let inner = &trimmed[1..trimmed.len() - 1];
+            if inner.trim().is_empty() {
+                return Ok(Value::Object(ObjectMap::default()));
             }
+            // Nested inline object
+            return parse_inline_object_inner(trimmed, line_num, span, depth + 1, strict);
         }
         // Unterminated
         return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
@@ -248,16 +257,22 @@ fn parse_inline_value_raw(
     }
 
     if first_byte == b'[' {
-        // Check for balanced closing `]`
-        if let Some(close) = find_matching_close(trimmed, b'[', b']') {
-            if close == trimmed.len() - 1 {
-                let inner = &trimmed[1..trimmed.len() - 1];
-                if inner.trim().is_empty() {
-                    return Ok(Value::Array(Vec::new()));
-                }
-                // Nested inline array
-                return parse_inline_array_inner(trimmed, line_num, span, depth + 1, strict);
+        // Check for balanced closing `]` (see the `{` branch for the
+        // value-start-aware fallback).
+        let closed = match find_matching_close(trimmed, b'[', b']') {
+            Some(close) => close == trimmed.len() - 1,
+            None => matches!(
+                scan_inline_closer(trimmed, b'[', b']', line_num, span),
+                InlineCloserScan::Found(idx) if idx == trimmed.len() - 1
+            ),
+        };
+        if closed {
+            let inner = &trimmed[1..trimmed.len() - 1];
+            if inner.trim().is_empty() {
+                return Ok(Value::Array(Vec::new()));
             }
+            // Nested inline array
+            return parse_inline_array_inner(trimmed, line_num, span, depth + 1, strict);
         }
         // Unterminated
         return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
@@ -889,10 +904,13 @@ pub(crate) enum InlineBody {
 /// Split `input` on unescaped `,` at nesting depth 0.
 ///
 /// Unlike a naive brace-counting approach, this correctly handles the
-/// section 5.8.5 "mid-value brace literal" rule: a `{` or `[` that opens a
-/// balanced compound is skipped over entirely. A `{` or `[` that doesn't
-/// have a matching closer is treated as literal (the value parser will
-/// handle it later per the mid-value-brace rule).
+/// section 5.8.5 "mid-value brace literal" rule: only a `{` or `[` that
+/// is the first non-whitespace code point of a VALUE is skipped over as
+/// a nested compound. A mid-scalar `{`/`[` is literal data even when it
+/// happens to balance — it neither nests nor shields the commas inside
+/// it, which still split. A value-start opener without a matching
+/// closer is treated as literal (the value parser will handle it later
+/// per the mid-value-brace rule).
 ///
 /// In [`InlineBody::Object`] mode, quoted key segments (spec 0.7
 /// § 5.3.3) are opaque to comma splitting — `\{"a,b": 1, c: 2\}`
@@ -907,7 +925,7 @@ pub(crate) fn split_top_level<'a>(
 ) -> Result<Vec<&'a str>, Error> {
     let bytes = input.as_bytes();
     if body == InlineBody::Array || !has_quote_bytes(bytes) {
-        return Ok(split_top_level_fast(input));
+        return Ok(split_top_level_fast(input, line_num, span, body));
     }
 
     // Slow path (object body with quote bytes): track key/value and
@@ -917,6 +935,7 @@ pub(crate) fn split_top_level<'a>(
     let mut i = 0;
     let mut in_key = true;
     let mut seg_start = true;
+    let mut value_start = false;
 
     while i < bytes.len() {
         if in_key && seg_start {
@@ -973,19 +992,39 @@ pub(crate) fn split_top_level<'a>(
             b':' if in_key => {
                 // Key/value boundary — quotes after this are content.
                 in_key = false;
+                value_start = true;
+                i += 1;
+            }
+            b'{' | b'[' if value_start => {
+                // Only a value-start opener opens a nested compound; its
+                // commas stay internal (§ 5.8.5). The matching closer is
+                // found with the value-start-aware `scan_inline_closer`
+                // (a mid-scalar opener inside the span must not count);
+                // `find_matching_close` would balance naive byte counts
+                // and skip spans that per § 5.8.5 are NOT one compound.
+                let open = bytes[i];
+                let close = if open == b'{' { b'}' } else { b']' };
+                if let InlineCloserScan::Found(close_pos) =
+                    scan_inline_closer(&input[i..], open, close, line_num, span)
+                {
+                    // Skip over the entire nested compound.
+                    i += close_pos + 1;
+                    value_start = false;
+                    seg_start = false;
+                    continue;
+                }
+                // No closer inside the body — treat as literal byte
+                // (mid-value brace). Escapes are validated later by
+                // `process_escapes`, so a `BadEscape` scan result is
+                // deliberately not propagated here.
+                value_start = false;
                 i += 1;
             }
             b'{' | b'[' => {
-                // Check if this opens a balanced nested compound.
-                let open = bytes[i];
-                let close = if open == b'{' { b'}' } else { b']' };
-                if let Some(close_pos) = find_matching_close(&input[i..], open, close) {
-                    // Skip over the entire nested compound.
-                    i += close_pos + 1;
-                    continue;
-                }
-                // Not balanced — treat as literal byte (mid-value brace).
-                // The value parser will handle it correctly per section 5.8.5.
+                // Mid-scalar opener: a literal byte with no structural
+                // meaning; balancing is irrelevant (R3-F4, § 5.8.5) —
+                // commas inside it still split.
+                value_start = false;
                 i += 1;
             }
             b',' => {
@@ -995,9 +1034,17 @@ pub(crate) fn split_top_level<'a>(
                 // Next pair begins: back to key context.
                 in_key = true;
                 seg_start = true;
+                value_start = false;
                 continue;
             }
-            _ => i += 1,
+            _ => {
+                if bytes[i] != b' ' && bytes[i] != b'\t' {
+                    // Non-whitespace content consumes the value-start
+                    // position (mirrors `scan_inline_closer`'s `_` arm).
+                    value_start = false;
+                }
+                i += 1;
+            }
         }
     }
 
@@ -1007,35 +1054,77 @@ pub(crate) fn split_top_level<'a>(
     Ok(segments)
 }
 
-/// Quote-free fast path for [`split_top_level`] — the pre-0.7 loop,
-/// unchanged.
-fn split_top_level_fast(input: &str) -> Vec<&str> {
+/// Quote-free fast path for [`split_top_level`] (also serving object
+/// bodies without quote bytes). Implements the § 5.8.5 value-start
+/// rule: only a `{`/`[` at the first non-whitespace code point of a
+/// value nests (skipped via the value-start-aware
+/// `scan_inline_closer`); a mid-scalar opener is a literal byte even
+/// when balanced, and a mid-scalar closer byte likewise has no
+/// structural effect — commas after it still split.
+/// In an object body a value starts only after `:`; in an array body
+/// the body start and every position after `,` are value positions
+/// (§ 5.3.3 "Keys only").
+fn split_top_level_fast(input: &str, line_num: usize, span: Span, body: InlineBody) -> Vec<&str> {
     let bytes = input.as_bytes();
+    let object = body == InlineBody::Object;
     let mut segments: Vec<&str> = Vec::new();
     let mut start = 0;
     let mut i = 0;
+    let mut in_key = object;
+    let mut value_start = !object;
 
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => {
+                // Consumed atomically (mirrors `scan_inline_closer`):
+                // the escaped bracket byte is never seen here.
                 i += 2;
                 continue;
             }
-            b'{' | b'[' => {
+            b'{' | b'[' if value_start => {
                 let open = bytes[i];
                 let close = if open == b'{' { b'}' } else { b']' };
-                if let Some(close_pos) = find_matching_close(&input[i..], open, close) {
+                if let InlineCloserScan::Found(close_pos) =
+                    scan_inline_closer(&input[i..], open, close, line_num, span)
+                {
                     i += close_pos + 1;
+                    value_start = false;
                     continue;
                 }
+                // Not closed inside the body — literal byte (mid-value
+                // brace). Escapes are validated later by
+                // `process_escapes`, so a `BadEscape` scan result is
+                // deliberately not propagated here.
+                value_start = false;
+                i += 1;
+                continue;
             }
+            b'{' | b'[' => {
+                // Mid-scalar opener: a literal byte with no structural
+                // meaning; balancing is irrelevant (R3-F4, § 5.8.5) —
+                // commas inside it still split.
+                value_start = false;
+            }
+            b':' if in_key => {
+                in_key = false;
+                value_start = true;
+            }
+            // Literal `}`/`]` closers fall through to `_`: they have
+            // no comma-shielding effect (§ 5.8.5 shields commas only
+            // inside value-start compounds), matching the slow path.
             b',' => {
                 segments.push(&input[start..i]);
                 start = i + 1;
                 i += 1;
+                in_key = object;
+                value_start = !object;
                 continue;
             }
-            _ => {}
+            _ => {
+                if bytes[i] != b' ' && bytes[i] != b'\t' {
+                    value_start = false;
+                }
+            }
         }
         i += 1;
     }
@@ -1464,6 +1553,9 @@ pub(crate) fn scan_inline_closer(
                     value_start = true;
                 }
                 b'{' | b'[' if value_start && !raw => {
+                    // Only a value-position opener nests (§ 5.8.5); a
+                    // non-value-start (or raw-mode) opener is a literal
+                    // byte that falls through to `_`.
                     depth += 1;
                     // After an array's `[` the next position is still a
                     // value position (its first item, § 5.8.5); after a
@@ -1473,29 +1565,7 @@ pub(crate) fn scan_inline_closer(
                         in_key = true;
                     }
                 }
-                b'{' | b'[' => {
-                    // § 5.8.5: only a value-position opener nests. Any
-                    // other `{`/`[` is literal content — skipped
-                    // wholesale when it forms a balanced compound that
-                    // ends BEFORE the body's own closer (mirroring
-                    // `split_top_level`, which sees the outer `{}`
-                    // stripped); a blob ending at the last byte would
-                    // swallow the body's own close, so it stays literal
-                    // text and the final closer is decided structurally.
-                    let blob_close = if b == b'{' { b'}' } else { b']' };
-                    if let Some(close_pos) = find_matching_close(&input[i..], b, blob_close)
-                        .filter(|&cp| i + cp < bytes.len() - 1)
-                    {
-                        i += close_pos + 1;
-                        prev = bytes.get(i - 1).copied().unwrap_or(open);
-                    } else {
-                        prev = b;
-                        i += 1;
-                    }
-                    value_start = false;
-                    continue;
-                }
-                b'}' | b']' => {
+                b'}' | b']' if !raw || b == close => {
                     // Both closer kinds decrement the shared depth: a
                     // nested compound of the OTHER delimiter type still
                     // closes (an array item may be an object and vice
@@ -1609,6 +1679,9 @@ pub(crate) fn scan_inline_closer(
                 value_start = true;
             }
             b'{' | b'[' if value_start && !raw => {
+                // Only a value-position opener nests (§ 5.8.5); a
+                // non-value-start (or raw-mode) opener is a literal
+                // byte that falls through to `_`.
                 depth += 1;
                 // After an array's `[` the next position is still a value
                 // position (its first item); after a nested `{` comes a
@@ -1619,23 +1692,7 @@ pub(crate) fn scan_inline_closer(
                 in_key = b == b'{';
                 seg_start = b == b'{';
             }
-            b'{' | b'[' => {
-                // § 5.8.5 mid-value / raw-segment opener — see fast path.
-                let blob_close = if b == b'{' { b'}' } else { b']' };
-                if let Some(close_pos) = find_matching_close(&input[i..], b, blob_close)
-                    .filter(|&cp| i + cp < bytes.len() - 1)
-                {
-                    i += close_pos + 1;
-                    prev = bytes.get(i - 1).copied().unwrap_or(open);
-                } else {
-                    prev = b;
-                    i += 1;
-                }
-                value_start = false;
-                seg_start = false;
-                continue;
-            }
-            b'}' | b']' => {
+            b'}' | b']' if !raw || b == close => {
                 // Both closer kinds decrement (see fast path).
                 depth -= 1;
                 if depth == 0 {

@@ -1643,3 +1643,87 @@ fn r3f2_split_top_level_array_body_quoted_key_object() {
         vec!["{\"x]y\": 1}", "2"]
     );
 }
+
+// --- R3-F4: mid-scalar braces have no structural meaning (spec 0.7 § 5.8.5) --
+
+#[test]
+fn r3f4_split_top_level_midvalue_balanced_brace_splits_at_inner_comma() {
+    use super::inline::{split_top_level, InlineBody};
+    // R3-F4: a balanced `{...}` mid-scalar must NOT be skipped wholesale;
+    // the comma inside it is a real top-level separator (§ 5.8.5), and
+    // the comma after the mid-scalar `}` also splits (no comma-shielding).
+    assert_eq!(
+        split_top_level("a: x{y,z}, b: 2", 1, S, InlineBody::Object).unwrap(),
+        vec!["a: x{y", "z}", " b: 2"]
+    );
+}
+
+#[test]
+fn r3f4_split_top_level_midvalue_brace_quote_aware_slow_path() {
+    use super::inline::{split_top_level, InlineBody};
+    // R3-F4: same rule on the quote-aware slow path.
+    assert_eq!(
+        split_top_level("k: \"v\", a: x{y,z}, b: 2", 1, S, InlineBody::Object).unwrap(),
+        vec!["k: \"v\"", " a: x{y", "z}", " b: 2"]
+    );
+}
+
+#[test]
+fn r3f4_split_top_level_array_body_midvalue_brace_splits_at_inner_comma() {
+    use super::inline::{split_top_level, InlineBody};
+    // R3-F4: array bodies share the fast splitter and the rule.
+    assert_eq!(
+        split_top_level("x{y,z}, 2", 1, S, InlineBody::Array).unwrap(),
+        vec!["x{y", "z}", " 2"]
+    );
+}
+
+#[test]
+fn r3f4_split_top_level_genuine_value_start_compounds_guard() {
+    use super::inline::{split_top_level, InlineBody};
+    // R3-F4 guards: a compound that IS the first code point of a value
+    // keeps its structural meaning — no split inside it.
+    assert_eq!(
+        split_top_level("{a: 1}, 2", 1, S, InlineBody::Array).unwrap(),
+        vec!["{a: 1}", " 2"]
+    );
+    assert_eq!(
+        split_top_level("a: {y: 1}, b: 2", 1, S, InlineBody::Object).unwrap(),
+        vec!["a: {y: 1}", " b: 2"]
+    );
+}
+
+#[test]
+fn r3f4_scan_inline_closer_midvalue_balanced_brace_is_body_closer() {
+    use super::inline::{scan_inline_closer, InlineCloserScan};
+    // R3-F4: the `}` after `z` (the mid-scalar close) is the body's
+    // closer — the scan must not treat the balanced span as opaque.
+    assert!(matches!(
+        scan_inline_closer("{a: x{y,z}, b: 2}", b'{', b'}', 1, S),
+        InlineCloserScan::Found(9)
+    ));
+}
+
+#[test]
+fn r3f4_scan_inline_closer_crossed_bracket_not_found() {
+    use super::inline::{scan_inline_closer, InlineCloserScan};
+    // R3-F4: the crossed `]` mid-scalar is not a matching `}` closer.
+    assert!(matches!(
+        scan_inline_closer("{a: x[y,z], b: 2}", b'{', b'}', 1, S),
+        InlineCloserScan::NotFound
+    ));
+}
+
+#[test]
+fn r3f4_scan_inline_closer_genuine_compounds_guard() {
+    use super::inline::{scan_inline_closer, InlineCloserScan};
+    // R3-F4 guards: value-start compounds still find their real closer.
+    assert!(matches!(
+        scan_inline_closer("{a: {y: 1}, b: 2}", b'{', b'}', 1, S),
+        InlineCloserScan::Found(16)
+    ));
+    assert!(matches!(
+        scan_inline_closer("[{a: 1}, 2]", b'[', b']', 1, S),
+        InlineCloserScan::Found(10)
+    ));
+}
