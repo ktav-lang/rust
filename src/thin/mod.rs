@@ -40,7 +40,10 @@ use crate::thin::event::EventStream;
 /// first appearance so the one-pass serde `MapAccess` sees a single
 /// object per key path. Reopen-free documents take the zero-copy fast
 /// path: the raw stream is returned untouched (this is the `from_str`
-/// hot route).
+/// hot route). The trigger is document-global: any reopen count above
+/// zero — even one in a branch unrelated to the rest of the document —
+/// routes the whole stream through the full rebuild in the `merge`
+/// module; the fast path is all-or-nothing.
 pub(crate) fn parse_events_merged<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStream<'a>> {
     let (stream, reopens) = parse_events_raw(text, bump)?;
     if reopens == 0 {

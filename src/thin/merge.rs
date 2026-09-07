@@ -18,12 +18,50 @@
 //! reopens).
 //!
 //! The rebuild uses an explicit stack of bump-allocated buffers (no
-//! recursion — documents may nest arbitrarily deep) and is O(n).
+//! recursion — documents may nest arbitrarily deep).
+//!
+//! Cost model: one pass over the stream. Per buffer, child-key lookup
+//! is a plain linear scan while the buffer holds at most `LINEAR_MAX`
+//! keys (the common case — no index is allocated), and an
+//! arena-allocated open-addressing hash index (FxHash, linear
+//! probing) above that, so lookups are expected O(1) and the whole
+//! pass is expected O(E) over the E stream events plus key hashing.
+//! FxHash is fast and deterministic but not hash-flood-resistant (the
+//! same trade-off the crate already makes for its object maps); a
+//! colliding worst case degrades to the linear scan this pass has
+//! always done — never worse. One caveat, stated plainly: the reopen
+//! trigger is document-global, so a single reopen anywhere makes
+//! `parse_events_merged` rebuild the ENTIRE stream here, branches
+//! with no reopens included; a more selective rebuild is out of
+//! scope.
 
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
 
+use rustc_hash::FxHasher;
+
 use super::event::{Event, EventStream};
+
+#[cfg(test)]
+mod perf {
+    use std::cell::Cell;
+
+    thread_local! {
+        static KEY_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub fn record() {
+        KEY_COMPARISONS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub fn get() -> usize {
+        KEY_COMPARISONS.with(Cell::get)
+    }
+
+    pub fn reset() {
+        KEY_COMPARISONS.with(|c| c.set(0));
+    }
+}
 
 /// One flattened item in a rebuild buffer: either a leaf event, or a
 /// nested compound whose contents live in buffer `buf` (`open` is the
@@ -36,10 +74,127 @@ enum Item<'a> {
 
 /// A rebuild buffer. `seen` maps each child key to the buffer of its
 /// FIRST object block, so a later `Key(k)` + `BeginObject` with the same
-/// key is detected as a § 5.3.2 reopen and merged into that buffer.
+/// key is detected as a § 5.3.2 reopen and merged into that
+/// buffer. `seen` stays the order-carrying source of truth
+/// (first-appearance order); `index` is a lazily built open-addressing
+/// index over it, `None` while the buffer is small.
 struct Buf<'a> {
     items: BumpVec<'a, Item<'a>>,
     seen: BumpVec<'a, (&'a str, usize)>,
+    index: Option<BumpVec<'a, SeenSlot>>,
+}
+
+/// Buffers at or below this many keyed children never build the hash
+/// index: the linear scan over `seen` (whose preallocation is exactly
+/// 8 slots) is cheaper than hashing, the worst case is a bounded 28
+/// comparisons for all misses, and small buffers keep exactly the
+/// pre-index behavior.
+const LINEAR_MAX: usize = 8;
+
+/// Sentinel `pos` of an empty index slot. Kept on `pos` (not `h`) so a
+/// real entry whose hash happens to be 0 is still distinguishable.
+const VACANT: usize = usize::MAX;
+
+const INDEX_MIN_SLOTS: usize = 16;
+
+/// One slot of the open-addressing index over `seen`: `pos` is an
+/// offset into `Buf::seen`, `h` the cached FxHash of that key (reused
+/// on rehash, so growing never re-hashes keys).
+struct SeenSlot {
+    h: u32,
+    pos: usize,
+}
+
+fn key_hash(k: &str) -> u32 {
+    use std::hash::{Hash, Hasher};
+
+    let mut h = FxHasher::default();
+    k.hash(&mut h);
+    h.finish() as u32
+}
+
+impl<'a> Buf<'a> {
+    /// Buffer of `k`'s first object block, if `k` was already seen in
+    /// this buffer. Linear scan below `LINEAR_MAX`, hash probe above.
+    fn seen_find(&self, k: &str) -> Option<usize> {
+        match self.index.as_ref() {
+            None => self
+                .seen
+                .iter()
+                .find(|(key, _)| key_eq(key, k))
+                .map(|(_, idx)| *idx),
+            Some(table) => {
+                let mask = table.len() - 1;
+                let h = key_hash(k);
+                let mut i = (h as usize) & mask;
+                loop {
+                    let slot = &table[i];
+                    if slot.pos == VACANT {
+                        return None;
+                    }
+                    if slot.h == h && key_eq(self.seen[slot.pos].0, k) {
+                        return Some(self.seen[slot.pos].1);
+                    }
+                    i = (i + 1) & mask;
+                }
+            }
+        }
+    }
+
+    /// Record a fresh (never-seen-here) child key. Builds the index
+    /// lazily the first time `seen` outgrows `LINEAR_MAX`.
+    fn seen_insert(&mut self, bump: &'a Bump, k: &'a str, target: usize) {
+        self.seen.push((k, target));
+        match self.index.as_mut() {
+            Some(table) => {
+                if self.seen.len() * 4 > table.len() * 3 {
+                    Self::index_grow(table, bump);
+                }
+                Self::index_place(table, key_hash(k), self.seen.len() - 1);
+            }
+            None => {
+                if self.seen.len() > LINEAR_MAX {
+                    let mut table = BumpVec::with_capacity_in(INDEX_MIN_SLOTS, bump);
+                    for _ in 0..INDEX_MIN_SLOTS {
+                        table.push(SeenSlot { h: 0, pos: VACANT });
+                    }
+                    for pos in 0..self.seen.len() {
+                        Self::index_place(&mut table, key_hash(self.seen[pos].0), pos);
+                    }
+                    self.index = Some(table);
+                }
+            }
+        }
+    }
+
+    /// Place `(h, pos)` at the first vacant slot of its probe sequence.
+    /// Always terminates: `seen_insert` keeps load at or under 3/4, so
+    /// a vacant slot always exists.
+    fn index_place(table: &mut BumpVec<'_, SeenSlot>, h: u32, pos: usize) {
+        let mask = table.len() - 1;
+        let mut i = (h as usize) & mask;
+        while table[i].pos != VACANT {
+            i = (i + 1) & mask;
+        }
+        table[i] = SeenSlot { h, pos };
+    }
+
+    /// Double the table, re-probing existing slots with their cached
+    /// hashes (no re-hashing of keys). The old table's bump memory is
+    /// not reclaimed — standard bumpalo growth, bounded at 2x the
+    /// final table.
+    fn index_grow(table: &mut BumpVec<'a, SeenSlot>, bump: &'a Bump) {
+        let mut fresh = BumpVec::with_capacity_in(table.len() * 2, bump);
+        for _ in 0..table.len() * 2 {
+            fresh.push(SeenSlot { h: 0, pos: VACANT });
+        }
+        for slot in table.iter() {
+            if slot.pos != VACANT {
+                Self::index_place(&mut fresh, slot.h, slot.pos);
+            }
+        }
+        *table = fresh;
+    }
 }
 
 /// Flatten work item: append `Ev` to the output, or splice in buffer
@@ -73,6 +228,7 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
     let mut bufs: Vec<Buf<'a>> = vec![Buf {
         items: BumpVec::with_capacity_in(src.len(), bump),
         seen: BumpVec::with_capacity_in(8, bump),
+        index: None,
     }];
     // Index 0 is the document root, pre-created above. `root_open`
     // records its kind (implicit or explicit § 5.0.1 root) so the
@@ -128,7 +284,7 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
                     }
                     Some(open @ Event::BeginObject) => {
                         let top = stack_top(&stack);
-                        match find_seen(&bufs[top].seen, k) {
+                        match bufs[top].seen_find(k) {
                             Some(target) => {
                                 // § 5.3.2 reopen: the persistent path
                                 // table in the parser guarantees a seen
@@ -144,7 +300,7 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
                             None => {
                                 let idx = bufs.len();
                                 bufs.push(new_buf(bump, src.len()));
-                                bufs[top].seen.push((k, idx));
+                                bufs[top].seen_insert(bump, k, idx);
                                 bufs[top].items.push(Item::Ev(Event::Key(k)));
                                 bufs[top].items.push(Item::Obj { buf: idx, open });
                                 stack.push(idx);
@@ -208,6 +364,7 @@ fn new_buf<'a>(bump: &'a Bump, hint: usize) -> Buf<'a> {
     Buf {
         items: BumpVec::with_capacity_in(hint.min(64), bump),
         seen: BumpVec::with_capacity_in(8, bump),
+        index: None,
     }
 }
 
@@ -218,9 +375,13 @@ fn stack_top(stack: &[usize]) -> usize {
         .expect("stream is balanced; root frame always open")
 }
 
+/// One `&str` equality between two child keys. Counts comparisons in
+/// test builds so tests can assert lookup-cost growth deterministically.
 #[inline]
-fn find_seen(seen: &[(&str, usize)], k: &str) -> Option<usize> {
-    seen.iter().find(|(key, _)| *key == k).map(|(_, idx)| *idx)
+fn key_eq(a: &str, b: &str) -> bool {
+    #[cfg(test)]
+    perf::record();
+    a == b
 }
 
 /// Push `buf`'s items onto the work stack in reverse so they flatten in
@@ -242,6 +403,131 @@ fn push_buf_items<'a>(work: &mut Vec<Work<'a>>, b: &Buf<'a>) {
 mod tests {
     use super::*;
     use crate::thin::event_parser::parse_events;
+
+    /// Post-fix oracle for the key-comparison counter. K distinct
+    /// Object-valued siblings plus one reopen: K = 8 never builds the
+    /// index, so its cost is EXACTLY the pre-fix linear-mode cost (29);
+    /// above `LINEAR_MAX` the index keeps the count linear in K — the
+    /// pre-fix counts were quadratic (121 / 497 / 2017 for K = 16 / 32 /
+    /// 64). Only str comparisons count; hashing and probing over
+    /// occupied-with-different-hash or vacant slots do not.
+    #[test]
+    fn key_comparison_counts_stay_linear() {
+        use std::fmt::Write as _;
+
+        let mut prev = None;
+        for k in [8_usize, 16, 32, 64] {
+            let mut text = String::new();
+            for i in 0..k {
+                let _ = writeln!(text, "a{i}.x: 1");
+            }
+            text.push_str("a0.y: 2\n");
+
+            let bump = Bump::new();
+            let (stream, _) = parse_events(&text, &bump).unwrap();
+            perf::reset();
+            let _ = merge_reopened(&stream, &bump);
+            let count = perf::get();
+            eprintln!("K = {k}: {count} key comparisons");
+            if k == 8 {
+                assert_eq!(count, 29, "K = 8 must keep the exact linear-mode cost");
+            } else {
+                assert!(
+                    count <= 4 * k + 16,
+                    "K = {k}: {count} comparisons exceed the linear bound"
+                );
+            }
+            if let Some(p) = prev {
+                assert!(
+                    count < 3 * p,
+                    "K = {k}: {count} grows super-linearly vs {p}"
+                );
+            }
+            prev = Some(count);
+        }
+    }
+
+    fn json_of(text: &str) -> String {
+        let v: serde_json::Value = crate::from_str(text).unwrap();
+        serde_json::to_string(&v).unwrap()
+    }
+
+    #[test]
+    fn value_representative_three_siblings_one_reopen() {
+        assert_eq!(
+            json_of("a0.x: 1\na1.x: 1\na2.x: 1\na0.y: 2\n"),
+            r#"{"a0":{"x":1,"y":2},"a1":{"x":1},"a2":{"x":1}}"#
+        );
+    }
+
+    #[test]
+    fn value_twelve_siblings_reopens_crossing_the_index_threshold() {
+        let mut text = String::new();
+        let mut want = String::from("{");
+        for i in 0..12 {
+            let _ = std::fmt::Write::write_fmt(&mut text, format_args!("a{i}.x: 1\n"));
+            let _ = std::fmt::Write::write_fmt(&mut want, format_args!("\"a{i}\":{{\"x\":1"));
+            if i == 3 {
+                want.push_str(",\"y\":2");
+            }
+            if i == 9 {
+                want.push_str(",\"z\":3");
+            }
+            want.push('}');
+            if i < 11 {
+                want.push(',');
+            }
+        }
+        text.push_str("a3.y: 2\na9.z: 3\n");
+        want.push('}');
+        assert_eq!(json_of(&text), want);
+    }
+
+    #[test]
+    fn value_reopen_inside_nested_object() {
+        assert_eq!(
+            json_of("o: {\na.x: 1\np: 2\na.y: 3\n}\n"),
+            r#"{"o":{"a":{"x":1,"y":3},"p":2}}"#
+        );
+    }
+
+    #[test]
+    fn value_anonymous_array_items_with_reopen() {
+        assert_eq!(
+            json_of("a.x: 1\nitems: [[2], {b: 3}]\na.y: 4\n"),
+            r#"{"a":{"x":1,"y":4},"items":[[2],{"b":3}]}"#
+        );
+    }
+
+    #[test]
+    fn event_indexed_merge_twelve_siblings_two_reopens() {
+        let mut text = String::new();
+        for i in 0..12 {
+            text.push_str(&format!("a{i}.x: 1\n"));
+        }
+        text.push_str("a3.y: 2\na9.z: 3\n");
+
+        let bump = Bump::new();
+        let mut want: Vec<Event> = vec![BeginObject];
+        for i in 0..12 {
+            let key: &'static str = Box::leak(format!("a{i}").into_boxed_str());
+            want.push(Key(key));
+            want.push(BeginObject);
+            want.push(Key("x"));
+            want.push(Integer("1"));
+            if i == 3 {
+                want.push(Key("y"));
+                want.push(Integer("2"));
+            }
+            if i == 9 {
+                want.push(Key("z"));
+                want.push(Integer("3"));
+            }
+            want.push(EndObject);
+        }
+        want.push(EndObject);
+        assert_eq!(merged(&text, &bump), want);
+    }
 
     fn raw<'a>(text: &'a str, bump: &'a Bump) -> Vec<Event<'a>> {
         let (stream, _) = parse_events(text, bump).unwrap();
