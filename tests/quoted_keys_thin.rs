@@ -39,8 +39,10 @@ fn thin_unterminated_quoted_key_inline_value() {
     let err = parse_events("y: {\"a: 1}\n", |_| {}).unwrap_err();
     match err {
         Error::Structured(ErrorKind::UnterminatedInlineCompound { .. }) => {}
-        Error::Structured(kind @ (ErrorKind::MalformedInlineCompound { .. }
-        | ErrorKind::UnterminatedQuotedKey { .. })) => {
+        Error::Structured(
+            kind @ (ErrorKind::MalformedInlineCompound { .. }
+            | ErrorKind::UnterminatedQuotedKey { .. }),
+        ) => {
             panic!("expected UnterminatedInlineCompound, got {kind:?}")
         }
         other => panic!("expected UnterminatedInlineCompound, got {other:?}"),

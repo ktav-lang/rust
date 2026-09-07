@@ -23,10 +23,9 @@ fn expect_key(src: &str, expected: &str) {
 fn expect_err_kind(src: &str, matcher: impl Fn(&ErrorKind) -> bool, what: &str) {
     match parse(src) {
         Ok(v) => panic!("{src:?}: expected {what}, got Ok({v:?})"),
-        Err(Error::Structured(kind)) => assert!(
-            matcher(&kind),
-            "{src:?}: expected {what}, got {kind:?}",
-        ),
+        Err(Error::Structured(kind)) => {
+            assert!(matcher(&kind), "{src:?}: expected {what}, got {kind:?}",)
+        }
         Err(other) => panic!("{src:?}: expected Structured error, got {other:?}"),
     }
 }
@@ -55,14 +54,18 @@ fn quoted_key_interior_whitespace_preserved() {
     let key = " a ";
     expect_key("\" a \": 1\n", key);
     let value = parse("\" a \": 1\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     assert_eq!(obj.keys().next().unwrap().chars().count(), 3);
 }
 
 #[test]
 fn quoted_key_with_colon() {
     let value = parse("\"cache:redis\": enabled\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     let got = obj.get("cache:redis");
     assert_eq!(got, Some(&Value::String("enabled".into())));
 }
@@ -75,15 +78,22 @@ fn quoted_key_with_dots_and_brackets() {
 #[test]
 fn quoted_key_single_delim_holds_other_quotes() {
     let value = parse("'say \"hi\": now': ok\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
-    assert_eq!(obj.get("say \"hi\": now"), Some(&Value::String("ok".into())));
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
+    assert_eq!(
+        obj.get("say \"hi\": now"),
+        Some(&Value::String("ok".into()))
+    );
 }
 
 #[test]
 fn quoted_key_backtick_holds_both_quotes() {
     expect_key("`it's \"quoted\"`: 1\n", "it's \"quoted\"");
     let value = parse("`it's \"quoted\"`: 1\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     assert_eq!(obj.keys().next().unwrap().chars().count(), 13);
 }
 
@@ -119,8 +129,11 @@ fn escaped_single_quote_inside_single_quoted_key() {
 
 #[test]
 fn escaped_backtick_inside_backtick_key() {
-    expect_key(r#"`\`a\``: 1
-"#, "`a`");
+    expect_key(
+        r#"`\`a\``: 1
+"#,
+        "`a`",
+    );
 }
 
 #[test]
@@ -145,7 +158,9 @@ fn mid_segment_quotes_stay_bare() {
     expect_key("don't: 1\n", "don't");
     expect_key("a\"b: 1\n", "a\"b");
     let value = parse("port\": 1\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     let key = obj.keys().next().unwrap().clone();
     assert_eq!(key, "port\"");
     assert_eq!(key.chars().count(), 5);
@@ -181,7 +196,9 @@ fn content_after_closer_is_invalid() {
 #[test]
 fn adjacent_quoted_segments_form_path() {
     let value = parse("\"a\".\"b\": 1\n").unwrap();
-    let Value::Object(outer) = value else { panic!("expected Object") };
+    let Value::Object(outer) = value else {
+        panic!("expected Object")
+    };
     let Some(Value::Object(inner)) = outer.get("a") else {
         panic!("expected nested Object at `a`, got {:?}", outer.get("a"));
     };
@@ -195,17 +212,27 @@ fn adjacent_quoted_segments_form_path() {
 #[test]
 fn quoted_segment_inside_dotted_path() {
     let value = parse("a.\"b.c\".d: 1\n").unwrap();
-    let Value::Object(a) = value else { panic!("expected Object") };
-    let Some(Value::Object(bc)) = a.get("a") else { panic!("expected `a`") };
-    let Some(Value::Object(d)) = bc.get("b.c") else { panic!("expected `b.c`, got {:?}", bc.get("b.c")) };
+    let Value::Object(a) = value else {
+        panic!("expected Object")
+    };
+    let Some(Value::Object(bc)) = a.get("a") else {
+        panic!("expected `a`")
+    };
+    let Some(Value::Object(d)) = bc.get("b.c") else {
+        panic!("expected `b.c`, got {:?}", bc.get("b.c"))
+    };
     assert_eq!(d.get("d"), Some(&Value::Integer("1".into())));
 }
 
 #[test]
 fn dotted_whitespace_around_quoted_segment() {
     let value = parse("a. \"b\" : 1\n").unwrap();
-    let Value::Object(a) = value else { panic!("expected Object") };
-    let Some(Value::Object(b)) = a.get("a") else { panic!("expected `a`") };
+    let Value::Object(a) = value else {
+        panic!("expected Object")
+    };
+    let Some(Value::Object(b)) = a.get("a") else {
+        panic!("expected `a`")
+    };
     assert_eq!(b.get("b"), Some(&Value::Integer("1".into())));
 }
 
@@ -337,7 +364,9 @@ fn quoted_and_escaped_keys_collide() {
 #[test]
 fn quoted_key_brace_inside_inline_object() {
     let value = parse("{\"a}b\": 1, c: 2}\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     assert_eq!(obj.len(), 2);
     assert_eq!(obj.get("a}b"), Some(&Value::Integer("1".into())));
     assert_eq!(obj.get("c"), Some(&Value::Integer("2".into())));
@@ -346,7 +375,9 @@ fn quoted_key_brace_inside_inline_object() {
 #[test]
 fn quoted_key_comma_inside_inline_object() {
     let value = parse("{\"a,b\": 1, c: 2}\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     assert_eq!(obj.len(), 2);
     assert_eq!(obj.get("a,b"), Some(&Value::Integer("1".into())));
     assert_eq!(obj.get("c"), Some(&Value::Integer("2".into())));
@@ -355,7 +386,9 @@ fn quoted_key_comma_inside_inline_object() {
 #[test]
 fn root_inline_object_with_quoted_keys() {
     let value = parse("{\"a}b\": 1, c: 2}\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object root") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object root")
+    };
     assert_eq!(obj.len(), 2);
     assert_eq!(obj.get("a}b"), Some(&Value::Integer("1".into())));
     assert_eq!(obj.get("c"), Some(&Value::Integer("2".into())));
@@ -368,17 +401,25 @@ fn root_inline_object_with_quoted_keys() {
 #[test]
 fn value_position_quotes_are_ordinary_content() {
     let value = parse("a: \"b\"\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     assert_eq!(obj.get("a"), Some(&Value::String("\"b\"".into())));
-    let Some(Value::String(s)) = obj.get("a") else { panic!("expected String") };
+    let Some(Value::String(s)) = obj.get("a") else {
+        panic!("expected String")
+    };
     assert_eq!(s.chars().count(), 3);
 }
 
 #[test]
 fn quote_escapes_in_inline_value_force_string() {
     let value = parse("cfg: {v: say \\\"hi\\\"}\nw: \\\"x\\\"\n").unwrap();
-    let Value::Object(root) = value else { panic!("expected Object") };
-    let Some(Value::Object(cfg)) = root.get("cfg") else { panic!("expected `cfg` object") };
+    let Value::Object(root) = value else {
+        panic!("expected Object")
+    };
+    let Some(Value::Object(cfg)) = root.get("cfg") else {
+        panic!("expected `cfg` object")
+    };
     assert_eq!(cfg.get("v"), Some(&Value::String("say \"hi\"".into())));
     // Plain pair values are NOT an escape-processing context (§ 3.7's
     // exclusion list: "the body of a pair ... that is the whole content
@@ -393,7 +434,9 @@ fn quote_escape_forces_string_classification() {
     // and since a plain pair value is not an escape-processing context
     // (§ 3.7 exclusion list), the body is stored as written.
     let value = parse("k: \\\"null\\\"\n").unwrap();
-    let Value::Object(obj) = value else { panic!("expected Object") };
+    let Value::Object(obj) = value else {
+        panic!("expected Object")
+    };
     assert_eq!(obj.get("k"), Some(&Value::String("\\\"null\\\"".into())));
 }
 
@@ -408,8 +451,12 @@ fn bare_key_and_escapes_unchanged() {
     expect_key("a\\:b: 1\n", "a:b");
     expect_key("a\\\\b: 1\n", "a\\b");
     let value = parse("x.y\\.z: 1\n").unwrap();
-    let Value::Object(x) = value else { panic!("expected Object") };
-    let Some(Value::Object(y)) = x.get("x") else { panic!("expected `x`") };
+    let Value::Object(x) = value else {
+        panic!("expected Object")
+    };
+    let Some(Value::Object(y)) = x.get("x") else {
+        panic!("expected `x`")
+    };
     assert_eq!(y.get("y.z"), Some(&Value::Integer("1".into())));
 }
 
@@ -432,9 +479,15 @@ fn array_items_unaffected() {
 #[test]
 fn quoted_key_brace_triple_nested() {
     let value = parse("v: {a: {b: {\"c}d\": 1}}}\n").unwrap();
-    let Value::Object(v) = value else { panic!("expected Object") };
-    let Some(Value::Object(a)) = v.get("v") else { panic!("expected `v`") };
-    let Some(Value::Object(b)) = a.get("a") else { panic!("expected `a`") };
+    let Value::Object(v) = value else {
+        panic!("expected Object")
+    };
+    let Some(Value::Object(a)) = v.get("v") else {
+        panic!("expected `v`")
+    };
+    let Some(Value::Object(b)) = a.get("a") else {
+        panic!("expected `a`")
+    };
     let Value::Object(inner) = b.get("b").expect("expected `b`") else {
         panic!("expected Object under `b`");
     };
@@ -445,8 +498,12 @@ fn quoted_key_brace_triple_nested() {
 #[test]
 fn quoted_key_brace_two_levels_still_parses() {
     let value = parse("v: {a: {\"b}c\": 1}}\n").unwrap();
-    let Value::Object(v) = value else { panic!("expected Object") };
-    let Some(Value::Object(a)) = v.get("v") else { panic!("expected `v`") };
+    let Value::Object(v) = value else {
+        panic!("expected Object")
+    };
+    let Some(Value::Object(a)) = v.get("v") else {
+        panic!("expected `v`")
+    };
     let Value::Object(inner) = a.get("a").expect("expected `a`") else {
         panic!("expected Object under `a`");
     };
@@ -456,8 +513,12 @@ fn quoted_key_brace_two_levels_still_parses() {
 #[test]
 fn quoted_key_brace_deep_with_sibling_and_inner_comma() {
     let value = parse("v: {a: {b: {\"c}d\": 1, x: 2}, e: 3}}\n").unwrap();
-    let Value::Object(v) = value else { panic!("expected Object") };
-    let Some(Value::Object(a)) = v.get("v") else { panic!("expected `v`") };
+    let Value::Object(v) = value else {
+        panic!("expected Object")
+    };
+    let Some(Value::Object(a)) = v.get("v") else {
+        panic!("expected `v`")
+    };
     let Value::Object(a_body) = a.get("a").expect("expected `a`") else {
         panic!("expected Object under `a`");
     };

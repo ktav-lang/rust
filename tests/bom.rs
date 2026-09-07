@@ -27,9 +27,9 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
 /// The `Value` stored under a top-level key.
 fn pair_value<'a>(value: &'a Value, key: &str) -> &'a Value {
     match value {
-        Value::Object(map) => {
-            map.get(key).unwrap_or_else(|| panic!("missing key {key:?}"))
-        }
+        Value::Object(map) => map
+            .get(key)
+            .unwrap_or_else(|| panic!("missing key {key:?}")),
         _ => panic!("expected Object root, got {value:?}"),
     }
 }

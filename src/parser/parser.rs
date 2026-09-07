@@ -8,7 +8,7 @@ use super::classify::{classify_value_start, is_pair_shape};
 use super::collecting::{Collecting, MultilineMode};
 use super::frame::Frame;
 use super::inline;
-use super::inline::{ColonScan, scan_unescaped_colon};
+use super::inline::{scan_unescaped_colon, ColonScan};
 use super::insert::insert_value;
 use super::value_start::ValueStart;
 
@@ -733,7 +733,6 @@ fn classify_root_kind_050(
         Ok(RootResult::Array)
     }
 }
-
 
 fn classify_separator(after_colon: &str) -> Separator<'_> {
     if let Some(rest) = after_colon.strip_prefix(':') {

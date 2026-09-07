@@ -989,8 +989,8 @@ fn parse_unicode_escape_interior_whitespace_preserved() {
 
 // --- validate (spec 0.7 quoted keys, § 5.3.3) --------------------------------
 
-use super::validate::{check_key, KeyValidity};
 use super::inline::{decode_key_segment, process_escapes};
+use super::validate::{check_key, KeyValidity};
 use crate::error::{Error, ErrorKind};
 
 #[test]
@@ -1039,7 +1039,10 @@ fn process_escapes_quote_escapes() {
 #[test]
 fn decode_key_segment_quoted() {
     assert_eq!(decode_key_segment("\"a b\"", 1, S).unwrap(), "a b");
-    assert_eq!(decode_key_segment("`it's \"quoted\"`", 1, S).unwrap(), "it's \"quoted\"");
+    assert_eq!(
+        decode_key_segment("`it's \"quoted\"`", 1, S).unwrap(),
+        "it's \"quoted\""
+    );
     // Interior is NOT trimmed (spec 0.7 § 5.3.3).
     assert_eq!(decode_key_segment("\" a \"", 1, S).unwrap(), " a ");
     assert_eq!(decode_key_segment(r#""a\:b""#, 1, S).unwrap(), "a:b");
@@ -1060,17 +1063,11 @@ fn parse_quoted_keys() {
 
     // Empty quoted content → EmptyKey (§ 6.5).
     let e = crate::parse("\"\": 1").unwrap_err();
-    assert!(matches!(
-        e,
-        Error::Structured(ErrorKind::EmptyKey { .. })
-    ));
+    assert!(matches!(e, Error::Structured(ErrorKind::EmptyKey { .. })));
 
     // Content after the closer → InvalidKey (§ 6.4).
     let e = crate::parse("\"a\"b: 1").unwrap_err();
-    assert!(matches!(
-        e,
-        Error::Structured(ErrorKind::InvalidKey { .. })
-    ));
+    assert!(matches!(e, Error::Structured(ErrorKind::InvalidKey { .. })));
 
     // Quotes NOT in first position are ordinary key chars (unchanged).
     let v = crate::parse("port\": 1").unwrap();
@@ -1086,7 +1083,13 @@ fn parse_quoted_keys() {
 
     // Value-side: quote escapes now decode inside inline scalar values.
     let v = crate::parse("cfg: {v: say \"hi\"}").unwrap();
-    let cfg = v.as_object().unwrap().get("cfg").unwrap().as_object().unwrap();
+    let cfg = v
+        .as_object()
+        .unwrap()
+        .get("cfg")
+        .unwrap()
+        .as_object()
+        .unwrap();
     assert_eq!(cfg.get("v"), Some(&Value::String("say \"hi\"".into())));
 }
 
@@ -1095,9 +1098,9 @@ fn parse_quoted_keys() {
 use super::inline::find_matching_close;
 use super::inline::find_unescaped_colon_inline;
 use super::inline::split_top_level;
+use super::inline::ColonScan;
 use super::inline::InlineBody;
 use super::inline::{key_is_single_segment, scan_unescaped_colon, split_key_path};
-use super::inline::ColonScan;
 
 #[test]
 fn quoted_colon_scan_finds_colon_outside_spans() {
@@ -1114,8 +1117,14 @@ fn quoted_colon_scan_finds_colon_outside_spans() {
 
 #[test]
 fn quoted_colon_scan_unterminated() {
-    assert_eq!(scan_unescaped_colon("\"unterm: 1"), ColonScan::UnterminatedQuote);
-    assert_eq!(scan_unescaped_colon("a.\"unterm"), ColonScan::UnterminatedQuote);
+    assert_eq!(
+        scan_unescaped_colon("\"unterm: 1"),
+        ColonScan::UnterminatedQuote
+    );
+    assert_eq!(
+        scan_unescaped_colon("a.\"unterm"),
+        ColonScan::UnterminatedQuote
+    );
 }
 
 #[test]
@@ -1174,7 +1183,10 @@ fn quoted_split_top_level_object_mode() {
     // Unterminated quoted key segment.
     match split_top_level("\"a: 1", 1, S, InlineBody::Object) {
         Err(crate::Error::Structured(crate::ErrorKind::UnterminatedInlineCompound { .. })) => {}
-        other => panic!("expected UnterminatedInlineCompound, got: {:?}", other.err()),
+        other => panic!(
+            "expected UnterminatedInlineCompound, got: {:?}",
+            other.err()
+        ),
     }
 }
 
@@ -1193,11 +1205,17 @@ fn quoted_split_top_level_array_mode_ignores_quotes() {
 fn quoted_find_matching_close_object_mode() {
     // `}` inside a quoted key segment is opaque to balance counting.
     let input = "{\"a}b\": 1}";
-    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+    assert_eq!(
+        find_matching_close(input, b'{', b'}'),
+        Some(input.len() - 1)
+    );
     // Unterminated span → no matching close.
     assert_eq!(find_matching_close("{\"a: 1}", b'{', b'}'), None);
     let input = "{a: 1, \"b}c\": 2}";
-    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+    assert_eq!(
+        find_matching_close(input, b'{', b'}'),
+        Some(input.len() - 1)
+    );
     // Array bodies never track quotes: the `]` at depth 1 closes the
     // compound — value-position quotes are content (spec "Keys only").
     // This pins the pre-change behaviour.
@@ -1209,9 +1227,15 @@ fn quoted_find_matching_close_triple_nested() {
     // A `{` opens a fresh pair list at any nesting level, so quoted-key
     // recognition must be tracked per level (spec 0.7 § 5.3.3).
     let input = r#"{a: {b: {"c}d": 1}}}"#;
-    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+    assert_eq!(
+        find_matching_close(input, b'{', b'}'),
+        Some(input.len() - 1)
+    );
     let input = r#"{b: {"c}d": 1}}"#;
-    assert_eq!(find_matching_close(input, b'{', b'}'), Some(input.len() - 1));
+    assert_eq!(
+        find_matching_close(input, b'{', b'}'),
+        Some(input.len() - 1)
+    );
 }
 
 // --- quoted keys: parse-level (spec 0.7 § 5.3.3) ----------------------------
@@ -1259,7 +1283,13 @@ fn quoted_adjacent_segments_decode() {
 #[test]
 fn quoted_key_comma_inside_inline_object() {
     let v = crate::parse("k: {\"a,b\": 1, c: 2}").unwrap();
-    let k = v.as_object().unwrap().get("k").unwrap().as_object().unwrap();
+    let k = v
+        .as_object()
+        .unwrap()
+        .get("k")
+        .unwrap()
+        .as_object()
+        .unwrap();
     assert_eq!(k.len(), 2);
     assert_eq!(k.get("a,b"), Some(&Value::Integer("1".into())));
     assert_eq!(k.get("c"), Some(&Value::Integer("2".into())));
@@ -1268,7 +1298,13 @@ fn quoted_key_comma_inside_inline_object() {
 #[test]
 fn quoted_key_brace_inside_inline_object() {
     let v = crate::parse("k: {\"a}b\": 1, c: 2}").unwrap();
-    let k = v.as_object().unwrap().get("k").unwrap().as_object().unwrap();
+    let k = v
+        .as_object()
+        .unwrap()
+        .get("k")
+        .unwrap()
+        .as_object()
+        .unwrap();
     assert_eq!(k.len(), 2);
     assert_eq!(k.get("a}b"), Some(&Value::Integer("1".into())));
     assert_eq!(k.get("c"), Some(&Value::Integer("2".into())));

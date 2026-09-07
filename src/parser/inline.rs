@@ -447,8 +447,7 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
                             let low_hex = &input[i + 8..i + 12];
                             let low = u32::from_str_radix(low_hex, 16).expect("4 ASCII hex digits");
                             if (0xDC00..=0xDFFF).contains(&low) {
-                                let combined =
-                                    0x10000 + (value - 0xD800) * 0x400 + (low - 0xDC00);
+                                let combined = 0x10000 + (value - 0xD800) * 0x400 + (low - 0xDC00);
                                 // 0x10000..=0x10FFFF by construction.
                                 let ch = char::from_u32(combined).expect("valid surrogate pair");
                                 out.push(ch);

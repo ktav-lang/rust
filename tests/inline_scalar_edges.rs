@@ -50,10 +50,7 @@ fn empty_paren_inline_items_are_empty_string() {
     assert_eq!(parse("[()]").unwrap(), arr(&[s("")]));
     assert_eq!(parse("{a: ()}").unwrap(), obj(&[("a", s(""))]));
     assert_eq!(parse("{a: (())}").unwrap(), obj(&[("a", s(""))]));
-    assert_eq!(
-        parse("[x, (), y]").unwrap(),
-        arr(&[s("x"), s(""), s("y")])
-    );
+    assert_eq!(parse("[x, (), y]").unwrap(), arr(&[s("x"), s(""), s("y")]));
 }
 
 #[test]
