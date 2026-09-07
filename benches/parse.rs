@@ -8,7 +8,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use serde::{Deserialize, Serialize};
 
 // Synthesized realistic-mix fixtures (1k / 50k / 500k targets) +
-// `with_bad_line` for the error-path bench. Sibling file mounted as a
+// `inject_bad_line` for the error-path bench. Sibling file mounted as a
 // module — Cargo treats each `benches/*.rs` as its own crate root, so
 // the explicit `#[path]` is needed to share `fixtures.rs`.
 #[path = "fixtures.rs"]
