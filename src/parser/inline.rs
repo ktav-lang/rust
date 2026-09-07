@@ -921,7 +921,27 @@ pub(crate) fn split_top_level<'a>(
     while i < bytes.len() {
         if in_key && seg_start {
             i = skip_segment_ws(input, i);
-            if i < bytes.len() && is_quote_byte(bytes[i]) {
+            // The skip may consume every byte that remains: after a
+            // trailing comma (or a dotted-key `.`) only whitespace can
+            // follow, leaving `i` at EOF; `bytes[i]` below then indexed
+            // out of bounds (R3-F1). Two possible outcomes:
+            if i >= bytes.len() {
+                if input[start..].trim().is_empty() {
+                    // Only whitespace after the last comma: a valid
+                    // trailing comma — emit no final segment (the
+                    // callers treat an empty last segment identically).
+                    return Ok(segments);
+                }
+                // A `.` armed this segment start and only whitespace
+                // followed: a dotted key whose final segment is empty
+                // (`b.` / `.`) — EmptyKey, the same category
+                // `insert_value` raises for `a.: 1` (spec 0.7 § 6.5).
+                return Err(Error::Structured(ErrorKind::EmptyKey {
+                    line: line_num as u32,
+                    span,
+                }));
+            }
+            if is_quote_byte(bytes[i]) {
                 match quoted_span_end(bytes, i) {
                     Some(end) => {
                         i = end + 1;
@@ -1083,7 +1103,14 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
     while i < bytes.len() {
         if in_key && seg_start {
             i = skip_segment_ws(input, i);
-            if i < bytes.len() && is_quote_byte(bytes[i]) {
+            // The skip may consume every remaining byte (text ending in
+            // whitespace after a trailing comma or dot); `bytes[i]`
+            // below then indexed out of bounds (R3-F1). Nothing left to
+            // scan — no matching close exists.
+            if i >= bytes.len() {
+                return None;
+            }
+            if is_quote_byte(bytes[i]) {
                 // Unterminated span: the rest of the input is segment
                 // content (for bracket balance: no matching close).
                 let end = quoted_span_end(bytes, i)?;
@@ -1174,7 +1201,13 @@ pub(crate) fn find_unescaped_colon_inline(s: &str) -> Option<usize> {
     while i < bytes.len() {
         if seg_start {
             i = skip_segment_ws(s, i);
-            if i < bytes.len() && is_quote_byte(bytes[i]) {
+            // The skip may consume every remaining byte (text ending in
+            // whitespace after a dotted-key `.`); `bytes[i]` below then
+            // indexed out of bounds (R3-F1). No colon exists after EOF.
+            if i >= bytes.len() {
+                return None;
+            }
+            if is_quote_byte(bytes[i]) {
                 // Unterminated span: the rest of the input is segment
                 // content.
                 let end = quoted_span_end(bytes, i)?;
@@ -1410,7 +1443,15 @@ pub(crate) fn scan_inline_closer(
     while i < bytes.len() {
         if in_key && seg_start {
             i = skip_segment_ws(input, i);
-            if i < bytes.len() && is_quote_byte(bytes[i]) {
+            // The skip may consume every remaining byte (text ending in
+            // whitespace after a trailing comma or dot); `bytes[i]`
+            // below then indexed out of bounds (R3-F1). Nothing left in
+            // this text — no closer here (§ 5.2 rule 9 continues on the
+            // next line).
+            if i >= bytes.len() {
+                return InlineCloserScan::NotFound;
+            }
+            if is_quote_byte(bytes[i]) {
                 // Unterminated span: the rest of the input is segment
                 // content (for bracket balance: no matching close).
                 // Escapes inside it stay unvalidated (§ 6.16 opacity).

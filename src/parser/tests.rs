@@ -1372,6 +1372,93 @@ fn quoted_find_matching_close_triple_nested() {
     );
 }
 
+#[test]
+fn r3f1_split_top_level_trailing_ws_after_comma_no_phantom_segment() {
+    // R3-F1: whitespace after a trailing comma sent `skip_segment_ws`
+    // to EOF and the loop indexed out of bounds. The loop must end
+    // without emitting a phantom whitespace-only segment.
+    for tail in [" ", "\t", "\u{00a0}"] {
+        let body = format!("\"a\": 1,{tail}");
+        assert_eq!(
+            split_top_level(&body, 1, S, InlineBody::Object).unwrap(),
+            vec!["\"a\": 1"]
+        );
+    }
+    // Comma at EOF without whitespace: unchanged — the empty final
+    // segment is still emitted and the caller accepts it.
+    assert_eq!(
+        split_top_level("\"a\": 1,", 1, S, InlineBody::Object).unwrap(),
+        vec!["\"a\": 1", ""]
+    );
+    // Quoted key and quoted VALUE before the trailing comma.
+    assert_eq!(
+        split_top_level("\"a b\": 1, ", 1, S, InlineBody::Object).unwrap(),
+        vec!["\"a b\": 1"]
+    );
+    assert_eq!(
+        split_top_level("a: \"x\", ", 1, S, InlineBody::Object).unwrap(),
+        vec!["a: \"x\""]
+    );
+}
+
+#[test]
+fn r3f1_split_top_level_dotted_key_trailing_ws_is_empty_key() {
+    // R3-F1: `b.` + whitespace to EOF armed a key-segment start with
+    // nothing after the dot — a structured EmptyKey (the category
+    // `insert_value` raises for `a.: 1`), not a panic, not success.
+    for tail in [" ", "\t"] {
+        let body = format!(" \"a\": 1, b.{tail}");
+        match split_top_level(&body, 1, S, InlineBody::Object) {
+            Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
+            other => panic!("expected EmptyKey, got: {:?}", other.err()),
+        }
+    }
+    // Leading-dot form, same shape (quote bytes present: slow path).
+    match split_top_level(" \"a\". ", 1, S, InlineBody::Object) {
+        Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
+        other => panic!("expected EmptyKey, got: {:?}", other.err()),
+    }
+    // Dot followed by a real segment still works.
+    assert_eq!(
+        split_top_level("a. b : 1", 1, S, InlineBody::Object).unwrap(),
+        vec!["a. b : 1"]
+    );
+}
+
+#[test]
+fn r3f1_find_matching_close_eof_after_trailing_ws() {
+    // R3-F1 sibling: untrimmed text ending in whitespace after a comma,
+    // no closer — None, not an index panic.
+    assert_eq!(find_matching_close("{\"a\": 1, ", b'{', b'}'), None);
+    // Closer present after the whitespace: unchanged (skip stops at `}`).
+    assert_eq!(find_matching_close("{\"a\": 1, }", b'{', b'}'), Some(9));
+}
+
+#[test]
+fn r3f1_scan_inline_closer_eof_after_trailing_ws() {
+    use super::inline::{scan_inline_closer, InlineCloserScan};
+    // R3-F1 sibling: untrimmed text ending in whitespace after a comma,
+    // no closer on this text — NotFound, not an index panic.
+    assert!(matches!(
+        scan_inline_closer("{\"a\": 1, ", b'{', b'}', 1, S),
+        InlineCloserScan::NotFound
+    ));
+    // Closer present after the whitespace: unchanged.
+    assert!(matches!(
+        scan_inline_closer("{\"a\": 1, }", b'{', b'}', 1, S),
+        InlineCloserScan::Found(9)
+    ));
+}
+
+#[test]
+fn r3f1_find_unescaped_colon_inline_eof_after_dotted_ws() {
+    // R3-F1 sibling: untrimmed text ending in whitespace after a dot —
+    // None, not an index panic.
+    assert_eq!(find_unescaped_colon_inline("a. "), None);
+    // Dot then colon: unchanged.
+    assert_eq!(find_unescaped_colon_inline("a. : 1"), Some(3));
+}
+
 // --- quoted keys: parse-level (spec 0.7 § 5.3.3) ----------------------------
 
 #[test]
