@@ -177,10 +177,11 @@ fn bench_multiline_dedent(c: &mut Criterion) {
 //
 // These benches feed the realistic-mix synthesiser into both the success
 // path (`parse_synth`) and the error path (`parse_synth_error`). The
-// error path injects a single bad line at the document midpoint and
-// asserts the parser returns `Err` — that exercises the
-// error-construction code that the upcoming structured-errors refactor
-// will touch, so we want a baseline on it now.
+// success path is gated by `validate_synth` so we only ever time a doc
+// that matches the synthesiser's contract. The error path injects one
+// bad line at a known root-Object position and asserts the exact
+// error category (`MissingSeparatorSpace`), line, and span — so we
+// know we're timing a realistic, deterministic error construction.
 // ---------------------------------------------------------------------------
 
 type SynthFn = fn() -> String;
@@ -194,6 +195,8 @@ fn bench_parse_synth(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse_synth");
     for &(label, gen) in SYNTH_SIZES {
         let text = gen();
+        // Strict gate: refuse to time anything but the expected Object.
+        fixtures::validate_synth(&text);
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(label), &text, |b, t| {
             b.iter(|| {
@@ -209,13 +212,28 @@ fn bench_parse_synth_error(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse_synth_error");
     for &(label, gen) in SYNTH_SIZES {
         let good = gen();
-        let bad = fixtures::with_bad_line(&good);
-        // Sanity: the injected line must actually trigger an Err so we
-        // really are timing the error path, not a silent success.
-        assert!(
-            ktav::parse(&bad).is_err(),
-            "fixture for {label} did not produce an error",
-        );
+        fixtures::validate_synth(&good);
+        let (bad, bad_line) = fixtures::inject_bad_line(&good);
+        // Strict negative control: the injected line must fail with exactly
+        // MissingSeparatorSpace at the predicted line and span, otherwise we
+        // would be timing whatever accident the input happens to trigger.
+        match ktav::parse(&bad) {
+            Err(ktav::Error::Structured(k)) => {
+                assert!(
+                    matches!(k, ktav::ErrorKind::MissingSeparatorSpace { marker: ':', .. }),
+                    "fixture for {label}: unexpected error category: {k:?}"
+                );
+                assert_eq!(k.line(), Some(bad_line), "fixture for {label}: unexpected error line");
+                assert_eq!(
+                    k.span().slice(&bad),
+                    Some("value"),
+                    "fixture for {label}: unexpected error span"
+                );
+            }
+            other => panic!(
+                "fixture for {label}: expected MissingSeparatorSpace at line {bad_line}, got {other:?}"
+            ),
+        }
         group.throughput(Throughput::Bytes(bad.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(label), &bad, |b, t| {
             b.iter(|| {
