@@ -1,8 +1,11 @@
-//! Regression tests for review finding R4-F3 — spec 0.7 § 3.3 / § 5.8.1 /
-//! § 5.8.5: a `{`/`[` opens a nested inline compound iff it is the FIRST
-//! NON-WHITESPACE code point of the inline value, and § 3.3 whitespace is
-//! the closed 25-code-point Unicode White_Space set. NBSP (U+00A0) before
-//! a nested opener must not consume the value-start position.
+//! Regression tests for review findings R4-F3 and R5-F5 — spec 0.7
+//! § 3.3 / § 5.8.1 / § 5.8.5: a `{`/`[` opens a nested inline compound
+//! iff it is the FIRST NON-WHITESPACE code point of the inline value,
+//! where § 3.3 whitespace is the closed 25-code-point Unicode
+//! White_Space set (23 members are reachable in inline scanning; LF/CR
+//! cannot occur — lines are pre-split). Every member before a nested
+//! opener must not consume the value-start position; adjacent
+//! non-members must clear it like any ordinary content.
 
 use std::collections::BTreeMap;
 
@@ -61,9 +64,13 @@ fn arr(items: &[Value]) -> Value {
 
 #[test]
 fn whole_whitespace_set_before_nested_opener() {
+    // All 23 inline-scanning § 3.3 members (the 25-code-point list
+    // minus LF U+000A and CR U+000D, which never reach inline
+    // scanning), enumerated individually.
     let members = [
-        "\t", "\u{0B}", "\u{0C}", " ", "\u{85}", "\u{A0}", "\u{1680}", "\u{2000}", "\u{200A}",
-        "\u{2028}", "\u{2029}", "\u{202F}", "\u{205F}", "\u{3000}",
+        "\t", "\u{0B}", "\u{0C}", " ", "\u{85}", "\u{A0}", "\u{1680}", "\u{2000}", "\u{2001}",
+        "\u{2002}", "\u{2003}", "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}",
+        "\u{2009}", "\u{200A}", "\u{2028}", "\u{2029}", "\u{202F}", "\u{205F}", "\u{3000}",
     ];
     for ws in members {
         let src = format!("{{a:{ws}[1]}}\n");
@@ -78,6 +85,29 @@ fn whole_whitespace_set_before_nested_opener() {
             arr(&[obj(&[("a", Value::Integer("1".into()))])]),
             "array->object failed for ws {ws:?} in {src:?}"
         );
+    }
+}
+
+// --- 1b. adjacent non-members are ordinary literal content -------------------
+
+#[test]
+fn adjacent_nonmembers_do_not_open_nested() {
+    // U+1FFF (just below U+2000), U+2010 (just above U+200A) and
+    // U+FEFF (BOM; § 3.1 strips it only at document start) are NOT
+    // § 3.3 members, so each must clear `value_start` like any ordinary
+    // content: a `{`/`[` after one of them (no comma to re-arm it) is a
+    // mid-scalar literal, not a nested opener.
+    for ch in ["\u{1FFF}", "\u{2010}", "\u{FEFF}"] {
+        let err = parse(&format!("{{a: {ch}[1]}}\n")).unwrap_err();
+        match &err {
+            Error::Structured(ErrorKind::UnterminatedInlineCompound { .. }) => {}
+            other => panic!("expected UnterminatedInlineCompound for {ch:?}, got {other:?}"),
+        }
+        let err = parse(&format!("[{ch}{{a: 1}}]\n")).unwrap_err();
+        match &err {
+            Error::Structured(ErrorKind::UnterminatedInlineCompound { .. }) => {}
+            other => panic!("expected UnterminatedInlineCompound for {ch:?}, got {other:?}"),
+        }
     }
 }
 

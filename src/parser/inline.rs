@@ -594,11 +594,12 @@ fn close_for_kind(kind: u8) -> u8 {
     }
 }
 
-/// Skip line-bounded § 3.3 whitespace (the Unicode White_Space set;
-/// LF/CR cannot occur — lines are pre-split). Returns the index of the
-/// first non-whitespace byte at or after `i`. § 3.3 fixes the closed
-/// 25-code-point White_Space list, which Rust's `char::is_whitespace`
-/// matches exactly.
+/// Skip line-bounded § 3.3 whitespace: the closed 25-code-point list is
+/// frozen by the spec, and LF/CR cannot occur here (lines are
+/// pre-split). Returns the index of the first non-whitespace byte at or
+/// after `i`. Classification MUST NOT delegate to a host
+/// Unicode-whitespace primitive (§ 3.3); it uses the fixed set in
+/// [`inline_whitespace_at`].
 fn skip_segment_ws(s: &str, mut i: usize) -> usize {
     while let Some(len) = inline_whitespace_at(s, i) {
         i += len;
@@ -608,10 +609,12 @@ fn skip_segment_ws(s: &str, mut i: usize) -> usize {
 
 /// Byte length of the § 3.3 whitespace code point starting at byte
 /// offset `i`, or `None` if the code point at `i` is not whitespace.
-/// Same closed character class as [`skip_segment_ws`]: the four
-/// single-byte ASCII members plus `char::is_whitespace` for `>= 0x80`
-/// (§ 3.3 fixes the 25-code-point White_Space list, which
-/// `char::is_whitespace` matches exactly). A mid-code-point
+/// Membership is the frozen § 3.3 closed 25-code-point list itself,
+/// spelled out below — never a host Unicode-whitespace primitive
+/// (`char::is_whitespace` MUST NOT be delegated to, even though it
+/// matches the list today): the four single-byte ASCII members take the
+/// byte fast path, the 19 non-ASCII members the fixed match (the inline
+/// scan never sees LF/CR — lines are pre-split). A mid-code-point
 /// (non-boundary) offset is never whitespace: callers scan
 /// byte-at-a-time and may sit on a continuation byte of a
 /// non-whitespace character.
@@ -625,7 +628,11 @@ fn inline_whitespace_at(s: &str, i: usize) -> Option<usize> {
         return None;
     }
     let ch = s[i..].chars().next()?;
-    if ch.is_whitespace() {
+    if matches!(
+        ch,
+        '\u{0085}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+    ) {
         Some(ch.len_utf8())
     } else {
         None
