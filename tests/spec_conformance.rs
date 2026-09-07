@@ -5,7 +5,13 @@
 //!     equals the oracle in the sibling `.json` file;
 //!   - every `valid/**/*.canonical.ktav` re-parses to the same `Value`;
 //!   - `emit_canonical(parse(input.ktav))` matches `name.canonical.ktav`;
-//!   - every `invalid/**/*.ktav` is rejected by `ktav::parse`.
+//!   - every `invalid/**/*.ktav` is rejected by `ktav::parse` (or, for
+//!     byte-level invalid UTF-8 fixtures, by `ktav::from_file` with
+//!     `Error::InvalidUtf8` — spec § 6.15);
+//!   - every `unrepresentable/**/*.json` Value is rejected by all three
+//!     writer surfaces with the exact `ReasonCode` (spec § 5.9.0);
+//!   - every `parseable-unrepresentable/*.ktav` parses and matches its
+//!     JSON oracle `value`, yet every writer surface rejects it.
 //!
 //! Spec root resolution (first match wins):
 //!   1. env var `KTAV_SPEC_DIR` (absolute path to the spec-repo root);
@@ -17,10 +23,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ktav::Value;
+use ktav::{ObjectMap, ReasonCode, Value};
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 
-const SPEC_VERSION: &str = "0.6";
+const SPEC_VERSION: &str = "0.7";
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -125,6 +132,114 @@ fn json_eq_ordered(a: &JsonValue, b: &JsonValue) -> bool {
     }
 }
 
+/// Walk `root` recursively and collect every `.json` file.
+fn collect_json_files(root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_json_files(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("json") {
+            out.push(path);
+        }
+    }
+}
+
+/// Parse a fixture's `unrepresentable_reason` string to the exact
+/// `ReasonCode`. An unknown name panics — that IS the schema validation.
+fn reason_code_from_name(name: &str) -> ReasonCode {
+    match name {
+        "ScalarRoot" => ReasonCode::ScalarRoot,
+        "EmptyKeyName" => ReasonCode::EmptyKeyName,
+        "NonFiniteFloat" => ReasonCode::NonFiniteFloat,
+        "CRByte" => ReasonCode::CRByte,
+        "BothFormsRequired" => ReasonCode::BothFormsRequired,
+        "TrailingWhitespaceCollision" => ReasonCode::TrailingWhitespaceCollision,
+        "LeadingWhitespaceCollision" => ReasonCode::LeadingWhitespaceCollision,
+        other => panic!("fixture `unrepresentable_reason` {other:?} is not a known ReasonCode"),
+    }
+}
+
+/// Validate the shared 3-field fixture schema (`value`,
+/// `unrepresentable_reason`, `note`) and extract the expected
+/// `ReasonCode`. Panics loudly on any schema violation.
+fn validate_reason_fixture(fixture: &JsonValue, rel: impl std::fmt::Display) -> ReasonCode {
+    let map = fixture
+        .as_object()
+        .unwrap_or_else(|| panic!("fixture {rel}: top-level JSON is not an object"));
+    if map.len() != 3 {
+        panic!(
+            "fixture {rel}: expected exactly the fields value/unrepresentable_reason/note, \
+             found {} field(s)",
+            map.len()
+        );
+    }
+    for required in ["value", "unrepresentable_reason", "note"] {
+        if !map.contains_key(required) {
+            panic!("fixture {rel}: missing required field {required:?}");
+        }
+    }
+    let reason = map["unrepresentable_reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("fixture {rel}: unrepresentable_reason is not a string"));
+    let note = map["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("fixture {rel}: note is not a string"));
+    if note.is_empty() {
+        panic!("fixture {rel}: note is empty");
+    }
+    reason_code_from_name(reason)
+}
+
+/// Convert a `serde_json::Value` (a fixture oracle) into a `ktav::Value`.
+fn json_to_ktav(v: &JsonValue) -> Value {
+    match v {
+        JsonValue::Null => Value::Null,
+        JsonValue::Bool(b) => Value::Bool(*b),
+        JsonValue::String(s) => {
+            Value::String(s.parse().unwrap_or_else(|_| panic!("string scalar: {s:?}")))
+        }
+        JsonValue::Number(n) => {
+            // serde_json is compiled with `arbitrary_precision`, so
+            // `to_string()` returns the exact lexical token.
+            let token = n.to_string();
+            if !token.contains(['.', 'e', 'E']) {
+                Value::Integer(
+                    token
+                        .parse()
+                        .unwrap_or_else(|_| panic!("integer scalar: {token:?}")),
+                )
+            } else {
+                Value::Float(
+                    token
+                        .parse()
+                        .unwrap_or_else(|_| panic!("float scalar: {token:?}")),
+                )
+            }
+        }
+        JsonValue::Array(items) => Value::Array(items.iter().map(json_to_ktav).collect()),
+        JsonValue::Object(map) => {
+            // `$float` sentinel: only meaningful in the `unrepresentable/`
+            // category — records NaN / ±Infinity as a one-field object.
+            if map.len() == 1 {
+                if let Some(JsonValue::String(f)) = map.get("$float") {
+                    return Value::Float(
+                        f.parse()
+                            .unwrap_or_else(|_| panic!("$float sentinel: {f:?}")),
+                    );
+                }
+            }
+            let mut m = ObjectMap::default();
+            for (k, val) in map {
+                m.insert(k.as_str().into(), json_to_ktav(val));
+            }
+            Value::Object(m)
+        }
+    }
+}
+
 #[test]
 fn valid_fixtures_match_oracle() {
     let Some(spec_root) = resolve_spec_root() else {
@@ -206,15 +321,40 @@ fn invalid_fixtures_are_rejected() {
 
     for ktav_path in &files {
         let rel = ktav_path.strip_prefix(&root).unwrap_or(ktav_path).display();
-        let text = match fs::read_to_string(ktav_path) {
-            Ok(t) => t,
+        let bytes = match fs::read(ktav_path) {
+            Ok(b) => b,
             Err(e) => {
                 failures.push(format!("read {}: {}", rel, e));
                 continue;
             }
         };
-        if ktav::parse(&text).is_ok() {
-            failures.push(format!("invalid fixture parsed successfully: {}", rel));
+        match std::str::from_utf8(&bytes) {
+            Ok(text) => {
+                if ktav::parse(text).is_ok() {
+                    failures.push(format!("invalid fixture parsed successfully: {}", rel));
+                }
+            }
+            Err(_) => {
+                // Byte-level invalid UTF-8 (spec § 6.15): must be rejected
+                // by the file entry point with `Error::InvalidUtf8`.
+                // NOTE: `ktav::Value` does not implement DeserializeOwned,
+                // so the target type is `String`; the UTF-8 validation in
+                // `from_file` happens before any deserialization, so the
+                // error variant is identical for any `T`.
+                match ktav::from_file::<String, _>(ktav_path) {
+                    Ok(_) => failures.push(format!(
+                        "invalid UTF-8 fixture accepted by from_file: {}",
+                        rel
+                    )),
+                    Err(e) => match e {
+                        ktav::Error::InvalidUtf8 { .. } => {}
+                        other => failures.push(format!(
+                            "invalid UTF-8 fixture {}: expected Error::InvalidUtf8, got: {}",
+                            rel, other
+                        )),
+                    },
+                }
+            }
         }
     }
 
@@ -298,23 +438,6 @@ fn valid_fixtures_roundtrip_losslessly() {
 }
 
 // ---------------------------------------------------------------------------
-// Triple-test runner (§ 5.9 conformance)
-//
-// TRANSITIONAL BRIDGE (spec 0.6 → 0.7, § 5.9.10):
-// The 0.6 corpus's `valid/key_escaping/*.canonical.ktav` files pin the
-// SUPERSEDED 0.6 canonical spellings for keys containing structural
-// bytes (`a\.b: v` etc.). Spec 0.7 § 5.9.10 canonicalises those keys
-// to QUOTED form (`"a.b": v` — quoting is preferred once any
-// structural escape would be needed); the 0.7 changelog says those
-// fixtures "update accordingly (tracked separately from this text
-// change)", and the updated spellings live in the 0.7 corpus dir,
-// wired by a later capstone task. While SPEC_VERSION is still "0.6",
-// fixtures under `key_escaping/` are therefore run parse →
-// emit_canonical → reparse → Value-equality (roundtrip still holds —
-// the new output reparses to the same Value), but the byte-comparison
-// against the stale `.canonical.ktav` file is SKIPPED and the fixture
-// is counted separately in the summary line below.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn valid_fixtures_canonical_emit() {
@@ -329,40 +452,20 @@ fn valid_fixtures_canonical_emit() {
 
     let mut failures: Vec<String> = Vec::new();
     let mut tested = 0;
-    let mut skipped_stale = 0;
 
     for ktav_path in &files {
-        let canonical_path = ktav_path.with_extension("canonical.ktav");
-        // Not all fixtures have canonical files yet — skip if missing
-        if !canonical_path.exists() {
-            // Try the other naming convention
-            let stem = ktav_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let alt = ktav_path
-                .parent()
-                .unwrap()
-                .join(format!("{}.canonical.ktav", stem));
-            if !alt.exists() {
-                continue;
-            }
-        }
-
-        let rel_path = ktav_path.strip_prefix(&root).unwrap_or(ktav_path);
-        let rel = rel_path.display();
-        // Transitional bridge — see the block comment above this test.
-        let stale_06_canonical = SPEC_VERSION == "0.6"
-            && rel_path
-                .components()
-                .next()
-                .is_some_and(|c| c.as_os_str() == "key_escaping");
         let stem = ktav_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let canonical_path = ktav_path
             .parent()
             .unwrap()
             .join(format!("{}.canonical.ktav", stem));
+        // Not all fixtures have canonical files yet — skip if missing.
         if !canonical_path.exists() {
             continue;
         }
 
+        let rel_path = ktav_path.strip_prefix(&root).unwrap_or(ktav_path);
+        let rel = rel_path.display();
         let text = match fs::read_to_string(ktav_path) {
             Ok(t) => t,
             Err(e) => {
@@ -391,8 +494,7 @@ fn valid_fixtures_canonical_emit() {
             }
         };
 
-        // Test 2: emit_canonical matches expected — SKIPPED for the
-        // stale 0.6 `key_escaping` canonical spellings (bridge above).
+        // Test 2: emit_canonical matches expected.
         let actual_canonical = match ktav::render::emit_canonical(&value) {
             Ok(s) => s,
             Err(e) => {
@@ -400,7 +502,7 @@ fn valid_fixtures_canonical_emit() {
                 continue;
             }
         };
-        if !stale_06_canonical && actual_canonical != expected_canonical {
+        if actual_canonical != expected_canonical {
             failures.push(format!(
                 "canonical mismatch in {}:\n  expected:\n{}\n  actual:\n{}",
                 rel, expected_canonical, actual_canonical
@@ -424,11 +526,7 @@ fn valid_fixtures_canonical_emit() {
             continue;
         }
 
-        if stale_06_canonical {
-            skipped_stale += 1;
-        } else {
-            tested += 1;
-        }
+        tested += 1;
     }
 
     if !failures.is_empty() {
@@ -439,10 +537,245 @@ fn valid_fixtures_canonical_emit() {
             failures.join("\n")
         );
     }
+    eprintln!("spec_conformance::canonical: {} fixtures passed", tested);
+}
+
+/// Serde mirror of a `ktav::Value`: lets the serde text serializer
+/// (`ktav::to_string`) be exercised on Values (which deliberately do not
+/// implement `Serialize`). Scalars go through their canonical text form;
+/// non-finite floats surface as raw `f64`s so the serializer's own
+/// rejection (`NonFiniteFloat`) fires exactly as it would for a real
+/// `Serialize` type holding the same value.
+struct SerValue<'a>(&'a Value);
+
+impl Serialize for SerValue<'_> {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Null => ser.serialize_none(),
+            Value::Bool(b) => ser.serialize_bool(*b),
+            Value::Integer(i) => {
+                let n: i64 = i.to_string().parse().map_err(serde::ser::Error::custom)?;
+                ser.serialize_i64(n)
+            }
+            Value::Float(f) => {
+                ser.serialize_f64(f.to_string().parse().map_err(serde::ser::Error::custom)?)
+            }
+            Value::String(s) => ser.serialize_str(s.as_ref()),
+            Value::Array(items) => ser.collect_seq(items.iter().map(SerValue)),
+            Value::Object(obj) => {
+                let mut map = ser.serialize_map(Some(obj.len()))?;
+                for (k, v) in obj {
+                    map.serialize_entry(&k.to_string(), &SerValue(v))?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+#[test]
+fn unrepresentable_fixtures_are_rejected_with_reason_codes() {
+    let Some(spec_root) = resolve_spec_root() else {
+        eprintln!("skipping spec_conformance::unrepresentable: spec dir not found");
+        return;
+    };
+    let root = tests_dir(&spec_root, "unrepresentable");
+    if !root.is_dir() {
+        panic!(
+            "spec 0.7 resolved but the unrepresentable fixture dir is missing: {}",
+            root.display()
+        );
+    }
+    let mut files = Vec::new();
+    collect_json_files(&root, &mut files);
+    files.sort();
+    if files.is_empty() {
+        panic!("no `.json` fixtures found under {}", root.display());
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+
+    for fixture_path in &files {
+        let rel = fixture_path
+            .strip_prefix(&root)
+            .unwrap_or(fixture_path)
+            .display();
+        let src = match fs::read_to_string(fixture_path) {
+            Ok(s) => s,
+            Err(e) => {
+                failures.push(format!("read {}: {}", rel, e));
+                continue;
+            }
+        };
+        let fixture: JsonValue = match serde_json::from_str(&src) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("json parse {}: {}", rel, e));
+                continue;
+            }
+        };
+        let expected = validate_reason_fixture(&fixture, &rel);
+        let value = json_to_ktav(&fixture["value"]);
+
+        for (surface, err) in [
+            ("emit_canonical", ktav::render::emit_canonical(&value).err()),
+            ("render", Some(ktav::render::render(&value).unwrap_err())),
+            (
+                "to_string",
+                Some(ktav::to_string(&SerValue(&value)).unwrap_err()),
+            ),
+        ] {
+            let Some(err) = err else {
+                failures.push(format!(
+                    "{}: expected rejection with {:?} but {} succeeded",
+                    rel, expected, surface
+                ));
+                continue;
+            };
+            match err.reason_code() {
+                Some(actual) if actual == expected => {}
+                Some(actual) => failures.push(format!(
+                    "{}: {}: expected reason code {:?}, got {:?} ({})",
+                    rel, surface, expected, actual, err
+                )),
+                None => failures.push(format!(
+                    "{}: {}: expected rejection with {:?}, got non-representability error: {}",
+                    rel, surface, expected, err
+                )),
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} of {} unrepresentable fixture(s) failed:\n{}",
+            failures.len(),
+            files.len(),
+            failures.join("\n")
+        );
+    }
     eprintln!(
-        "spec_conformance::canonical: {} fixtures passed, {} key_escaping fixtures checked \
-         roundtrip-only (superseded 0.6 canonical spelling; spec 0.7 § 5.9.10 rewrites these \
-         keys to quoted form; 0.7 corpus wired by capstone task)",
-        tested, skipped_stale
+        "spec_conformance::unrepresentable: {} fixtures rejected",
+        files.len()
+    );
+}
+
+#[test]
+fn parseable_unrepresentable_fixtures_reject_canonical_emit() {
+    let Some(spec_root) = resolve_spec_root() else {
+        eprintln!("skipping spec_conformance::parseable_unrepresentable: spec dir not found");
+        return;
+    };
+    let root = tests_dir(&spec_root, "parseable-unrepresentable");
+    if !root.is_dir() {
+        panic!(
+            "spec 0.7 resolved but the parseable-unrepresentable fixture dir is missing: {}",
+            root.display()
+        );
+    }
+    let mut files = Vec::new();
+    collect_ktav_files(&root, &mut files);
+    files.sort();
+    if files.is_empty() {
+        panic!("no `.ktav` fixtures found under {}", root.display());
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+
+    for ktav_path in &files {
+        let rel = ktav_path.strip_prefix(&root).unwrap_or(ktav_path).display();
+        let stem = ktav_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+        // The spec forbids a canonical spelling for these fixtures.
+        let canonical = ktav_path
+            .parent()
+            .unwrap()
+            .join(format!("{}.canonical.ktav", stem));
+        if canonical.exists() {
+            panic!(
+                "fixture {}: a `.canonical.ktav` file exists but the spec \
+                 forbids canonical output for parseable-unrepresentable values",
+                rel
+            );
+        }
+
+        let json_path = ktav_path.with_extension("json");
+        let oracle_src = match fs::read_to_string(&json_path) {
+            Ok(t) => t,
+            Err(e) => panic!("fixture {}: missing/unreadable `.json` sibling: {}", rel, e),
+        };
+        let fixture: JsonValue = match serde_json::from_str(&oracle_src) {
+            Ok(v) => v,
+            Err(e) => panic!("fixture {}: oracle json parse error: {}", rel, e),
+        };
+        let expected = validate_reason_fixture(&fixture, &rel);
+
+        let text = match fs::read_to_string(ktav_path) {
+            Ok(t) => t,
+            Err(e) => {
+                failures.push(format!("read {}: {}", rel, e));
+                continue;
+            }
+        };
+
+        // These must PARSE — they are parser-producible.
+        let value = match ktav::parse(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("parse {}: expected success, got: {}", rel, e));
+                continue;
+            }
+        };
+
+        // The parsed Value must match the oracle.
+        let actual = ktav_to_json(&value);
+        if !json_eq_ordered(&actual, &fixture["value"]) {
+            failures.push(format!(
+                "oracle mismatch in {}:\n  expected: {}\n  actual:   {}",
+                rel, fixture["value"], actual
+            ));
+        }
+
+        // ...but every writer surface must reject it.
+        for (surface, err) in [
+            ("emit_canonical", ktav::render::emit_canonical(&value).err()),
+            ("render", Some(ktav::render::render(&value).unwrap_err())),
+            (
+                "to_string",
+                Some(ktav::to_string(&SerValue(&value)).unwrap_err()),
+            ),
+        ] {
+            let Some(err) = err else {
+                failures.push(format!(
+                    "{}: expected rejection with {:?} but {} succeeded",
+                    rel, expected, surface
+                ));
+                continue;
+            };
+            match err.reason_code() {
+                Some(actual_code) if actual_code == expected => {}
+                Some(actual_code) => failures.push(format!(
+                    "{}: {}: expected reason code {:?}, got {:?} ({})",
+                    rel, surface, expected, actual_code, err
+                )),
+                None => failures.push(format!(
+                    "{}: {}: expected rejection with {:?}, got non-representability error: {}",
+                    rel, surface, expected, err
+                )),
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} of {} parseable-unrepresentable fixture(s) failed:\n{}",
+            failures.len(),
+            files.len(),
+            failures.join("\n")
+        );
+    }
+    eprintln!(
+        "spec_conformance::parseable-unrepresentable: {} fixtures rejected",
+        files.len()
     );
 }
