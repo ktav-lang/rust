@@ -1353,9 +1353,9 @@ fn quoted_find_matching_close_object_mode() {
         find_matching_close(input, b'{', b'}'),
         Some(input.len() - 1)
     );
-    // Array bodies never track quotes: the `]` at depth 1 closes the
-    // compound — value-position quotes are content (spec "Keys only").
-    // This pins the pre-change behaviour.
+    // Array-scope positions keep quotes as content (spec "Keys only"):
+    // the `]` inside the quotes still closes the compound — no nested
+    // object is involved.
     assert_eq!(find_matching_close("[\"a]b\"]", b'[', b']'), Some(3));
 }
 
@@ -1585,4 +1585,61 @@ fn quoted_key_unterminated_in_established_object_line() {
         crate::Error::Structured(crate::ErrorKind::UnterminatedQuotedKey { .. }) => {}
         other => panic!("expected UnterminatedQuotedKey, got: {}", other),
     }
+}
+
+// R3-F2: quote-awareness must apply to nested Objects inside an
+// Array-outer scan, not only when the OUTERMOST container is an Object.
+#[test]
+fn r3f2_find_matching_close_array_nested_quoted_keys() {
+    use super::inline::find_matching_close;
+    // `]` inside a quoted key of a nested Object must be opaque.
+    assert_eq!(
+        find_matching_close("[{\"x]y\": 1},2]", b'[', b']'),
+        Some(13)
+    );
+    assert_eq!(
+        find_matching_close("[{\"x}y\": 1},2]", b'[', b']'),
+        Some(13)
+    );
+    // Unterminated quoted key swallows the rest — no matching close.
+    assert_eq!(find_matching_close("[{\"x]y\": 1", b'[', b']'), None);
+    // Doubly nested arrays with a quoted-key object at the bottom.
+    // Input is 14 bytes; the matching closer is the last byte at index 13.
+    assert_eq!(
+        find_matching_close("[[{\"x]y\": 1}]]", b'[', b']'),
+        Some(13)
+    );
+}
+
+#[test]
+fn r3f2_scan_inline_closer_array_nested_quoted_keys() {
+    use super::inline::{scan_inline_closer, InlineCloserScan};
+    assert!(matches!(
+        scan_inline_closer("[{\"x]y\": 1},2]", b'[', b']', 1, S),
+        InlineCloserScan::Found(13)
+    ));
+    assert!(matches!(
+        scan_inline_closer("[{\"x}y\": 1},2]", b'[', b']', 1, S),
+        InlineCloserScan::Found(13)
+    ));
+    assert!(matches!(
+        scan_inline_closer("[[{\"x]y\": 1}]]", b'[', b']', 1, S),
+        InlineCloserScan::Found(13)
+    ));
+    // Non-regression: object-outer body already tracks quotes (10 bytes; closer at index 9).
+    assert!(matches!(
+        scan_inline_closer("{\"x}y\": 1}", b'{', b'}', 1, S),
+        InlineCloserScan::Found(9)
+    ));
+}
+
+#[test]
+fn r3f2_split_top_level_array_body_quoted_key_object() {
+    use super::inline::{split_top_level, InlineBody};
+    // The nested object (with `]` in a quoted key) must be skipped
+    // wholesale: the comma inside it never splits, the one after it does.
+    assert_eq!(
+        split_top_level("{\"x]y\": 1},2", 1, S, InlineBody::Array).unwrap(),
+        vec!["{\"x]y\": 1}", "2"]
+    );
 }

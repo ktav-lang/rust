@@ -530,3 +530,139 @@ fn quoted_key_brace_deep_with_sibling_and_inner_comma() {
     assert_eq!(inner.get("x"), Some(&Value::Integer("2".into())));
     assert_eq!(a_body.get("e"), Some(&Value::Integer("3".into())));
 }
+
+// ---------------------------------------------------------------------------
+// Quoted keys inside inline arrays (R3-F2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn quoted_key_bracket_inside_top_level_array() {
+    let value = parse("[{\"x]y\": 1},2]\n").unwrap();
+    let Value::Array(items) = value else {
+        panic!("expected root Array, got {value:?}");
+    };
+    assert_eq!(items.len(), 2);
+    let Value::Object(obj) = &items[0] else {
+        panic!("expected Object at items[0], got {:?}", items[0]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x]y"), Some(&Value::Integer("1".into())));
+    assert_eq!(items[1], Value::Integer("2".into()));
+}
+
+#[test]
+fn quoted_key_brace_inside_top_level_array() {
+    let value = parse("[{\"x}y\": 1},2]\n").unwrap();
+    let Value::Array(items) = value else {
+        panic!("expected root Array, got {value:?}");
+    };
+    assert_eq!(items.len(), 2);
+    let Value::Object(obj) = &items[0] else {
+        panic!("expected Object at items[0], got {:?}", items[0]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x}y"), Some(&Value::Integer("1".into())));
+    assert_eq!(items[1], Value::Integer("2".into()));
+}
+
+#[test]
+fn quoted_key_bracket_in_pair_array_value() {
+    let value = parse("a: [ {\"x]y\": 1} ]\n").unwrap();
+    let Value::Object(root) = value else {
+        panic!("expected Object root, got {value:?}");
+    };
+    let Some(Value::Array(items)) = root.get("a") else {
+        panic!("expected Array at `a`, got {:?}", root.get("a"));
+    };
+    assert_eq!(items.len(), 1);
+    let Value::Object(obj) = &items[0] else {
+        panic!("expected Object at items[0], got {:?}", items[0]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x]y"), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_key_single_quote_inside_array() {
+    let value = parse("[{'x]y': 1},2]\n").unwrap();
+    let Value::Array(items) = value else {
+        panic!("expected root Array, got {value:?}");
+    };
+    assert_eq!(items.len(), 2);
+    let Value::Object(obj) = &items[0] else {
+        panic!("expected Object at items[0], got {:?}", items[0]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x]y"), Some(&Value::Integer("1".into())));
+    assert_eq!(items[1], Value::Integer("2".into()));
+}
+
+#[test]
+fn quoted_key_backtick_inside_array() {
+    let value = parse("[{`x}y`: 1},2]\n").unwrap();
+    let Value::Array(items) = value else {
+        panic!("expected root Array, got {value:?}");
+    };
+    assert_eq!(items.len(), 2);
+    let Value::Object(obj) = &items[0] else {
+        panic!("expected Object at items[0], got {:?}", items[0]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x}y"), Some(&Value::Integer("1".into())));
+    assert_eq!(items[1], Value::Integer("2".into()));
+}
+
+#[test]
+fn quoted_key_object_with_sibling_items_in_array() {
+    let value = parse("[1,{\"x]y\": 1},2]\n").unwrap();
+    let Value::Array(items) = value else {
+        panic!("expected root Array, got {value:?}");
+    };
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0], Value::Integer("1".into()));
+    let Value::Object(obj) = &items[1] else {
+        panic!("expected Object at items[1], got {:?}", items[1]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x]y"), Some(&Value::Integer("1".into())));
+    assert_eq!(items[2], Value::Integer("2".into()));
+}
+
+#[test]
+fn quoted_key_nested_array_array() {
+    let value = parse("[[{\"x]y\": 1}]]\n").unwrap();
+    let Value::Array(outer) = value else {
+        panic!("expected root Array, got {value:?}");
+    };
+    assert_eq!(outer.len(), 1);
+    let Value::Array(inner) = &outer[0] else {
+        panic!("expected Array at outer[0], got {:?}", outer[0]);
+    };
+    assert_eq!(inner.len(), 1);
+    let Value::Object(obj) = &inner[0] else {
+        panic!("expected Object at inner[0], got {:?}", inner[0]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x]y"), Some(&Value::Integer("1".into())));
+}
+
+#[test]
+fn quoted_key_object_value_array_mixed() {
+    let value = parse("o: {a: [{\"x]y\": 1}, 2]}\n").unwrap();
+    let Value::Object(root) = value else {
+        panic!("expected Object root, got {value:?}");
+    };
+    let Some(Value::Object(o)) = root.get("o") else {
+        panic!("expected Object at `o`, got {:?}", root.get("o"));
+    };
+    let Some(Value::Array(items)) = o.get("a") else {
+        panic!("expected Array at `a`, got {:?}", o.get("a"));
+    };
+    assert_eq!(items.len(), 2);
+    let Value::Object(obj) = &items[0] else {
+        panic!("expected Object at items[0], got {:?}", items[0]);
+    };
+    assert_eq!(obj.len(), 1);
+    assert_eq!(obj.get("x]y"), Some(&Value::Integer("1".into())));
+    assert_eq!(items[1], Value::Integer("2".into()));
+}

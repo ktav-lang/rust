@@ -115,3 +115,63 @@ fn thin_triple_nested_quoted_key() {
     .unwrap();
     assert_eq!(keys.last().map(String::as_str), Some("c}d"));
 }
+
+// ---------------------------------------------------------------------------
+// Quoted keys inside inline arrays (R3-F2)
+// ---------------------------------------------------------------------------
+
+/// Collect the event kind names of a successful parse (panics on error).
+fn collect_kinds(src: &str) -> Vec<&'static str> {
+    let mut kinds = Vec::new();
+    parse_events(src, |e| {
+        let kind = match e {
+            ParseEvent::Null => "Null",
+            ParseEvent::Bool(_) => "Bool",
+            ParseEvent::Integer(_) => "Integer",
+            ParseEvent::Float(_) => "Float",
+            ParseEvent::Str(_) => "Str",
+            ParseEvent::Key(_) => "Key",
+            ParseEvent::BeginObject => "BeginObject",
+            ParseEvent::EndObject => "EndObject",
+            ParseEvent::BeginArray => "BeginArray",
+            ParseEvent::EndArray => "EndArray",
+            _ => "Unknown",
+        };
+        kinds.push(kind);
+    })
+    .unwrap();
+    kinds
+}
+
+#[test]
+fn thin_quoted_key_bracket_inside_top_level_array() {
+    let src = "[{\"x]y\": 1},2]\n";
+    assert_eq!(
+        collect_kinds(src),
+        [
+            "BeginArray",
+            "BeginObject",
+            "Key",
+            "Integer",
+            "EndObject",
+            "Integer",
+            "EndArray"
+        ]
+    );
+    let v: serde_json::Value = ktav::from_str(src).unwrap();
+    assert_eq!(v, serde_json::json!([{"x]y": 1}, 2]));
+}
+
+#[test]
+fn thin_quoted_key_brace_in_pair_array_value() {
+    let src = "a: [ {\"x}y\": 1} ]\n";
+    assert_eq!(keys_of(src), ["a", "x}y"]);
+    let v: serde_json::Value = ktav::from_str(src).unwrap();
+    assert_eq!(v, serde_json::json!({ "a": [{ "x}y": 1 }] }));
+}
+
+#[test]
+fn thin_quoted_key_single_quote_inside_array() {
+    let src = "[{'x]y': 1},2]\n";
+    assert_eq!(keys_of(src), ["x]y"]);
+}

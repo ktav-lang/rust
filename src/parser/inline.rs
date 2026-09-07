@@ -1054,10 +1054,13 @@ fn split_top_level_fast(input: &str) -> Vec<&str> {
 ///
 /// For object bodies (`open == b'{'`), brackets inside quoted key
 /// segments are opaque to bracket-balance counting (spec 0.7 § 5.3.3:
-/// same reason an escaped bracket is). For array bodies (`open ==
-/// b'['`) every position is a value position, so quotes are content
-/// and never tracked (§ 5.3.3 "Keys only"). Key-position tracking is
-/// per nesting level: every `{` opens a fresh pair list, so the
+/// same reason an escaped bracket is). Array bodies' own positions are
+/// value positions, so quotes there
+/// are content (§ 5.3.3 "Keys only"), but Object scopes nested inside
+/// still track key positions — a quoted key segment of a nested object
+/// is opaque to `]` counting too (R3-F2: the gate is per nested scope,
+/// not the outer opener). Key-position tracking is per nesting level:
+/// every `{` opens a fresh pair list, so the
 /// enclosing level's key context is saved and restored around it.
 pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
     let bytes = input.as_bytes();
@@ -1065,8 +1068,7 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
         return None;
     }
 
-    let track_quotes = open == b'{' && has_quote_bytes(bytes);
-    if !track_quotes {
+    if !has_quote_bytes(bytes) {
         // Fast path: no quote tracking — the pre-0.7 loop, unchanged.
         let mut depth: i32 = 0;
         let mut i = 0;
@@ -1091,15 +1093,94 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
         }
         return None;
     }
+    if open == b'{' {
+        // Slow path (object body with quote bytes): key-position tracking,
+        // PER NESTING LEVEL — every `{` opens a fresh pair list, so the
+        // enclosing level's in_key state is saved and restored around it.
+        let mut depth: i32 = 0;
+        let mut i = 0;
+        let mut in_key = true;
+        let mut seg_start = true;
+        let mut key_stack: Vec<bool> = Vec::new();
+        while i < bytes.len() {
+            if in_key && seg_start {
+                i = skip_segment_ws(input, i);
+                // The skip may consume every remaining byte (text ending in
+                // whitespace after a trailing comma or dot); `bytes[i]`
+                // below then indexed out of bounds (R3-F1). Nothing left to
+                // scan — no matching close exists.
+                if i >= bytes.len() {
+                    return None;
+                }
+                if is_quote_byte(bytes[i]) {
+                    // Unterminated span: the rest of the input is segment
+                    // content (for bracket balance: no matching close).
+                    let end = quoted_span_end(bytes, i)?;
+                    i = end + 1;
+                    seg_start = false;
+                    continue;
+                }
+                seg_start = false;
+            }
+            match bytes[i] {
+                b'\\' => {
+                    i += 2; // skip escaped character
+                    continue;
+                }
+                b'.' if in_key => {
+                    seg_start = true;
+                }
+                b':' => {
+                    // Key/value boundary: quotes after this are content.
+                    in_key = false;
+                }
+                b',' => {
+                    // Next pair begins: back to key context.
+                    in_key = true;
+                    seg_start = true;
+                }
+                b if b == open => {
+                    depth += 1;
+                    // A `{` opens a fresh pair list at any level: save the
+                    // enclosing key-position state and restart tracking for
+                    // the nested body.
+                    key_stack.push(in_key);
+                    in_key = true;
+                    seg_start = true;
+                }
+                b if b == close => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                    // Matching close of a nested object: restore the
+                    // enclosing pair list's key-position state. The `}`
+                    // itself consumed a position, so segment-start tracking
+                    // stays off until the next re-arm.
+                    in_key = key_stack.pop().unwrap_or(true);
+                    seg_start = false;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        return None;
+    }
 
-    // Slow path (object body with quote bytes): key-position tracking,
-    // PER NESTING LEVEL — every `{` opens a fresh pair list, so the
-    // enclosing level's in_key state is saved and restored around it.
+    // Slow path (array body with quote bytes somewhere): depth still
+    // counts only this `[`/`]` pair, but nested `{` objects track key
+    // positions per scope (R3-F2): a quoted key segment of a nested
+    // object is opaque to the `]` count, while quotes in the array's
+    // own value positions stay ordinary content (§ 5.3.3 "Keys only").
     let mut depth: i32 = 0;
     let mut i = 0;
-    let mut in_key = true;
-    let mut seg_start = true;
-    let mut key_stack: Vec<bool> = Vec::new();
+    let mut in_key = false;
+    let mut seg_start = false;
+    // Per open compound: the opener byte plus the enclosing key-position
+    // state. A closer restores that state only when it matches the most
+    // recently opened compound kind, so crossed closers don't corrupt
+    // key tracking.
+    let mut scope_stack: Vec<(u8, bool, bool)> = Vec::new();
     while i < bytes.len() {
         if in_key && seg_start {
             i = skip_segment_ws(input, i);
@@ -1128,35 +1209,53 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
             b'.' if in_key => {
                 seg_start = true;
             }
-            b':' => {
+            b':' if in_key => {
                 // Key/value boundary: quotes after this are content.
                 in_key = false;
             }
             b',' => {
-                // Next pair begins: back to key context.
+                // Next pair / item begins: a fresh key position in an
+                // object scope; array scope positions stay value
+                // positions.
+                let scope_object = scope_stack.last().is_some_and(|(k, _, _)| *k == b'{');
+                in_key = scope_object;
+                seg_start = scope_object;
+            }
+            b'{' => {
+                // An object scope opens a fresh pair list at any level:
+                // save the enclosing key-position state and restart
+                // tracking for the nested body.
+                scope_stack.push((b'{', in_key, seg_start));
                 in_key = true;
                 seg_start = true;
             }
-            b if b == open => {
+            b'}' => {
+                if scope_stack.last().is_some_and(|(k, _, _)| *k == b'{') {
+                    let (_, saved_in_key, saved_seg_start) = scope_stack.pop().unwrap();
+                    in_key = saved_in_key;
+                    seg_start = saved_seg_start;
+                } else {
+                    seg_start = false;
+                }
+            }
+            b'[' => {
                 depth += 1;
-                // A `{` opens a fresh pair list at any level: save the
-                // enclosing key-position state and restart tracking for
-                // the nested body.
-                key_stack.push(in_key);
-                in_key = true;
-                seg_start = true;
+                scope_stack.push((b'[', in_key, seg_start));
+                in_key = false;
+                seg_start = false;
             }
-            b if b == close => {
+            b']' => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(i);
                 }
-                // Matching close of a nested object: restore the
-                // enclosing pair list's key-position state. The `}`
-                // itself consumed a position, so segment-start tracking
-                // stays off until the next re-arm.
-                in_key = key_stack.pop().unwrap_or(true);
-                seg_start = false;
+                if scope_stack.last().is_some_and(|(k, _, _)| *k == b'[') {
+                    let (_, saved_in_key, saved_seg_start) = scope_stack.pop().unwrap();
+                    in_key = saved_in_key;
+                    seg_start = saved_seg_start;
+                } else {
+                    seg_start = false;
+                }
             }
             _ => {}
         }
@@ -1276,9 +1375,11 @@ pub(crate) enum InlineCloserScan {
 /// Scan `input` (which MUST start with `open`) with § 5.8's quote-aware,
 /// escape-aware delimiter rules and report the matching `close`, for the
 /// § 5.2 rules 6–9 dispatch. Shares `find_matching_close`'s quote /
-/// key-position state machine (quote tracking only for `{` bodies,
-/// per-level key-position tracking, unterminated quoted segment ⇒
-/// `NotFound`) and additionally validates every `\X` outside quoted
+/// key-position state machine (quote tracking whenever quote bytes
+/// are present — per nested Object scope, so an Array body still
+/// becomes quote-aware inside a nested `{`; per-level key-position
+/// tracking; unterminated quoted segment ⇒ `NotFound`) and
+/// additionally validates every `\X` outside quoted
 /// segments via [`scan_escape`] so `BadEscapeSequence` can take
 /// precedence.
 ///
@@ -1308,7 +1409,9 @@ pub(crate) fn scan_inline_closer(
     if bytes.is_empty() || bytes[0] != open {
         return InlineCloserScan::NotFound;
     }
-    let track_quotes = object && has_quote_bytes(bytes);
+    // R3-F2: the gate is "any quote byte anywhere" — quote tracking
+    // itself is per nested Object scope below, not per outer opener.
+    let track_quotes = has_quote_bytes(bytes);
     if !track_quotes {
         // Fast path: no quote tracking. `value_start` marks an unconsumed
         // value position (body start in arrays — including the position
@@ -1430,9 +1533,12 @@ pub(crate) fn scan_inline_closer(
     // quoted segment.
     let mut depth: i32 = 1;
     let mut i = 1;
-    let mut in_key = true;
-    let mut seg_start = true;
-    let mut value_start = false;
+    // Object bodies start at their first key segment; array bodies
+    // start at their first item — a value position with no key context
+    // (§ 5.3.3 "Keys only").
+    let mut in_key = object;
+    let mut seg_start = object;
+    let mut value_start = !object;
     let mut raw = false;
     let mut prev = open;
     // Per open compound: the opener byte plus the enclosing key-position
@@ -1493,23 +1599,25 @@ pub(crate) fn scan_inline_closer(
                 }
             }
             b',' => {
-                // Next pair begins: back to key context.
-                in_key = true;
-                seg_start = true;
+                // Next pair / item begins: a fresh key position in an
+                // object scope; array scope positions stay value
+                // positions (§ 5.3.3 "Keys only").
+                let scope_object = open_stack.last().map_or(object, |(k, _, _)| *k == b'{');
+                in_key = scope_object;
+                seg_start = scope_object;
                 raw = false;
                 value_start = true;
             }
             b'{' | b'[' if value_start && !raw => {
                 depth += 1;
                 // After an array's `[` the next position is still a value
-                // position (its first item); after a nested `{` comes key
-                // context. Save the enclosing key-position state.
+                // position (its first item); after a nested `{` comes a
+                // fresh key position. Save the enclosing key-position
+                // state; an array scope has none (§ 5.3.3 "Keys only").
                 open_stack.push((b, in_key, seg_start));
                 value_start = b == b'[';
-                if b == b'{' {
-                    in_key = true;
-                    seg_start = true;
-                }
+                in_key = b == b'{';
+                seg_start = b == b'{';
             }
             b'{' | b'[' => {
                 // § 5.8.5 mid-value / raw-segment opener — see fast path.
