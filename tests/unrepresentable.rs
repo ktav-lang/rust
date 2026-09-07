@@ -116,19 +116,12 @@ fn scalar_root_serde_unit_variant() {
 }
 
 #[test]
-fn array_root_is_not_scalar_root() {
-    // An Array root IS representable per § 5.9.0, so the serde surface
-    // keeps the OLD generic "top-level value must be an object" error
-    // with NO reason code — pin that split.
-    let e = to_string(&vec![1_i32, 2]).unwrap_err();
-    assert!(
-        e.reason_code().is_none(),
-        "Array root must not be ScalarRoot: {e}"
-    );
-    assert!(
-        e.to_string().contains("top-level value must be an object"),
-        "{e}"
-    );
+fn array_root_is_representable() {
+    // § 5.0.1 permits an Array root; the serde surface accepts it (the
+    // old generic "top-level value must be an object" rejection for
+    // seq-like roots is gone). Scalar roots stay ScalarRoot.
+    let text = to_string(&vec![1_i32, 2]).unwrap();
+    assert_eq!(text, "1\n2\n");
 }
 
 // --- EmptyKeyName ----------------------------------------------------------

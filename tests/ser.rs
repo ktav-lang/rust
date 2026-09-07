@@ -12,6 +12,8 @@ mod multiline;
 mod objects;
 #[path = "ser/raw_marker.rs"]
 mod raw_marker;
+#[path = "ser/root_arrays.rs"]
+mod root_arrays;
 #[path = "ser/scalars.rs"]
 mod scalars;
 #[path = "ser/typed.rs"]
