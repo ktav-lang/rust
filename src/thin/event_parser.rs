@@ -10,26 +10,39 @@
 //! `Key`+`BeginObject`s.
 //!
 //! Duplicates and path conflicts are caught the same way the tree-builder
-//! catches them (spec 0.7 § 5.3.2 / § 6.3): each Object frame carries a
-//! PERSISTENT path table — one entry per real key path ever seen in that
-//! object, labelled `Object` or `Leaf(<kind>)` — that survives synthetic
-//! open/close cycles. A dotted key re-entering a path already shaped as
-//! an `Object` (whether created by an earlier dotted pair or explicitly
-//! as `a: { … }`) MERGES, regardless of intervening sibling pairs; a
-//! dotted path descending through a non-Object leaf, or a plain pair
-//! naming an earlier-established Object, raises `KeyPathConflict`. The
-//! synthetic `ObjectLevel`s hold no key state at all — only the prefix
-//! needed for longest-common-prefix comparison and emission bookkeeping.
+//! catches them (spec 0.7 § 5.3.2 / § 6.3): the parser maintains ONE
+//! parse-wide shared node arena of key-path SHAPES — one `PathShape`
+//! per real
+//! key segment ever seen, labelled `Object` or `Leaf(<kind>)` — plus a
+//! two-tier lookup index keyed on `(parent node id, decoded segment)`:
+//! small documents scan a contiguous linear list with zero hashing and
+//! zero heap allocation, and once entries exceed
+//! `LINEAR_INDEX_THRESHOLD` the index spills (once) into a
+//! `FxHashMap` for O(1) lookups on large documents. Identity is
+//! STRUCTURAL: a node is its `(parent, segment)` pair, never a joined
+//! string, because decoded segments may contain literal dots. A child
+//! object's frame holds only the `NodeId` of its own key path, so its
+//! subtree is visible to the enclosing frame with no copying on close.
+//! A dotted key re-entering a path already shaped as an `Object`
+//! (whether created by an earlier dotted pair or explicitly as
+//! `a: { … }`) MERGES, regardless of intervening sibling pairs; a dotted
+//! path descending through a non-Object leaf, or a plain pair naming an
+//! earlier-established Object, raises `KeyPathConflict`. The synthetic
+//! `ObjectLevel`s hold no key state at all — only the prefix needed for
+//! longest-common-prefix comparison and emission bookkeeping.
 //!
 //! A compound value's INTERNAL key paths — for both inline (`a: {x: 1}`)
-//! and explicit multi-line compounds — are registered into the enclosing
-//! frame's persistent table, recursively for nested objects, and stop at
-//! array boundaries (arrays are leaves), so later dotted re-entry sees
-//! them (§ 5.3.2 / § 6.3).
+//! and explicit multi-line compounds — are registered into the shared
+//! parse-wide shared node-shape arena under the compound's own node, recursively for nested
+//! objects, and stop at array boundaries (arrays are leaves), so later
+//! dotted re-entry sees them (§ 5.3.2 / § 6.3). Event order / first-
+//! appearance order lives in the event stream and is independent of the
+//! node index.
 
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
 use memchr::{memchr, memchr2};
+use rustc_hash::FxHashMap;
 
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 use crate::parser::classify::{is_float_literal, is_pair_shape, try_parse_integer};
@@ -119,6 +132,19 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<(EventSt
 // Parser state
 // ---------------------------------------------------------------------------
 
+/// Below this many registered `(parent, segment)` entries the parser
+/// scans a small contiguous list instead of touching the hash map —
+/// small documents (the common case) then pay no hashing and no heap
+/// allocation at all. 8 matches the owned parser's per-frame
+/// `ObjectMap` capacity precedent (`src/parser/frame.rs`).
+const LINEAR_INDEX_THRESHOLD: usize = 8;
+
+struct LinearEntry<'a> {
+    parent: NodeId,
+    segment: &'a str,
+    id: NodeId,
+}
+
 pub(crate) struct EventParser<'a> {
     pub(crate) bump: &'a Bump,
     pub(crate) stack: Vec<Frame<'a>>,
@@ -152,6 +178,36 @@ pub(crate) struct EventParser<'a> {
     /// re-use the still-open synthetic and do NOT count. `from_str`
     /// uses this to decide whether a reopen-merge pass is needed.
     pub(crate) reopens: usize,
+    /// Shared parse-wide arena of key-path node SHAPES: slot 0 is a
+    /// sentinel
+    /// detached root serving the implicit root frame; every other slot
+    /// holds one decoded key segment's shape, indexed by `NodeId`.
+    /// Identity is the `(parent node id, decoded segment)` pair,
+    /// enforced by the shared `index` — segments are NEVER
+    /// joined into a `.`-separated string, because decoded segments may
+    /// themselves contain literal dots. Ordering lives in the event
+    /// stream, not here.
+    pub(crate) nodes: BumpVec<'a, PathShape>,
+    /// Two-tier lookup index over `nodes`, keyed on `(parent, segment)`
+    /// — ONE per parse, shared by all frames. Below
+    /// [`LINEAR_INDEX_THRESHOLD`] registered entries it is a contiguous
+    /// linear list (`linear`) with zero hashing and zero heap
+    /// allocation, which is what small documents (the common case) hit;
+    /// the first insert past the threshold spills once into a
+    /// `FxHashMap` (`index`) for O(1) lookups on large documents.
+    /// Identity is the `(parent node id, decoded segment)` pair —
+    /// segments are NEVER joined into a `.`-separated string, because
+    /// decoded segments may themselves contain literal dots. Ordering
+    /// lives in the event stream, not here.
+    linear: BumpVec<'a, LinearEntry<'a>>,
+    /// `None` until the linear tier spills (see [`LINEAR_INDEX_THRESHOLD`]).
+    index: Option<FxHashMap<(NodeId, &'a str), NodeId>>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) dbg_node_allocs: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) dbg_index_probes: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) dbg_entry_compares: usize,
 }
 
 impl<'a> EventParser<'a> {
@@ -160,7 +216,7 @@ impl<'a> EventParser<'a> {
         // first content line is classified — no pre-scan. `finish`
         // falls back to an empty Object root if no content line was
         // ever encountered (§ 5.0.1 rule 1).
-        EventParser {
+        let mut p = EventParser {
             bump,
             stack: Vec::with_capacity(8),
             collecting: None,
@@ -170,31 +226,102 @@ impl<'a> EventParser<'a> {
             root_consumed: false,
             root_is_explicit_compound: false,
             reopens: 0,
+            nodes: {
+                let mut nodes = BumpVec::with_capacity_in(16, bump);
+                // Sentinel detached root: `frame_root` of the implicit
+                // root frame.
+                nodes.push(PathShape::Object);
+                nodes
+            },
+            linear: BumpVec::with_capacity_in(LINEAR_INDEX_THRESHOLD, bump),
+            index: None,
+            dbg_node_allocs: 0,
+            dbg_index_probes: 0,
+            dbg_entry_compares: 0,
+        };
+        // The sentinel push above counts as a node allocation, so the
+        // counter reflects the exact arena size.
+        p.dbg_node_allocs += 1;
+        p
+    }
+
+    fn node_shape(&self, id: NodeId) -> PathShape {
+        self.nodes[id as usize]
+    }
+
+    fn probe(&mut self, parent: NodeId, segment: &str) -> Option<NodeId> {
+        self.dbg_index_probes += 1;
+        if let Some(index) = &self.index {
+            self.dbg_entry_compares += 1;
+            return index.get(&(parent, segment)).copied();
         }
+        for i in 0..self.linear.len() {
+            let e = &self.linear[i];
+            self.dbg_entry_compares += 1;
+            if e.parent == parent && e.segment == segment {
+                return Some(e.id);
+            }
+        }
+        None
+    }
+
+    fn add_child(&mut self, parent: NodeId, segment: &'a str, shape: PathShape) -> NodeId {
+        let id = u32::try_from(self.nodes.len()).expect("path node count overflow");
+        self.nodes.push(shape);
+        self.dbg_node_allocs += 1;
+        if let Some(index) = &mut self.index {
+            index.insert((parent, segment), id);
+        } else if self.linear.len() >= LINEAR_INDEX_THRESHOLD {
+            // Spill: build the hash from the retained linear entries.
+            // The list itself is left in place — a few hundred bytes of
+            // arena, never consulted again once `index` is `Some`.
+            let mut map = FxHashMap::default();
+            for e in &self.linear {
+                map.insert((e.parent, e.segment), e.id);
+            }
+            map.insert((parent, segment), id);
+            self.index = Some(map);
+        } else {
+            self.linear.push(LinearEntry {
+                parent,
+                segment,
+                id,
+            });
+        }
+        id
+    }
+
+    /// Detached root for frames whose key path lives in no enclosing
+    /// object — array-element objects (arrays are leaves, so paths never
+    /// cross an array boundary).
+    fn add_detached_root(&mut self) -> NodeId {
+        let id = u32::try_from(self.nodes.len()).expect("path node count overflow");
+        self.nodes.push(PathShape::Object);
+        self.dbg_node_allocs += 1;
+        id
     }
 }
+
+pub(crate) type NodeId = u32;
 
 pub(crate) enum Frame<'a> {
     /// `levels` is parallel to "real frame + open synthetic prefixes".
     /// Index 0 is always the real object's namespace; subsequent entries
-    /// are stacked synthetics. `paths` is the persistent per-real-object
-    /// key-path table (spec § 5.3.2): it is flat across the whole frame
-    /// and is NOT tied to any synthetic level, so a dotted prefix closed
-    /// by intervening siblings can still be re-entered (it merges) and
-    /// duplicate/conflict detection below a reopened prefix stays exact.
-    /// All vectors live in the bump arena — no per-frame heap allocation.
+    /// are stacked synthetics. Key state lives in the parse-wide shared
+    /// node arena/index, NOT in the frame: the frame only holds the
+    /// `NodeId` under which its own entries are keyed, so a dotted
+    /// prefix closed by intervening siblings can still be re-entered (it
+    /// merges) and duplicate/conflict detection below a reopened prefix
+    /// stays exact — with no per-frame table and no copying on close.
     Object {
         levels: BumpVec<'a, ObjectLevel<'a>>,
-        paths: BumpVec<'a, PathEntry<'a>>,
-        /// The decoded key path under which this object lives in its
-        /// ENCLOSING frame's persistent `paths` table — `Some` only for
-        /// objects opened as a keyed pair (`a: { … }` / `a.b: { … }`).
-        /// `None` for root frames and for objects opened inside arrays
-        /// (array elements are unnamed, and arrays are leaves in the
-        /// path model, so paths never cross an array boundary). On a
-        /// general close, the frame's table is folded into the parent's
-        /// under this prefix.
-        key_path: Option<&'a [&'a str]>,
+        /// The node of this object's own key path in the shared node-shape
+        /// arena — top-level entries of the frame are keyed
+        /// `(frame_root, segment)`. Node `0` (sentinel detached root)
+        /// for root frames and for objects opened inside arrays (array
+        /// elements are unnamed, and arrays are leaves in the path
+        /// model, so paths never cross an array boundary).
+        frame_root: NodeId,
     },
     Array,
 }
@@ -211,34 +338,19 @@ pub(crate) enum PathShape {
     Leaf(&'static str),
 }
 
-/// One registered key path in a frame's persistent table. The path is
-/// the DECODED segment chain, arena-allocated with `alloc_slice_copy` —
-/// never joined into a `.`-separated string, because decoded segments
-/// may themselves contain literal dots (from `\.` escapes), which would
-/// make a joined form ambiguous. Comparison is element-wise, which is
-/// exact.
-pub(crate) struct PathEntry<'a> {
-    path: &'a [&'a str],
-    shape: PathShape,
-}
-
 pub(crate) struct ObjectLevel<'a> {
     /// `None` for the real object level, `Some(prefix_segment)` for a
     /// synthetic dotted-key level. Kept ONLY for the LCP comparison and
-    /// emission bookkeeping — all key state lives in the frame's
-    /// persistent `paths` table.
+    /// emission bookkeeping — all key state lives in the shared node
+    /// arena/index.
     prefix: Option<&'a str>,
 }
 
 impl<'a> Frame<'a> {
-    pub(crate) fn new_object(bump: &'a Bump, key_path: Option<&'a [&'a str]>) -> Self {
+    pub(crate) fn new_object(bump: &'a Bump, frame_root: NodeId) -> Self {
         let mut levels = BumpVec::with_capacity_in(2, bump);
         levels.push(ObjectLevel { prefix: None });
-        Frame::Object {
-            levels,
-            paths: BumpVec::with_capacity_in(8, bump),
-            key_path,
-        }
+        Frame::Object { levels, frame_root }
     }
     pub(crate) fn new_array() -> Self {
         Frame::Array
@@ -414,7 +526,7 @@ impl<'a> EventParser<'a> {
         // § 5.0.1 rule 4: lone `{`
         if trimmed == "{" {
             self.root_is_explicit_compound = true;
-            self.stack.push(Frame::new_object(self.bump, None));
+            self.stack.push(Frame::new_object(self.bump, 0));
             self.opener_offsets.push(trimmed_span.start);
             EventSink::push(events, Event::BeginObject);
             return Ok(true);
@@ -479,7 +591,7 @@ impl<'a> EventParser<'a> {
         // § 5.0.1 rules 6/7: pair-shape → implicit Object root,
         // array-item-shape → implicit Array root.
         if is_pair_shape(trimmed) {
-            self.stack.push(Frame::new_object(self.bump, None));
+            self.stack.push(Frame::new_object(self.bump, 0));
             self.opener_offsets.push(0);
             EventSink::push(events, Event::BeginObject);
         } else {
@@ -576,15 +688,14 @@ impl<'a> EventParser<'a> {
                         events,
                     ),
                     ValueStart::OpenObject => {
-                        let full_path = self.emit_keyed_open(
+                        let node = self.emit_keyed_open(
                             key,
                             Event::BeginObject,
                             line_num,
                             key_span,
                             events,
                         )?;
-                        self.stack
-                            .push(Frame::new_object(self.bump, Some(full_path)));
+                        self.stack.push(Frame::new_object(self.bump, node));
                         self.opener_offsets.push(trimmed_span.end - 1);
                         Ok(())
                     }
@@ -617,19 +728,26 @@ impl<'a> EventParser<'a> {
                         r
                     }
                     ValueStart::InlineEvents(inline_events) => {
-                        let (leaf, full_path) =
+                        let (leaf, parent_node) =
                             self.reconcile_dotted_key(key, line_num, key_span, events)?;
                         let shape = match inline_events.first() {
                             Some(ev) => path_shape_of(ev),
                             None => unreachable!("inline compound always emits events"),
                         };
-                        self.register_value_path(full_path, shape, key, line_num, key_span)?;
+                        let node = self.register_value_path(
+                            parent_node,
+                            leaf,
+                            shape,
+                            key,
+                            line_num,
+                            key_span,
+                        )?;
                         if matches!(shape, PathShape::Object) {
                             // § 5.3.2 / § 6.3: the inline compound's
                             // internal key paths must be visible to
                             // later dotted re-entry in THIS frame.
                             self.register_inline_child_paths(
-                                full_path,
+                                node,
                                 &inline_events,
                                 line_num,
                                 key_span,
@@ -655,9 +773,16 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        let (leaf, parent_node) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         let label = event_label(&value);
-        self.register_value_path(full_path, PathShape::Leaf(label), key, line_num, key_span)?;
+        self.register_value_path(
+            parent_node,
+            leaf,
+            PathShape::Leaf(label),
+            key,
+            line_num,
+            key_span,
+        )?;
         events.push(Event::Key(leaf));
         events.push(value);
         Ok(())
@@ -673,16 +798,16 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        let (leaf, parent_node) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         let shape = path_shape_of(&open);
-        self.register_value_path(full_path, shape, key, line_num, key_span)?;
+        self.register_value_path(parent_node, leaf, shape, key, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(open);
         events.push(close);
         Ok(())
     }
 
-    /// For `key: {` / `key: [` — register the key path and emit `Key` + open; returns the path for the caller's frame `key_path`.
+    /// For `key: {` / `key: [` — register the key path and emit `Key` + open; returns the registered node for the caller's `frame_root`.
     fn emit_keyed_open<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
@@ -690,13 +815,13 @@ impl<'a> EventParser<'a> {
         line_num: usize,
         key_span: Span,
         events: &mut S,
-    ) -> Result<&'a [&'a str]> {
-        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+    ) -> Result<NodeId> {
+        let (leaf, parent_node) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         let shape = path_shape_of(&open);
-        self.register_value_path(full_path, shape, key, line_num, key_span)?;
+        let node = self.register_value_path(parent_node, leaf, shape, key, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(open);
-        Ok(full_path)
+        Ok(node)
     }
 
     fn emit_keyed_open_multiline<S: EventSink<'a>>(
@@ -707,9 +832,10 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        let (leaf, parent_node) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         self.register_value_path(
-            full_path,
+            parent_node,
+            leaf,
             PathShape::Leaf("string"),
             key,
             line_num,
@@ -760,9 +886,11 @@ impl<'a> EventParser<'a> {
             ValueStart::OpenObject => {
                 events.push(Event::BeginObject);
                 // Array elements are unnamed; paths never cross an
-                // array boundary (arrays are leaves), so `key_path`
-                // is `None` and nothing is folded on close.
-                self.stack.push(Frame::new_object(self.bump, None));
+                // array boundary (arrays are leaves), so the frame gets
+                // a detached root node and nothing is linked to any
+                // enclosing object on close.
+                let fr = self.add_detached_root();
+                self.stack.push(Frame::new_object(self.bump, fr));
                 self.opener_offsets.push(trimmed_span.end - 1);
             }
             ValueStart::OpenArray => {
@@ -808,13 +936,17 @@ impl<'a> EventParser<'a> {
     // Dotted-key reconciliation
     // -----------------------------------------------------------------------
 
+    /// Returns `(leaf_segment, parent_node_id)`: the node under which
+    /// the leaf value's segment will be registered (the current frame's
+    /// `frame_root` for single-segment keys, or the deepest prefix node
+    /// for dotted keys).
     fn reconcile_dotted_key<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
         line_num: usize,
         key_span: Span,
         events: &mut S,
-    ) -> Result<(&'a str, &'a [&'a str])> {
+    ) -> Result<(&'a str, NodeId)> {
         // Single segment (no UNescaped `.`) fast path. Decode the
         // segment if it contains a `\`; otherwise reuse the source
         // borrow.
@@ -840,8 +972,11 @@ impl<'a> EventParser<'a> {
                 }
             }
             let leaf = self.decode_key_in_arena(key, line_num, key_span)?;
-            let full_path = self.bump.alloc_slice_copy(&[leaf]);
-            return Ok((leaf, full_path));
+            let frame_root = match self.stack.last() {
+                Some(Frame::Object { frame_root, .. }) => *frame_root,
+                _ => unreachable!("dispatched as object"),
+            };
+            return Ok((leaf, frame_root));
         }
 
         // Multi-segment path — split on UNescaped `.`, decode each
@@ -878,28 +1013,26 @@ impl<'a> EventParser<'a> {
         // Spec 0.7 § 5.3.2: a dotted key re-entering an Object that
         // already exists — whether created by an earlier dotted pair or
         // explicitly as `a: { … }` / `a: {}` — MUST merge, regardless
-        // of intervening sibling pairs. Reconcile the persistent
-        // per-real-object path table: every proper prefix must either
-        // already be an Object (fine — merge) or be absent (record it
-        // as one); descending through a Leaf is a BlockedByValue
-        // conflict (§ 6.3). The table is NOT per synthetic level, so a
+        // of intervening sibling pairs. Descend the shared node arena
+        // from the frame's `frame_root`: every proper prefix must
+        // either already be an Object node (fine — merge) or be absent
+        // (create it); descending through a Leaf is a BlockedByValue
+        // conflict (§ 6.3). The arena is NOT per synthetic level, so a
         // prefix closed by an intervening sibling stays visible here and
         // duplicate detection beneath a reopened prefix stays exact.
-        // Comparison is element-wise over decoded segments, never over a
-        // joined string — decoded segments may contain literal dots.
-        let bump = self.bump;
-        let paths = match self.stack.last_mut().unwrap() {
-            Frame::Object { paths, .. } => paths,
+        // Identity is `(parent node id, decoded segment)` — segments
+        // are never joined into a `.`-separated string, because decoded
+        // segments may contain literal dots.
+        let frame_root = match self.stack.last() {
+            Some(Frame::Object { frame_root, .. }) => *frame_root,
             _ => unreachable!("dispatched as object"),
         };
+        let mut cur = frame_root;
         let mut prefix_existed = vec![false; decoded_segments.len()];
-        for k in 1..decoded_segments.len() {
-            let prefix: &[&str] = &decoded_segments[..k];
-            match paths.iter().find(|e| e.path == prefix) {
-                Some(PathEntry {
-                    shape: PathShape::Leaf(_),
-                    ..
-                }) => {
+        for k in 0..decoded_segments.len() - 1 {
+            let seg = decoded_segments[k];
+            match self.probe(cur, seg) {
+                Some(id) if matches!(self.node_shape(id), PathShape::Leaf(_)) => {
                     return Err(Error::Structured(ErrorKind::KeyPathConflict {
                         line: line_num as u32,
                         // RAW key text (escapes intact), matching the
@@ -909,14 +1042,15 @@ impl<'a> EventParser<'a> {
                         span: key_span,
                     }));
                 }
-                Some(_) => prefix_existed[k] = true,
-                None => paths.push(PathEntry {
-                    path: bump.alloc_slice_copy(prefix),
-                    shape: PathShape::Object,
-                }),
+                Some(id) => {
+                    prefix_existed[k + 1] = true;
+                    cur = id;
+                }
+                None => {
+                    cur = self.add_child(cur, seg, PathShape::Object);
+                }
             }
         }
-        let full_path: &'a [&'a str] = bump.alloc_slice_copy(&decoded_segments);
 
         let prefix_segments = &decoded_segments[..decoded_segments.len() - 1];
 
@@ -961,7 +1095,7 @@ impl<'a> EventParser<'a> {
             self.push_synthetic(seg, events);
         }
 
-        Ok((leaf, full_path))
+        Ok((leaf, cur))
     }
 
     /// Decode a key segment per § 3.7 / § 5.3.3. Bare segments without
@@ -990,8 +1124,8 @@ impl<'a> EventParser<'a> {
     #[inline]
     fn push_synthetic<S: EventSink<'a>>(&mut self, seg: &'a str, events: &mut S) {
         // Emission-only: key state for the synthetic prefix is already
-        // recorded in the frame's persistent `paths` table (or about to
-        // be by `register_value_path`), so nothing can fail here.
+        // recorded in the shared node arena/index (or about to be by
+        // `register_value_path`), so nothing can fail here.
         events.push(Event::Key(seg));
         events.push(Event::BeginObject);
         match self.stack.last_mut().unwrap() {
@@ -1038,16 +1172,19 @@ impl<'a> EventParser<'a> {
         }
     }
 
-    /// Register a fully-decoded key path with the value shape that now
-    /// occupies it, implementing the owned parser's outcome tables
-    /// (`parser::insert::insert_value` / `insert_dotted`, § 6.3). The
-    /// two entry points differ on an OCCUPIED path:
+    /// Register a fully-decoded leaf segment under `parent_node` with
+    /// the value shape that now occupies it, implementing the owned
+    /// parser's outcome tables (`parser::insert::insert_value` /
+    /// `insert_dotted`, § 6.3). The parent node is looked up in the
+    /// shared hash index — no path scan. The two entry points differ on
+    /// an OCCUPIED slot:
     ///
-    /// - Dotted key (`path.len() > 1`, mirrors `insert_dotted`): the
-    ///   descent was already validated per-prefix by
-    ///   `reconcile_dotted_key`, so ANY occupied final segment is a
-    ///   `DuplicateKey` — unconditionally, regardless of shape.
-    /// - Single-segment key (`path.len() == 1`, mirrors
+    /// - Dotted key (`parent_node` deeper than the frame's
+    ///   `frame_root`, mirrors `insert_dotted`): the descent was
+    ///   already validated per-prefix by `reconcile_dotted_key`, so
+    ///   ANY occupied final segment is a `DuplicateKey` —
+    ///   unconditionally, regardless of shape.
+    /// - Single-segment key (`parent_node == frame_root`, mirrors
     ///   `insert_value`'s four-arm table):
     ///
     ///   - leaf value onto existing Object → `KeyPathConflict`
@@ -1057,29 +1194,37 @@ impl<'a> EventParser<'a> {
     ///   - Object onto existing leaf → `KeyPathConflict`
     ///     `Overwrite { existing: <kind>, new_kind: "object" }`
     ///
-    /// - absent path → record it.
+    /// - absent slot → record it. Returns the registered node's id.
     fn register_value_path(
         &mut self,
-        path: &'a [&'a str],
+        parent_node: NodeId,
+        leaf: &'a str,
         shape: PathShape,
         raw_key: &str,
         line_num: usize,
         key_span: Span,
-    ) -> Result<()> {
-        match self.stack.last_mut().unwrap() {
-            Frame::Object { paths, .. } => {
-                let existing = paths.iter().find(|e| e.path == path).map(|e| e.shape);
+    ) -> Result<NodeId> {
+        let frame_root = match self.stack.last() {
+            Some(Frame::Object { frame_root, .. }) => *frame_root,
+            _ => unreachable!("only objects have keys"),
+        };
+        // Single-segment keys have parent == frame_root; every dotted
+        // key and every inline-compound child has a deeper parent.
+        let dotted = parent_node != frame_root;
+        match self.probe(parent_node, leaf) {
+            // `insert_dotted` parity: an occupied final segment
+            // of a dotted key is ALWAYS a DuplicateKey — shape
+            // conflicts along the way were already raised per-
+            // prefix by `reconcile_dotted_key`.
+            Some(_) if dotted => Err(Error::Structured(ErrorKind::DuplicateKey {
+                line: line_num as u32,
+                key: raw_key.to_string(),
+                span: key_span,
+            })),
+            Some(id) => {
+                let existing = self.node_shape(id);
                 match existing {
-                    // `insert_dotted` parity: an occupied final segment
-                    // of a dotted key is ALWAYS a DuplicateKey — shape
-                    // conflicts along the way were already raised per-
-                    // prefix by `reconcile_dotted_key`.
-                    Some(_) if path.len() > 1 => Err(Error::Structured(ErrorKind::DuplicateKey {
-                        line: line_num as u32,
-                        key: raw_key.to_string(),
-                        span: key_span,
-                    })),
-                    Some(PathShape::Object) => match shape {
+                    PathShape::Object => match shape {
                         PathShape::Leaf(label) => {
                             Err(Error::Structured(ErrorKind::KeyPathConflict {
                                 line: line_num as u32,
@@ -1097,7 +1242,7 @@ impl<'a> EventParser<'a> {
                             span: key_span,
                         })),
                     },
-                    Some(PathShape::Leaf(existing)) => match shape {
+                    PathShape::Leaf(existing) => match shape {
                         PathShape::Leaf(_) => Err(Error::Structured(ErrorKind::DuplicateKey {
                             line: line_num as u32,
                             key: raw_key.to_string(),
@@ -1113,31 +1258,27 @@ impl<'a> EventParser<'a> {
                             span: key_span,
                         })),
                     },
-                    None => {
-                        paths.push(PathEntry { path, shape });
-                        Ok(())
-                    }
                 }
             }
-            _ => unreachable!("only objects have keys"),
+            None => Ok(self.add_child(parent_node, leaf, shape)),
         }
     }
 
     /// Register the INTERNAL key paths of an inline compound value
     /// (`a: {x: 1}` — events already flattened by `value_to_events`)
-    /// into the ENCLOSING frame's persistent table, under `base` (the
-    /// path just registered for the compound itself). Recurses into
-    /// nested objects; arrays are leaves — nothing inside a bracketed
-    /// array is registered (§ 5.3.2 / § 6.3).
+    /// into the shared node arena, under `base_node` (the node just
+    /// registered for the compound itself). Recurses into nested
+    /// objects; arrays are leaves — nothing inside a bracketed array is
+    /// registered (§ 5.3.2 / § 6.3).
     ///
     /// Registration is provably collision-free: the inline `Value` was
     /// already validated internally by `parse_inline_object`'s
-    /// `insert_value` (each path appears exactly once), and `base` was
-    /// just inserted absent. Errors are still propagated with `?`
+    /// `insert_value` (each path appears exactly once), and `base_node`
+    /// was just inserted absent. Errors are still propagated with `?`
     /// defensively rather than panicking.
     fn register_inline_child_paths(
         &mut self,
-        base: &'a [&'a str],
+        base_node: NodeId,
         events: &[Event<'a>],
         line_num: usize,
         key_span: Span,
@@ -1145,7 +1286,6 @@ impl<'a> EventParser<'a> {
         debug_assert!(matches!(events.first(), Some(Event::BeginObject)));
         debug_assert!(matches!(events.last(), Some(Event::EndObject)));
         let inner = &events[1..events.len() - 1];
-        let bump = self.bump;
         let mut i = 0;
         while i < inner.len() {
             let k = match &inner[i] {
@@ -1157,18 +1297,13 @@ impl<'a> EventParser<'a> {
             // `value_to_events`.
             let value_ev = &inner[i + 1];
             let shape = path_shape_of(value_ev);
-            let child_path: &'a [&'a str] = {
-                let mut v: Vec<&str> = Vec::with_capacity(base.len() + 1);
-                v.extend_from_slice(base);
-                v.push(k);
-                bump.alloc_slice_copy(&v)
-            };
-            self.register_value_path(child_path, shape, k, line_num, key_span)?;
+            let child_node =
+                self.register_value_path(base_node, k, shape, k, line_num, key_span)?;
             match value_ev {
                 Event::BeginObject => {
                     let j = matching_bracket(inner, i + 1, b'o');
                     self.register_inline_child_paths(
-                        child_path,
+                        child_node,
                         &inner[i + 1..=j],
                         line_num,
                         key_span,
@@ -1256,61 +1391,16 @@ impl<'a> EventParser<'a> {
                 found: expected.close(),
             }));
         }
-        // § 5.3.2: fold the closed object's persistent table into its
-        // parent object's table under the object's own key path, so a
-        // later dotted re-entry (`a.x: 2`) sees the compound's internal
-        // keys. Arrays are leaves — never fold into (or through) them.
-        //
-        // UNREACHABILITY of the collision arm below: an entry `base++q`
-        // cannot pre-exist in the parent table because (a) `base` was
-        // registered absent when this frame was opened, and (b) the
-        // table maintains the invariant that every registered path's
-        // proper prefixes are present as Object entries (every
-        // registration goes through `reconcile_dotted_key`'s prefix
-        // loop first) — so `base++q` present would imply `base` present,
-        // a contradiction. Nothing writes the parent's table while the
-        // child frame is open: all pair handling targets
-        // `stack.last_mut()`. Insertion order (prefixes before
-        // descendants) is preserved because the child table maintains
-        // the same invariant, so the parent's invariant survives the
-        // fold.
-        if let Frame::Object {
-            paths: child_paths,
-            key_path: Some(base),
-            ..
-        } = &popped
-        {
-            if matches!(self.stack.last(), Some(Frame::Object { .. })) {
-                let entries: Vec<(PathShape, &'a [&'a str])> =
-                    child_paths.iter().map(|e| (e.shape, e.path)).collect();
-                let bump = self.bump;
-                for (shape, q) in entries {
-                    let joined: &'a [&'a str] = {
-                        let mut v: Vec<&str> = Vec::with_capacity(base.len() + q.len());
-                        v.extend_from_slice(base);
-                        v.extend_from_slice(q);
-                        bump.alloc_slice_copy(&v)
-                    };
-                    let parent = match self.stack.last_mut().unwrap() {
-                        Frame::Object { paths, .. } => paths,
-                        _ => unreachable!("checked above"),
-                    };
-                    if parent.iter().any(|e| e.path == joined) {
-                        // Unreachable by the proof above; report
-                        // `DuplicateKey` rather than panicking.
-                        return Err(Error::Structured(ErrorKind::DuplicateKey {
-                            line: line_num as u32,
-                            key: joined.join("."),
-                            span: trimmed_span,
-                        }));
-                    }
-                    parent.push(PathEntry {
-                        path: joined,
-                        shape,
-                    });
-                }
-            }
-        }
+        // § 5.3.2: no fold is needed on close. The child frame's
+        // `frame_root` IS the node of its own key path in the shared
+        // global node arena/index; its top-level entries are keyed
+        // `(frame_root, segment)` — exactly the key the parent's
+        // dotted-key descent would probe. The child's subtree is
+        // therefore already linked at the parent's descent point and
+        // visible to later `a.x: 2` re-entry with no copying. Any
+        // collision the old defensive fold arm claimed to catch is
+        // impossible: the shared index enforces `(parent, segment)`
+        // node identity at insertion time.
         let close_event = match got {
             BracketKind::Object => Event::EndObject,
             BracketKind::Array => Event::EndArray,
@@ -1751,4 +1841,151 @@ fn leading_whitespace_bytes(s: &str) -> &[u8] {
         i += 1;
     }
     &bytes[..i]
+}
+
+// ---------------------------------------------------------------------------
+// Tests: deterministic allocation/probe counters
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod counter_tests {
+    use super::*;
+
+    /// Runs a full LF-only parse (duplicating `parse_events`' fast-path
+    /// line loop, since `parse_events` builds the parser locally) and
+    /// returns the exact `(dbg_node_allocs, dbg_index_probes,
+    /// dbg_entry_compares)` counts.
+    /// All test docs are LF-only, so only the `memchr(b'\r', ..).is_none()`
+    /// branch is needed.
+    fn parse_counters(doc: &str) -> (usize, usize, usize) {
+        let bump = Bump::new();
+        let mut p = EventParser::new(&bump);
+        let mut events: EventStream<'_> = BumpVec::with_capacity_in(64, &bump);
+        let bytes = doc.as_bytes();
+        let mut line_num: usize = 0;
+        let mut line_start: usize = 0;
+        while line_start <= bytes.len() {
+            let end = memchr(b'\n', &bytes[line_start..])
+                .map(|p| line_start + p)
+                .unwrap_or(bytes.len());
+            let line: &str = &doc[line_start..end];
+            line_num += 1;
+            p.handle_line(line, line_num, line_start as u32, &mut events)
+                .unwrap();
+            if end == bytes.len() {
+                break;
+            }
+            line_start = end + 1;
+        }
+        p.finish(bytes.len() as u32, &mut events).unwrap();
+        (p.dbg_node_allocs, p.dbg_index_probes, p.dbg_entry_compares)
+    }
+
+    /// Deep chain `a: { ... a: { x: 1 } ... }` of depth D.
+    ///
+    /// EXACT counts, derived from the code paths (not fitted):
+    /// - `dbg_node_allocs == D + 2`: one node per `a` level (D), one for
+    ///   `x` (leaf), plus the sentinel pushed in `new()` (which counts,
+    ///   so totals stay exact). `x: 1` sits inside D open `a` objects,
+    ///   so there is exactly one leaf node.
+    /// - `dbg_index_probes == D + 1`: one probe per real key seen — D
+    ///   for the `a` openers, 1 for `x`. `}` closers probe nothing.
+    ///
+    /// The PRE-FIX representation copied the whole key path as `&str`
+    /// slots on every frame close, allocating Theta(D^3) path slots
+    /// overall. Measured slot-copies at D = 4 / 8 / 16 / 32 were
+    /// 35 / 165 / 969 / 6,545 (doubling ratios 4.7 / 5.9 / 6.8 —
+    /// clearly super-quadratic, trending cubic). The shape arena makes
+    /// allocation exactly linear in nodes: allocs(2D) <= 3 * allocs(D).
+    #[test]
+    fn deep_chain_path_metadata_is_linear() {
+        for d in [4usize, 8, 16, 32] {
+            let mut doc = String::new();
+            for _ in 0..d {
+                doc.push_str("a: {\n");
+            }
+            doc.push_str("x: 1\n");
+            for _ in 0..d {
+                doc.push_str("}\n");
+            }
+            let (allocs, probes, _) = parse_counters(&doc);
+            assert_eq!(allocs, d + 2, "node allocs at D={d}");
+            assert_eq!(probes, d + 1, "index probes at D={d}");
+        }
+        // Linear-growth check across consecutive pairs of the sizes above.
+        let allocs_of = |d: usize| {
+            let mut doc = String::new();
+            for _ in 0..d {
+                doc.push_str("a: {\n");
+            }
+            doc.push_str("x: 1\n");
+            for _ in 0..d {
+                doc.push_str("}\n");
+            }
+            parse_counters(&doc).0
+        };
+        let a4 = allocs_of(4);
+        let a8 = allocs_of(8);
+        let a16 = allocs_of(16);
+        let a32 = allocs_of(32);
+        assert!(a8 <= 3 * a4);
+        assert!(a16 <= 3 * a8);
+        assert!(a32 <= 3 * a16);
+    }
+
+    /// Flat object with K scalar keys, one per line.
+    ///
+    /// EXACT counts: one node per key + the sentinel in `new()`
+    /// (`dbg_node_allocs == K + 1`), and one index probe per key
+    /// (`dbg_index_probes == K`). No synthetic prefixes exist, so no
+    /// extra nodes or probes appear.
+    ///
+    /// PRE-FIX, every duplicate/conflict check compared full joined
+    /// key-path strings entry-by-entry against a per-frame table —
+    /// exactly K(K-1)/2 entry comparisons for K keys: 28 / 120 / 496 /
+    /// 2,016 at K = 8 / 16 / 32 / 64 — precisely quadratic. The shared
+    /// index makes probes exactly linear: probes(2K) <= 3*probes(K).
+    ///
+    /// The hybrid two-tier index restores pre-fix EXACT comparison
+    /// counts below the spill threshold and stays sub-quadratic above:
+    /// the i-th key's lookup (0-based) scans i entries while linear, so
+    /// for K <= 8: compares = K(K-1)/2 (K=8 → 28, exactly the pre-fix
+    /// count). The 9th insert spills (linear holds 8), so for K >= 9:
+    /// compares(K) = 28 + 8 + (K-9) → K=16 → 43, K=32 → 59, K=64 → 91.
+    /// PRE-FIX comparisons were exactly K(K-1)/2 (28 / 120 / 496 / 2,016);
+    /// the hybrid matches pre-fix below the threshold and is
+    /// sub-quadratic above it.
+    #[test]
+    fn flat_object_index_probes_are_linear() {
+        let build = |k: usize| {
+            let mut doc = String::new();
+            for i in 0..k {
+                doc.push_str(&format!("k{i}: {i}\n"));
+            }
+            doc
+        };
+        for k in [8usize, 16, 32, 64] {
+            let (allocs, probes, compares) = parse_counters(&build(k));
+            assert_eq!(allocs, k + 1, "node allocs at K={k}");
+            assert_eq!(probes, k, "index probes at K={k}");
+            let expected_compares = if k <= 8 {
+                k * (k - 1) / 2
+            } else {
+                28 + 8 + (k - 9)
+            };
+            assert_eq!(compares, expected_compares, "entry compares at K={k}");
+        }
+        let counters_of = |k: usize| parse_counters(&build(k));
+        let probes_of = |k: usize| parse_counters(&build(k)).1;
+        let p8 = probes_of(8);
+        let p16 = counters_of(16).1;
+        let p32 = counters_of(32).1;
+        let p64 = counters_of(64).1;
+        assert!(p16 <= 3 * p8);
+        assert!(p32 <= 3 * p16);
+        assert!(p64 <= 3 * p32);
+        // Compares grow sub-quadratically across doubling pairs.
+        assert!(counters_of(32).2 <= 3 * counters_of(16).2);
+        assert!(counters_of(64).2 <= 3 * counters_of(32).2);
+    }
 }
