@@ -233,52 +233,71 @@ fn parse_inline_value_raw(
         // to the value-start-aware `scan_inline_closer` (§ 5.8.5) so a
         // body like `{a: hello{world, b: x}` — the trailing item of
         // `[{a: hello{world, b: x}]` — is still recognized as closed.
-        let closed = match find_matching_close(trimmed, b'{', b'}') {
-            Some(close) => close == trimmed.len() - 1,
-            None => matches!(
-                scan_inline_closer(trimmed, b'{', b'}', line_num, span),
-                InlineCloserScan::Found(idx) if idx == trimmed.len() - 1
-            ),
+        // § 6.11/§ 6.12 tri-state: closer at last byte, closer with
+        // trailing content, or no closer at all.
+        let close_idx = match find_matching_close(trimmed, b'{', b'}') {
+            Some(close) => Some(close),
+            None => match scan_inline_closer(trimmed, b'{', b'}', line_num, span) {
+                InlineCloserScan::Found(idx) => Some(idx),
+                InlineCloserScan::NotFound => None,
+                InlineCloserScan::BadEscape(err) => return Err(err),
+            },
         };
-        if closed {
-            // Empty object?
-            let inner = &trimmed[1..trimmed.len() - 1];
-            if inner.trim().is_empty() {
-                return Ok(Value::Object(ObjectMap::default()));
+        match close_idx {
+            // § 6.11: the matching closer is the last byte.
+            Some(idx) if idx == trimmed.len() - 1 => {
+                // Empty object?
+                let inner = &trimmed[1..trimmed.len() - 1];
+                if inner.trim().is_empty() {
+                    return Ok(Value::Object(ObjectMap::default()));
+                }
+                // Nested inline object
+                return parse_inline_object_inner(trimmed, line_num, span, depth + 1, strict);
             }
-            // Nested inline object
-            return parse_inline_object_inner(trimmed, line_num, span, depth + 1, strict);
+            // § 6.12: closer found, but content follows it.
+            Some(_) => return Err(malformed_closer_not_at_end(line_num, span)),
+            // § 6.11: no closer at all.
+            None => {
+                return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                    line: line_num as u32,
+                    span,
+                }));
+            }
         }
-        // Unterminated
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span,
-        }));
     }
 
     if first_byte == b'[' {
         // Check for balanced closing `]` (see the `{` branch for the
         // value-start-aware fallback).
-        let closed = match find_matching_close(trimmed, b'[', b']') {
-            Some(close) => close == trimmed.len() - 1,
-            None => matches!(
-                scan_inline_closer(trimmed, b'[', b']', line_num, span),
-                InlineCloserScan::Found(idx) if idx == trimmed.len() - 1
-            ),
+        // § 6.11/§ 6.12 tri-state (see the `{` branch).
+        let close_idx = match find_matching_close(trimmed, b'[', b']') {
+            Some(close) => Some(close),
+            None => match scan_inline_closer(trimmed, b'[', b']', line_num, span) {
+                InlineCloserScan::Found(idx) => Some(idx),
+                InlineCloserScan::NotFound => None,
+                InlineCloserScan::BadEscape(err) => return Err(err),
+            },
         };
-        if closed {
-            let inner = &trimmed[1..trimmed.len() - 1];
-            if inner.trim().is_empty() {
-                return Ok(Value::Array(Vec::new()));
+        match close_idx {
+            // § 6.11: the matching closer is the last byte.
+            Some(idx) if idx == trimmed.len() - 1 => {
+                let inner = &trimmed[1..trimmed.len() - 1];
+                if inner.trim().is_empty() {
+                    return Ok(Value::Array(Vec::new()));
+                }
+                // Nested inline array
+                return parse_inline_array_inner(trimmed, line_num, span, depth + 1, strict);
             }
-            // Nested inline array
-            return parse_inline_array_inner(trimmed, line_num, span, depth + 1, strict);
+            // § 6.12: closer found, but content follows it.
+            Some(_) => return Err(malformed_closer_not_at_end(line_num, span)),
+            // § 6.11: no closer at all.
+            None => {
+                return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                    line: line_num as u32,
+                    span,
+                }));
+            }
         }
-        // Unterminated
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span,
-        }));
     }
 
     // section 5.2 rule 5: `()` / `(())` → empty String, on the RAW body
