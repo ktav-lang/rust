@@ -92,6 +92,22 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
                 stack.push(0);
                 i += 1;
             }
+            // A bare Begin with a frame already open is an anonymous
+            // compound value (an array element — only array elements
+            // lack a key). It is never a § 5.3.2 reopen target (the
+            // parser's persistent path table only tracks keyed paths),
+            // so it always gets a fresh child buffer — same treatment
+            // as the keyed array-valued arm below, minus the `seen`
+            // entry and the `Key` item.
+            ev @ (Event::BeginObject | Event::BeginArray) => {
+                let idx = bufs.len();
+                bufs.push(new_buf(bump, src.len()));
+                bufs[stack_top(&stack)]
+                    .items
+                    .push(Item::Obj { buf: idx, open: ev });
+                stack.push(idx);
+                i += 1;
+            }
             Event::Key(k) => {
                 let value = src.get(i + 1).copied();
                 match value {
@@ -151,8 +167,8 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
                     }
                 }
             }
-            // Bare closers (and any other bare event, e.g. array items)
-            // close one frame / land in the top buffer.
+            // Bare closers close one frame; any other bare event (a
+            // scalar array item) lands in the top buffer.
             Event::EndObject | Event::EndArray => {
                 stack.pop();
                 i += 1;
@@ -245,7 +261,156 @@ mod tests {
         }};
     }
 
-    use Event::{BeginObject, EndObject, Integer, Key};
+    use Event::{BeginArray, BeginObject, EndArray, EndObject, Integer, Key};
+
+    /// Anonymous compound array items survive the merge with the
+    /// § 5.3.2 reopen (`a.y` after the array) folded into the first
+    /// `a` block.
+    #[test]
+    fn array_in_array_with_reopen() {
+        check!(
+            "a.x: 1\nitems: [[2]]\na.y: 3\n",
+            vec![
+                BeginObject,
+                Key("a"),
+                BeginObject,
+                Key("x"),
+                Integer("1"),
+                Key("y"),
+                Integer("3"),
+                EndObject,
+                Key("items"),
+                BeginArray,
+                BeginArray,
+                Integer("2"),
+                EndArray,
+                EndArray,
+                EndObject,
+            ]
+        );
+    }
+
+    #[test]
+    fn object_in_array_with_reopen() {
+        check!(
+            "a.x: 1\nitems: [{b: 2}]\na.y: 3\n",
+            vec![
+                BeginObject,
+                Key("a"),
+                BeginObject,
+                Key("x"),
+                Integer("1"),
+                Key("y"),
+                Integer("3"),
+                EndObject,
+                Key("items"),
+                BeginArray,
+                BeginObject,
+                Key("b"),
+                Integer("2"),
+                EndObject,
+                EndArray,
+                EndObject,
+            ]
+        );
+    }
+
+    /// The corruption site (anonymous compound) lives in a different
+    /// branch than the reopens.
+    #[test]
+    fn compound_item_in_other_branch_than_reopen() {
+        check!(
+            "a.x: 1\ns: 0\na.y: 3\nitems: [[2]]\n",
+            vec![
+                BeginObject,
+                Key("a"),
+                BeginObject,
+                Key("x"),
+                Integer("1"),
+                Key("y"),
+                Integer("3"),
+                EndObject,
+                Key("s"),
+                Integer("0"),
+                Key("items"),
+                BeginArray,
+                BeginArray,
+                Integer("2"),
+                EndArray,
+                EndArray,
+                EndObject,
+            ]
+        );
+    }
+
+    /// Reopened dotted-key object inside a root array.
+    #[test]
+    fn reopen_inside_root_array() {
+        check!(
+            "[\n  {\n    a.x: 1\n    s: 2\n    a.y: 3\n  }\n]\n",
+            vec![
+                BeginArray,
+                BeginObject,
+                Key("a"),
+                BeginObject,
+                Key("x"),
+                Integer("1"),
+                Key("y"),
+                Integer("3"),
+                EndObject,
+                Key("s"),
+                Integer("2"),
+                EndObject,
+                EndArray,
+            ]
+        );
+    }
+
+    /// Deeply nested anonymous compounds mixed with a keyed reopen.
+    #[test]
+    fn deeply_nested_anonymous_compounds_with_reopen() {
+        check!(
+            "a.x: 1\nt: [[{u: [2]}]]\na.y: 3\n",
+            vec![
+                BeginObject,
+                Key("a"),
+                BeginObject,
+                Key("x"),
+                Integer("1"),
+                Key("y"),
+                Integer("3"),
+                EndObject,
+                Key("t"),
+                BeginArray,
+                BeginArray,
+                BeginObject,
+                Key("u"),
+                BeginArray,
+                Integer("2"),
+                EndArray,
+                EndObject,
+                EndArray,
+                EndArray,
+                EndObject,
+            ]
+        );
+    }
+
+    /// Compound array items without reopens: the zero-copy fast path
+    /// still returns the raw stream untouched, and the merge pass is
+    /// the identity on it.
+    #[test]
+    fn compound_items_no_reopen_fast_path() {
+        let text = "items: [[1], {b: 2}]\nz: 3\n";
+        let bump = Bump::new();
+        let (stream, reopens) = parse_events(text, &bump).unwrap();
+        assert_eq!(reopens, 0);
+        assert_eq!(
+            stream,
+            crate::thin::parse_events_merged(text, &bump).unwrap()
+        );
+        assert_eq!(stream, merge_reopened(&stream, &bump));
+    }
 
     #[test]
     fn reopen_after_intervening_sibling_merges() {
