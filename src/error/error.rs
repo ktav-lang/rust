@@ -379,6 +379,34 @@ pub enum CompoundKind {
     MultilineVerbatim,
 }
 
+impl ErrorKind {
+    /// The exact category name of this error kind — the same spelling the
+    /// spec's conformance corpus (§ 8.1) uses in `invalid/**.json` oracles
+    /// (`expected_error`) and the category prefix `Display` emits where one
+    /// exists. Mirrors [`ReasonCode::code_name`].
+    pub fn code_name(&self) -> &'static str {
+        match self {
+            ErrorKind::MissingSeparatorSpace { .. } => "MissingSeparatorSpace",
+            ErrorKind::InvalidTypedScalar { .. } => "InvalidTypedScalar",
+            ErrorKind::LossyScalar { .. } => "LossyScalar",
+            ErrorKind::DuplicateKey { .. } => "DuplicateKey",
+            ErrorKind::KeyPathConflict { .. } => "KeyPathConflict",
+            ErrorKind::EmptyKey { .. } => "EmptyKey",
+            ErrorKind::InvalidKey { .. } => "InvalidKey",
+            ErrorKind::UnclosedCompound { .. } => "UnclosedCompound",
+            ErrorKind::UnbalancedBracket { .. } => "UnbalancedBracket",
+            ErrorKind::InlineNonEmptyCompound { .. } => "InlineNonEmptyCompound",
+            ErrorKind::MissingSeparator { .. } => "MissingSeparator",
+            ErrorKind::UnterminatedInlineCompound { .. } => "UnterminatedInlineCompound",
+            ErrorKind::UnterminatedQuotedKey { .. } => "UnterminatedQuotedKey",
+            ErrorKind::MalformedInlineCompound { .. } => "MalformedInlineCompound",
+            ErrorKind::BadEscapeSequence { .. } => "BadEscapeSequence",
+            ErrorKind::OrphanLineAfterTopLevelInline { .. } => "OrphanLineAfterTopLevelInline",
+            ErrorKind::Other { .. } => "Other",
+        }
+    }
+}
+
 impl Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

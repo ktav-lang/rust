@@ -193,6 +193,133 @@ fn validate_reason_fixture(fixture: &JsonValue, rel: impl std::fmt::Display) -> 
     reason_code_from_name(reason)
 }
 
+/// Membership test over every category name a `invalid/` oracle may
+/// spell: the `ErrorKind` variant names (see `ErrorKind::code_name`)
+/// plus `InvalidUtf8` — a top-level `Error` variant, not an
+/// `ErrorKind`, because § 6.15 byte-level rejection happens before any
+/// line-oriented parsing. An oracle naming anything else is a corpus
+/// schema violation and must fail loudly.
+fn is_known_error_category(name: &str) -> bool {
+    matches!(
+        name,
+        "MissingSeparatorSpace"
+            | "InvalidTypedScalar"
+            | "LossyScalar"
+            | "DuplicateKey"
+            | "KeyPathConflict"
+            | "EmptyKey"
+            | "InvalidKey"
+            | "UnclosedCompound"
+            | "UnbalancedBracket"
+            | "InlineNonEmptyCompound"
+            | "MissingSeparator"
+            | "UnterminatedInlineCompound"
+            | "UnterminatedQuotedKey"
+            | "MalformedInlineCompound"
+            | "BadEscapeSequence"
+            | "OrphanLineAfterTopLevelInline"
+            | "Other"
+            | "InvalidUtf8"
+    )
+}
+
+/// Validate the shared 2-field invalid-fixture schema (`expected_error`,
+/// `note`) and return the expected category name. Panics loudly on any
+/// schema violation — including an `expected_error` that names no known
+/// category; that IS the schema validation (mirrors
+/// `validate_reason_fixture`).
+fn validate_error_fixture(fixture: &JsonValue, rel: impl std::fmt::Display) -> &str {
+    let map = fixture
+        .as_object()
+        .unwrap_or_else(|| panic!("fixture {rel}: top-level JSON is not an object"));
+    if map.len() != 2 {
+        panic!(
+            "fixture {rel}: expected exactly the fields expected_error/note, \
+             found {} field(s)",
+            map.len()
+        );
+    }
+    for required in ["expected_error", "note"] {
+        if !map.contains_key(required) {
+            panic!("fixture {rel}: missing required field {required:?}");
+        }
+    }
+    let expected = map["expected_error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("fixture {rel}: expected_error is not a string"));
+    let note = map["note"]
+        .as_str()
+        .unwrap_or_else(|| panic!("fixture {rel}: note is not a string"));
+    if note.is_empty() {
+        panic!("fixture {rel}: note is empty");
+    }
+    if !is_known_error_category(expected) {
+        panic!("fixture {rel}: expected_error {expected:?} is not a known error category");
+    }
+    expected
+}
+
+/// An invalid fixture with its validated oracle. `bytes` are read once
+/// here so both the owned-API and thin-API passes walk the identical
+/// corpus.
+struct InvalidFixture {
+    /// Path relative to the `invalid/` dir, for messages.
+    rel: String,
+    path: PathBuf,
+    bytes: Vec<u8>,
+    /// Validated `expected_error` category name.
+    expected: String,
+}
+
+/// Collect every invalid fixture with its validated oracle. Panics if
+/// the dir is missing, empty, or any oracle is missing/unreadable or
+/// fails schema validation.
+fn collect_invalid_fixtures(spec_root: &Path) -> Vec<InvalidFixture> {
+    let root = tests_dir(spec_root, "invalid");
+    if !root.is_dir() {
+        panic!(
+            "spec 0.7 resolved but the invalid fixture dir is missing: {}",
+            root.display()
+        );
+    }
+    let mut files = Vec::new();
+    collect_ktav_files(&root, &mut files);
+    files.sort();
+    if files.is_empty() {
+        panic!("no `.ktav` fixtures found under {}", root.display());
+    }
+
+    let mut fixtures = Vec::new();
+    for ktav_path in &files {
+        let rel = ktav_path
+            .strip_prefix(&root)
+            .unwrap_or(ktav_path)
+            .display()
+            .to_string();
+        let json_path = ktav_path.with_extension("json");
+        let oracle_src = match fs::read_to_string(&json_path) {
+            Ok(t) => t,
+            Err(e) => panic!("fixture {}: missing/unreadable `.json` sibling: {}", rel, e),
+        };
+        let fixture: JsonValue = match serde_json::from_str(&oracle_src) {
+            Ok(v) => v,
+            Err(e) => panic!("fixture {}: oracle json parse error: {}", rel, e),
+        };
+        let expected = validate_error_fixture(&fixture, &rel).to_string();
+        let bytes = match fs::read(ktav_path) {
+            Ok(b) => b,
+            Err(e) => panic!("fixture {}: unreadable `.ktav` file: {}", rel, e),
+        };
+        fixtures.push(InvalidFixture {
+            rel,
+            path: ktav_path.clone(),
+            bytes,
+            expected,
+        });
+    }
+    fixtures
+}
+
 /// Convert a `serde_json::Value` (a fixture oracle) into a `ktav::Value`.
 fn json_to_ktav(v: &JsonValue) -> Value {
     match v {
@@ -312,28 +439,33 @@ fn invalid_fixtures_are_rejected() {
         eprintln!("skipping spec_conformance::invalid: spec dir not found");
         return;
     };
-    let root = tests_dir(&spec_root, "invalid");
-    let mut files = Vec::new();
-    collect_ktav_files(&root, &mut files);
-    files.sort();
+    let fixtures = collect_invalid_fixtures(&spec_root);
 
     let mut failures: Vec<String> = Vec::new();
 
-    for ktav_path in &files {
-        let rel = ktav_path.strip_prefix(&root).unwrap_or(ktav_path).display();
-        let bytes = match fs::read(ktav_path) {
-            Ok(b) => b,
-            Err(e) => {
-                failures.push(format!("read {}: {}", rel, e));
-                continue;
-            }
-        };
-        match std::str::from_utf8(&bytes) {
-            Ok(text) => {
-                if ktav::parse(text).is_ok() {
-                    failures.push(format!("invalid fixture parsed successfully: {}", rel));
-                }
-            }
+    for fixture in &fixtures {
+        match std::str::from_utf8(&fixture.bytes) {
+            Ok(text) => match ktav::parse(text) {
+                Ok(_) => failures.push(format!(
+                    "invalid fixture {} parsed successfully, expected {} rejection",
+                    fixture.rel, fixture.expected
+                )),
+                Err(e) => match &e {
+                    ktav::Error::Structured(kind) => {
+                        let actual = kind.code_name();
+                        if actual != fixture.expected {
+                            failures.push(format!(
+                                "invalid fixture {}: expected category {}, got {} ({})",
+                                fixture.rel, fixture.expected, actual, e
+                            ));
+                        }
+                    }
+                    other => failures.push(format!(
+                        "invalid fixture {}: expected Structured error with category {}, got: {}",
+                        fixture.rel, fixture.expected, other
+                    )),
+                },
+            },
             Err(_) => {
                 // Byte-level invalid UTF-8 (spec § 6.15): must be rejected
                 // by the file entry point with `Error::InvalidUtf8`.
@@ -341,16 +473,22 @@ fn invalid_fixtures_are_rejected() {
                 // so the target type is `String`; the UTF-8 validation in
                 // `from_file` happens before any deserialization, so the
                 // error variant is identical for any `T`.
-                match ktav::from_file::<String, _>(ktav_path) {
+                if fixture.expected != "InvalidUtf8" {
+                    panic!(
+                        "fixture {}: bytes are invalid UTF-8 but the oracle expects {}",
+                        fixture.rel, fixture.expected
+                    );
+                }
+                match ktav::from_file::<String, _>(&fixture.path) {
                     Ok(_) => failures.push(format!(
                         "invalid UTF-8 fixture accepted by from_file: {}",
-                        rel
+                        fixture.rel
                     )),
-                    Err(e) => match e {
+                    Err(e) => match &e {
                         ktav::Error::InvalidUtf8 { .. } => {}
                         other => failures.push(format!(
                             "invalid UTF-8 fixture {}: expected Error::InvalidUtf8, got: {}",
-                            rel, other
+                            fixture.rel, other
                         )),
                     },
                 }
@@ -362,12 +500,119 @@ fn invalid_fixtures_are_rejected() {
         panic!(
             "{} of {} invalid fixture(s) failed:\n{}",
             failures.len(),
+            fixtures.len(),
+            failures.join("\n")
+        );
+    }
+    eprintln!(
+        "spec_conformance::invalid: {} fixtures rejected with matching categories (owned API)",
+        fixtures.len()
+    );
+}
+
+#[test]
+fn invalid_fixtures_categories_match_oracles_via_thin_api() {
+    let Some(spec_root) = resolve_spec_root() else {
+        eprintln!("skipping spec_conformance::invalid (thin API): spec dir not found");
+        return;
+    };
+    let fixtures = collect_invalid_fixtures(&spec_root);
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut invalid_utf8 = 0;
+
+    for fixture in &fixtures {
+        let Ok(text) = std::str::from_utf8(&fixture.bytes) else {
+            // The thin API takes `&str`, so byte-level rejection
+            // (spec § 6.15) is out of its domain — covered by the
+            // `from_file` check in `invalid_fixtures_are_rejected`.
+            invalid_utf8 += 1;
+            continue;
+        };
+        match ktav::parse_events(text, |_ev: ktav::ParseEvent<'_>| ()) {
+            Ok(()) => failures.push(format!(
+                "thin API accepted invalid fixture {}, expected {}",
+                fixture.rel, fixture.expected
+            )),
+            Err(e) => match &e {
+                ktav::Error::Structured(kind) => {
+                    let actual = kind.code_name();
+                    if actual != fixture.expected {
+                        failures.push(format!(
+                            "invalid fixture {}: expected category {}, got {} ({})",
+                            fixture.rel, fixture.expected, actual, e
+                        ));
+                    }
+                }
+                other => failures.push(format!(
+                    "invalid fixture {}: expected Structured error with category {}, got: {}",
+                    fixture.rel, fixture.expected, other
+                )),
+            },
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} of {} invalid fixture(s) failed (thin API):\n{}",
+            failures.len(),
+            fixtures.len() - invalid_utf8,
+            failures.join("\n")
+        );
+    }
+    eprintln!(
+        "spec_conformance::invalid (thin API): {} fixtures rejected with matching categories ({} invalid-UTF-8 fixtures are byte-entry-only)",
+        fixtures.len() - invalid_utf8,
+        invalid_utf8
+    );
+}
+
+#[test]
+fn valid_fixtures_parse_via_thin_api() {
+    let Some(spec_root) = resolve_spec_root() else {
+        eprintln!("skipping spec_conformance::valid (thin API): spec dir not found");
+        return;
+    };
+    let root = tests_dir(&spec_root, "valid");
+    if !root.is_dir() {
+        panic!(
+            "spec 0.7 resolved but the valid fixture dir is missing: {}",
+            root.display()
+        );
+    }
+    let mut files = Vec::new();
+    collect_ktav_files(&root, &mut files);
+    files.sort();
+    if files.is_empty() {
+        panic!("no `.ktav` fixtures found under {}", root.display());
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+
+    for ktav_path in &files {
+        let rel = ktav_path.strip_prefix(&root).unwrap_or(ktav_path).display();
+        let text = match fs::read_to_string(ktav_path) {
+            Ok(t) => t,
+            Err(e) => {
+                failures.push(format!("read {}: {}", rel, e));
+                continue;
+            }
+        };
+        if let Err(e) = ktav::parse_events(&text, |_| {}) {
+            failures.push(format!("thin API rejected valid fixture {}: {}", rel, e));
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} of {} valid fixture(s) failed (thin API):\n{}",
+            failures.len(),
             files.len(),
             failures.join("\n")
         );
     }
     eprintln!(
-        "spec_conformance::invalid: {} fixtures rejected",
+        "spec_conformance::valid (thin API): {} fixtures accepted",
         files.len()
     );
 }
