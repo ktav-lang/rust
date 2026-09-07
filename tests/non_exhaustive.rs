@@ -50,7 +50,6 @@ fn conflict_kind_match_requires_wildcard() {
     let described = match c {
         ConflictKind::Overwrite { .. } => "ow",
         ConflictKind::BlockedByValue => "bv",
-        ConflictKind::SyntheticReopen => "sr",
         _ => "future",
     };
     assert_eq!(described, "bv");

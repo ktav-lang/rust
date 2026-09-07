@@ -141,7 +141,10 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
     // Adding overhead for the bump metadata and per-object-level BumpVecs.
     let arena_bytes = (s.len() / 4).saturating_mul(24) + 4096;
     let bump = bumpalo::Bump::with_capacity(arena_bytes);
-    let events = thin::parse_events_raw(s, &bump)?;
+    // parse_events_merged applies the spec § 5.3.2 reopen-merge pass
+    // only when the parser reports re-opened dotted-key prefixes;
+    // otherwise the raw (zero-copy) stream is used as-is.
+    let events = thin::parse_events_merged(s, &bump)?;
     let mut cursor = thin::EventCursor::new(&events);
     T::deserialize(thin::EventDeserializer::new(&mut cursor))
 }

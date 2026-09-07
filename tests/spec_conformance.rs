@@ -470,23 +470,9 @@ fn json_to_ktav(v: &JsonValue) -> Value {
 /// fixture starts passing, or fails with a different category, the runner
 /// panics with removal instructions instead of silently passing.
 ///
-/// F3 (review finding F3, P2): the linear event model closes a
-/// dotted-key object before later lines can extend it, rejecting two
-/// spec-valid documents with `KeyPathConflict`.
-const THIN_KNOWN_GAPS: &[(&str, &str, &str)] = &[
-    // (path relative to the bucket dir, finding, category the thin parser produces today)
-    // --- F3: valid fixtures rejected by the thin API ---
-    (
-        "dotted_keys/extend_explicit_object.ktav",
-        "F3",
-        "KeyPathConflict",
-    ),
-    (
-        "dotted_keys/reopen_after_sibling.ktav",
-        "F3",
-        "KeyPathConflict",
-    ),
-];
+/// Currently empty: F3 (dotted-key re-opens rejected as `KeyPathConflict`)
+/// is fixed.
+const THIN_KNOWN_GAPS: &[(&str, &str, &str)] = &[];
 
 /// Look up a fixture in [`THIN_KNOWN_GAPS`] by its path relative to the
 /// bucket dir (`invalid/` rels in the thin invalid runner, `valid/` rels

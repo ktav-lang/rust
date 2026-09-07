@@ -358,10 +358,6 @@ pub enum ConflictKind {
     /// A dotted-key tried to descend into / through an existing scalar
     /// (`db: 1` then `db.x: 2`).
     BlockedByValue,
-    /// A synthetic dotted-key prefix was re-opened after an
-    /// intervening different prefix had closed it (event-stream
-    /// path only).
-    SyntheticReopen,
 }
 
 /// Sub-classification for `ErrorKind::UnclosedCompound` and
@@ -440,11 +436,6 @@ impl Display for ErrorKind {
                 ConflictKind::BlockedByValue => write!(
                     f,
                     "Line {}: conflict at '{}' \u{2014} an existing value blocks the path",
-                    line, path
-                ),
-                ConflictKind::SyntheticReopen => write!(
-                    f,
-                    "Line {}: conflict at '{}' \u{2014} synthetic dotted-key prefix already closed by an intervening different prefix; group lines with the same prefix together",
                     line, path
                 ),
             },

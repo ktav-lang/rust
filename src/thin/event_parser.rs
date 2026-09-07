@@ -7,10 +7,19 @@
 //! per-object-frame stack of currently-open synthetic prefixes. When a
 //! new line's prefix diverges from the stack, the divergence point is
 //! emitted as a sequence of `EndObject`s; the new tail is emitted as
-//! `Key`+`BeginObject`s. Duplicates and path conflicts are caught the
-//! same way the tree-builder catches them — through per-level
-//! `seen_keys` sets, but using `FxHashSet` so the check is O(1) on wide
-//! objects instead of O(K).
+//! `Key`+`BeginObject`s.
+//!
+//! Duplicates and path conflicts are caught the same way the tree-builder
+//! catches them (spec 0.7 § 5.3.2 / § 6.3): each Object frame carries a
+//! PERSISTENT path table — one entry per real key path ever seen in that
+//! object, labelled `Object` or `Leaf(<kind>)` — that survives synthetic
+//! open/close cycles. A dotted key re-entering a path already shaped as
+//! an `Object` (whether created by an earlier dotted pair or explicitly
+//! as `a: { … }`) MERGES, regardless of intervening sibling pairs; a
+//! dotted path descending through a non-Object leaf, or a plain pair
+//! naming an earlier-established Object, raises `KeyPathConflict`. The
+//! synthetic `ObjectLevel`s hold no key state at all — only the prefix
+//! needed for longest-common-prefix comparison and emission bookkeeping.
 
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
@@ -31,7 +40,11 @@ use super::event::{Event, EventSink, EventStream};
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStream<'a>> {
+/// Returns the flat event stream plus the number of re-opened dotted-key
+/// prefixes (spec 0.7 § 5.3.2 merge sites) encountered — callers that need
+/// raw document order ignore the count; `from_str` uses it to decide
+/// whether a reopen-merge normalization pass is required.
+pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<(EventStream<'a>, usize)> {
     let mut events: EventStream<'a> = BumpVec::with_capacity_in(text.len() / 4 + 64, bump);
 
     // Spec § 5.0.1 (0.5.0): scan ahead to the first content line,
@@ -93,7 +106,7 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     }
 
     p.finish(bytes.len() as u32, &mut events)?;
-    Ok(events)
+    Ok((events, p.reopens))
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +138,14 @@ pub(crate) struct EventParser<'a> {
     /// rules 4-5); a depth-1 close then consumes the root instead of
     /// erroring.
     pub(crate) root_is_explicit_compound: bool,
+    /// Number of dotted-key RE-OPENED prefixes emitted as synthetic
+    /// `Key`+`BeginObject` pairs this parse — i.e. pushes of a prefix
+    /// whose persistent path entry already existed as an Object before
+    /// the current line (spec 0.7 § 5.3.2 merge case). Ordinary grouped
+    /// dotted keys (`a.b: 1` then `a.c: 2`, no intervening sibling)
+    /// re-use the still-open synthetic and do NOT count. `from_str`
+    /// uses this to decide whether a reopen-merge pass is needed.
+    pub(crate) reopens: usize,
 }
 
 impl<'a> EventParser<'a> {
@@ -142,6 +163,7 @@ impl<'a> EventParser<'a> {
             root_initialized: false,
             root_consumed: false,
             root_is_explicit_compound: false,
+            reopens: 0,
         }
     }
 }
@@ -149,33 +171,58 @@ impl<'a> EventParser<'a> {
 pub(crate) enum Frame<'a> {
     /// `levels` is parallel to "real frame + open synthetic prefixes".
     /// Index 0 is always the real object's namespace; subsequent entries
-    /// are stacked synthetics with their own prefix and key sets. All
-    /// vectors live in the bump arena — no per-frame heap allocation.
+    /// are stacked synthetics. `paths` is the persistent per-real-object
+    /// key-path table (spec § 5.3.2): it is flat across the whole frame
+    /// and is NOT tied to any synthetic level, so a dotted prefix closed
+    /// by intervening siblings can still be re-entered (it merges) and
+    /// duplicate/conflict detection below a reopened prefix stays exact.
+    /// All vectors live in the bump arena — no per-frame heap allocation.
     Object {
         levels: BumpVec<'a, ObjectLevel<'a>>,
+        paths: BumpVec<'a, PathEntry<'a>>,
     },
     Array,
 }
 
+/// Shape a registered key path holds, mirroring the owned parser's
+/// `Value` kinds in `parser::insert` (§ 6.3 conflict classification).
+#[derive(Clone, Copy)]
+pub(crate) enum PathShape {
+    /// The path was established as a nested Object.
+    Object,
+    /// The path was established as a leaf value; the label is the same
+    /// kind string the owned parser's `kind_label` produces (used in
+    /// `ConflictKind::Overwrite` diagnostics).
+    Leaf(&'static str),
+}
+
+/// One registered key path in a frame's persistent table. The path is
+/// the DECODED segment chain, arena-allocated with `alloc_slice_copy` —
+/// never joined into a `.`-separated string, because decoded segments
+/// may themselves contain literal dots (from `\.` escapes), which would
+/// make a joined form ambiguous. Comparison is element-wise, which is
+/// exact.
+pub(crate) struct PathEntry<'a> {
+    path: &'a [&'a str],
+    shape: PathShape,
+}
+
 pub(crate) struct ObjectLevel<'a> {
     /// `None` for the real object level, `Some(prefix_segment)` for a
-    /// synthetic dotted-key level.
+    /// synthetic dotted-key level. Kept ONLY for the LCP comparison and
+    /// emission bookkeeping — all key state lives in the frame's
+    /// persistent `paths` table.
     prefix: Option<&'a str>,
-    /// Keys registered as plain scalars/compounds at this level.
-    leaf_keys: BumpVec<'a, &'a str>,
-    /// Keys registered as a synthetic dotted-key prefix.
-    synthetic_keys: BumpVec<'a, &'a str>,
 }
 
 impl<'a> Frame<'a> {
     pub(crate) fn new_object(bump: &'a Bump) -> Self {
         let mut levels = BumpVec::with_capacity_in(2, bump);
-        levels.push(ObjectLevel {
-            prefix: None,
-            leaf_keys: BumpVec::with_capacity_in(8, bump),
-            synthetic_keys: BumpVec::new_in(bump),
-        });
-        Frame::Object { levels }
+        levels.push(ObjectLevel { prefix: None });
+        Frame::Object {
+            levels,
+            paths: BumpVec::with_capacity_in(8, bump),
+        }
     }
     pub(crate) fn new_array() -> Self {
         Frame::Array
@@ -547,8 +594,13 @@ impl<'a> EventParser<'a> {
                         r
                     }
                     ValueStart::InlineEvents(inline_events) => {
-                        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
-                        self.register_leaf_key(leaf, line_num, key_span)?;
+                        let (leaf, full_path) =
+                            self.reconcile_dotted_key(key, line_num, key_span, events)?;
+                        let shape = match inline_events.first() {
+                            Some(ev) => path_shape_of(ev),
+                            None => unreachable!("inline compound always emits events"),
+                        };
+                        self.register_value_path(full_path, shape, key, line_num, key_span)?;
                         events.push(Event::Key(leaf));
                         for ev in inline_events {
                             events.push(ev);
@@ -569,8 +621,9 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
-        self.register_leaf_key(leaf, line_num, key_span)?;
+        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        let label = event_label(&value);
+        self.register_value_path(full_path, PathShape::Leaf(label), key, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(value);
         Ok(())
@@ -586,8 +639,9 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
-        self.register_leaf_key(leaf, line_num, key_span)?;
+        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        let shape = path_shape_of(&open);
+        self.register_value_path(full_path, shape, key, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(open);
         events.push(close);
@@ -603,8 +657,9 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
-        self.register_leaf_key(leaf, line_num, key_span)?;
+        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        let shape = path_shape_of(&open);
+        self.register_value_path(full_path, shape, key, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(open);
         Ok(())
@@ -618,8 +673,14 @@ impl<'a> EventParser<'a> {
         key_span: Span,
         events: &mut S,
     ) -> Result<()> {
-        let leaf = self.reconcile_dotted_key(key, line_num, key_span, events)?;
-        self.register_leaf_key(leaf, line_num, key_span)?;
+        let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
+        self.register_value_path(
+            full_path,
+            PathShape::Leaf("string"),
+            key,
+            line_num,
+            key_span,
+        )?;
         events.push(Event::Key(leaf));
         self.collecting = Some(Collecting {
             mode,
@@ -716,7 +777,7 @@ impl<'a> EventParser<'a> {
         line_num: usize,
         key_span: Span,
         events: &mut S,
-    ) -> Result<&'a str> {
+    ) -> Result<(&'a str, &'a [&'a str])> {
         // Single segment (no UNescaped `.`) fast path. Decode the
         // segment if it contains a `\`; otherwise reuse the source
         // borrow.
@@ -742,7 +803,8 @@ impl<'a> EventParser<'a> {
                 }
             }
             let leaf = self.decode_key_in_arena(key, line_num, key_span)?;
-            return Ok(leaf);
+            let full_path = self.bump.alloc_slice_copy(&[leaf]);
+            return Ok((leaf, full_path));
         }
 
         // Multi-segment path — split on UNescaped `.`, decode each
@@ -775,6 +837,50 @@ impl<'a> EventParser<'a> {
         }
 
         let leaf = *decoded_segments.last().unwrap();
+
+        // Spec 0.7 § 5.3.2: a dotted key re-entering an Object that
+        // already exists — whether created by an earlier dotted pair or
+        // explicitly as `a: { … }` / `a: {}` — MUST merge, regardless
+        // of intervening sibling pairs. Reconcile the persistent
+        // per-real-object path table: every proper prefix must either
+        // already be an Object (fine — merge) or be absent (record it
+        // as one); descending through a Leaf is a BlockedByValue
+        // conflict (§ 6.3). The table is NOT per synthetic level, so a
+        // prefix closed by an intervening sibling stays visible here and
+        // duplicate detection beneath a reopened prefix stays exact.
+        // Comparison is element-wise over decoded segments, never over a
+        // joined string — decoded segments may contain literal dots.
+        let bump = self.bump;
+        let paths = match self.stack.last_mut().unwrap() {
+            Frame::Object { paths, .. } => paths,
+            _ => unreachable!("dispatched as object"),
+        };
+        let mut prefix_existed = vec![false; decoded_segments.len()];
+        for k in 1..decoded_segments.len() {
+            let prefix: &[&str] = &decoded_segments[..k];
+            match paths.iter().find(|e| e.path == prefix) {
+                Some(PathEntry {
+                    shape: PathShape::Leaf(_),
+                    ..
+                }) => {
+                    return Err(Error::Structured(ErrorKind::KeyPathConflict {
+                        line: line_num as u32,
+                        // RAW key text (escapes intact), matching the
+                        // owned parser's `full_path` reporting.
+                        path: key.to_string(),
+                        kind: ConflictKind::BlockedByValue,
+                        span: key_span,
+                    }));
+                }
+                Some(_) => prefix_existed[k] = true,
+                None => paths.push(PathEntry {
+                    path: bump.alloc_slice_copy(prefix),
+                    shape: PathShape::Object,
+                }),
+            }
+        }
+        let full_path: &'a [&'a str] = bump.alloc_slice_copy(&decoded_segments);
+
         let prefix_segments = &decoded_segments[..decoded_segments.len() - 1];
 
         let cur_levels_len = match self.stack.last().unwrap() {
@@ -807,11 +913,18 @@ impl<'a> EventParser<'a> {
         }
 
         let push_start = pending_seg_idx.unwrap_or(prefix_segments.len());
-        for seg in &prefix_segments[push_start..] {
-            self.push_synthetic(seg, line_num, key_span, events)?;
+        for (i, seg) in prefix_segments.iter().enumerate().skip(push_start) {
+            if prefix_existed[i + 1] {
+                // The prefix was closed by intervening siblings (or was
+                // an explicit `a: { … }`) and is being re-opened as a
+                // synthetic — a § 5.3.2 merge site the deserializer's
+                // merge pass must fold back together.
+                self.reopens += 1;
+            }
+            self.push_synthetic(seg, events);
         }
 
-        Ok(leaf)
+        Ok((leaf, full_path))
     }
 
     /// Decode a key segment per § 3.7 / § 5.3.3. Bare segments without
@@ -838,57 +951,15 @@ impl<'a> EventParser<'a> {
     }
 
     #[inline]
-    fn push_synthetic<S: EventSink<'a>>(
-        &mut self,
-        seg: &'a str,
-        line_num: usize,
-        key_span: Span,
-        events: &mut S,
-    ) -> Result<()> {
-        self.register_synthetic_prefix(seg, line_num, key_span)?;
+    fn push_synthetic<S: EventSink<'a>>(&mut self, seg: &'a str, events: &mut S) {
+        // Emission-only: key state for the synthetic prefix is already
+        // recorded in the frame's persistent `paths` table (or about to
+        // be by `register_value_path`), so nothing can fail here.
         events.push(Event::Key(seg));
         events.push(Event::BeginObject);
-        let bump = self.bump;
         match self.stack.last_mut().unwrap() {
-            Frame::Object { levels, .. } => levels.push(ObjectLevel {
-                prefix: Some(seg),
-                leaf_keys: BumpVec::with_capacity_in(4, bump),
-                synthetic_keys: BumpVec::new_in(bump),
-            }),
+            Frame::Object { levels, .. } => levels.push(ObjectLevel { prefix: Some(seg) }),
             _ => unreachable!(),
-        }
-        Ok(())
-    }
-
-    fn register_synthetic_prefix(
-        &mut self,
-        seg: &'a str,
-        line_num: usize,
-        key_span: Span,
-    ) -> Result<()> {
-        match self.stack.last_mut().unwrap() {
-            Frame::Object { levels, .. } => {
-                let level = levels.last_mut().unwrap();
-                if level.leaf_keys.contains(&seg) {
-                    return Err(Error::Structured(ErrorKind::KeyPathConflict {
-                        line: line_num as u32,
-                        path: seg.to_string(),
-                        kind: ConflictKind::BlockedByValue,
-                        span: key_span,
-                    }));
-                }
-                if level.synthetic_keys.contains(&seg) {
-                    return Err(Error::Structured(ErrorKind::KeyPathConflict {
-                        line: line_num as u32,
-                        path: seg.to_string(),
-                        kind: ConflictKind::SyntheticReopen,
-                        span: key_span,
-                    }));
-                }
-                level.synthetic_keys.push(seg);
-                Ok(())
-            }
-            _ => unreachable!("only objects have keys"),
         }
     }
 
@@ -930,29 +1001,70 @@ impl<'a> EventParser<'a> {
         }
     }
 
-    #[inline]
-    fn register_leaf_key(&mut self, leaf: &'a str, line_num: usize, key_span: Span) -> Result<()> {
+    /// Register a fully-decoded key path with the value shape that now
+    /// occupies it, implementing the owned parser's outcome table
+    /// (`parser::insert::insert_value` / `insert_dotted`, § 6.3):
+    ///
+    /// - leaf value onto existing Object → `KeyPathConflict`
+    ///   `Overwrite { existing: "object", new_kind }`
+    /// - leaf value onto existing leaf → `DuplicateKey`
+    /// - Object onto existing Object → `DuplicateKey`
+    /// - Object onto existing leaf → `KeyPathConflict`
+    ///   `Overwrite { existing: <kind>, new_kind: "object" }`
+    /// - absent path → record it.
+    fn register_value_path(
+        &mut self,
+        path: &'a [&'a str],
+        shape: PathShape,
+        raw_key: &str,
+        line_num: usize,
+        key_span: Span,
+    ) -> Result<()> {
         match self.stack.last_mut().unwrap() {
-            Frame::Object { levels, .. } => {
-                let level = levels.last_mut().unwrap();
-                if level.synthetic_keys.contains(&leaf) {
-                    return Err(Error::Structured(ErrorKind::KeyPathConflict {
+            Frame::Object { paths, .. } => match paths.iter().find(|e| e.path == path) {
+                Some(PathEntry {
+                    shape: PathShape::Object,
+                    ..
+                }) => match shape {
+                    PathShape::Leaf(label) => Err(Error::Structured(ErrorKind::KeyPathConflict {
                         line: line_num as u32,
-                        path: leaf.to_string(),
-                        kind: ConflictKind::BlockedByValue,
+                        path: raw_key.to_string(),
+                        kind: ConflictKind::Overwrite {
+                            existing: "object",
+                            new_kind: label,
+                        },
                         span: key_span,
-                    }));
-                }
-                if level.leaf_keys.contains(&leaf) {
-                    return Err(Error::Structured(ErrorKind::DuplicateKey {
+                    })),
+                    PathShape::Object => Err(Error::Structured(ErrorKind::DuplicateKey {
                         line: line_num as u32,
-                        key: leaf.to_string(),
+                        key: raw_key.to_string(),
                         span: key_span,
-                    }));
+                    })),
+                },
+                Some(PathEntry {
+                    shape: PathShape::Leaf(existing),
+                    ..
+                }) => match shape {
+                    PathShape::Leaf(_) => Err(Error::Structured(ErrorKind::DuplicateKey {
+                        line: line_num as u32,
+                        key: raw_key.to_string(),
+                        span: key_span,
+                    })),
+                    PathShape::Object => Err(Error::Structured(ErrorKind::KeyPathConflict {
+                        line: line_num as u32,
+                        path: raw_key.to_string(),
+                        kind: ConflictKind::Overwrite {
+                            existing,
+                            new_kind: "object",
+                        },
+                        span: key_span,
+                    })),
+                },
+                None => {
+                    paths.push(PathEntry { path, shape });
+                    Ok(())
                 }
-                level.leaf_keys.push(leaf);
-                Ok(())
-            }
+            },
             _ => unreachable!("only objects have keys"),
         }
     }
@@ -1120,6 +1232,35 @@ fn classify_separator<'a>(after_colon: &'a str) -> Separator<'a> {
     }
     // Under spec 0.5.0, `:i` and `:f` typed markers are removed.
     Separator::Plain
+}
+
+/// Map a value event to the same kind label the owned parser's
+/// `kind_label` (src/parser/insert.rs) produces — these strings appear
+/// verbatim in `ConflictKind::Overwrite` diagnostics (§ 6.3).
+#[inline]
+fn event_label(ev: &Event<'_>) -> &'static str {
+    match ev {
+        Event::Null => "null",
+        Event::Bool(_) => "bool",
+        Event::Integer(_) => "integer",
+        Event::Float(_) => "float",
+        Event::Str(_) => "string",
+        Event::BeginArray => "array",
+        Event::BeginObject => "object",
+        _ => unreachable!("not a value-start event"),
+    }
+}
+
+/// The [`PathShape`] a keyed value establishes: an `Event::BeginObject`
+/// opener makes the path an Object; anything else (including an array,
+/// which is a leaf under the owned parser's model) is a leaf of the
+/// event's kind.
+#[inline]
+fn path_shape_of(ev: &Event<'_>) -> PathShape {
+    match ev {
+        Event::BeginObject => PathShape::Object,
+        other => PathShape::Leaf(event_label(other)),
+    }
 }
 
 /// § 5.2 rules 6–9 for a non-empty `{`/`[`-prefixed value body, mirroring

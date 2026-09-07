@@ -119,20 +119,28 @@ fn scalar_after_dotted_prefix_conflicts() {
 }
 
 #[test]
-fn interleaved_dotted_prefix_is_rejected_as_conflict() {
+fn interleaved_dotted_prefix_reopens_merge() {
     // `a.x: 1` opens synthetic `a`. `b.y: 2` closes `a` and opens `b`.
-    // `a.z: 3` would have to *re-open* the closed `a` — the streaming
-    // event tokenizer can't do that without buffering the whole
-    // document, so it surfaces a clear conflict error (the user can
-    // group lines with the same prefix together).
-    #[derive(Debug, Deserialize)]
-    struct Cfg {
-        _a: serde::de::IgnoredAny,
-        _b: serde::de::IgnoredAny,
+    // `a.z: 3` RE-OPENS the closed `a` — spec 0.7 § 5.3.2 requires the
+    // value to be the merged object `{a: {x: 1, z: 3}, b: {y: 2}}`,
+    // not a conflict.
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct A {
+        x: u32,
+        z: u32,
     }
-    let err = from_str::<Cfg>("a.x: 1\nb.y: 2\na.z: 3\n").unwrap_err();
-    let msg = format!("{}", err);
-    assert!(msg.contains("conflict"), "got: {}", msg);
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct B {
+        y: u32,
+    }
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Cfg {
+        a: A,
+        b: B,
+    }
+    let cfg: Cfg = from_str("a.x: 1\nb.y: 2\na.z: 3\n").unwrap();
+    assert_eq!(cfg.a, A { x: 1, z: 3 });
+    assert_eq!(cfg.b, B { y: 2 });
 }
 
 #[test]

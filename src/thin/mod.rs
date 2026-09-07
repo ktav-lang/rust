@@ -24,6 +24,7 @@ mod event;
 mod event_deserializer;
 mod event_parser;
 mod fast_num;
+mod merge;
 
 pub(crate) use event_deserializer::{EventCursor, EventDeserializer};
 pub(crate) use event_parser::parse_events as parse_events_raw;
@@ -31,6 +32,23 @@ pub(crate) use event_parser::parse_events as parse_events_raw;
 use bumpalo::Bump;
 
 use crate::error::Result;
+
+use crate::thin::event::EventStream;
+
+/// Parse and, when the parser reports re-opened dotted-key prefixes
+/// (spec 0.7 § 5.3.2), fold each re-opened block into the buffer of its
+/// first appearance so the one-pass serde `MapAccess` sees a single
+/// object per key path. Reopen-free documents take the zero-copy fast
+/// path: the raw stream is returned untouched (this is the `from_str`
+/// hot route).
+pub(crate) fn parse_events_merged<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStream<'a>> {
+    let (stream, reopens) = parse_events_raw(text, bump)?;
+    if reopens == 0 {
+        Ok(stream)
+    } else {
+        Ok(merge::merge_reopened(&stream, bump))
+    }
+}
 
 /// A single token emitted by [`parse_events`].
 ///
@@ -49,6 +67,15 @@ use crate::error::Result;
 /// emits its real `Begin` when opened and its real `End` at the matching
 /// close. Empty / comments-only documents default to an empty implicit
 /// Object root (`BeginObject` / `EndObject`).
+///
+/// # Dotted-key re-entry (spec 0.7 § 5.3.2)
+///
+/// A dotted-key Object re-opened after an intervening sibling pair (or
+/// explicitly created earlier as `a: { … }`) emits a separate
+/// `Key` + `BeginObject` … `EndObject` block at its own document
+/// position — the stream never re-opens an already-closed compound.
+/// Consumers that build values from the stream MUST merge such blocks
+/// under the same key path (the crate's own [`from_str`] does).
 ///
 /// # Numeric scalars (spec 0.5.0)
 ///
@@ -165,7 +192,7 @@ where
 {
     let arena_bytes = (input.len() / 4).saturating_mul(24) + 4096;
     let bump = Bump::with_capacity(arena_bytes);
-    let events = parse_events_raw(input, &bump)?;
+    let (events, _) = parse_events_raw(input, &bump)?;
     for e in events.iter() {
         callback(ParseEvent::from_internal(*e));
     }

@@ -16,7 +16,7 @@
 
 use bumpalo::collections::Vec as BumpVec;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Event<'a> {
     Null,
     Bool(bool),
