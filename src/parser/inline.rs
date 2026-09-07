@@ -589,24 +589,36 @@ fn has_quote_bytes(bytes: &[u8]) -> bool {
 /// 25-code-point White_Space list, which Rust's `char::is_whitespace`
 /// matches exactly.
 fn skip_segment_ws(s: &str, mut i: usize) -> usize {
-    let bytes = s.as_bytes();
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b' ' || b == b'\t' || b == 0x0B || b == 0x0C {
-            i += 1;
-            continue;
-        }
-        if b < 0x80 {
-            break;
-        }
-        let ch = s[i..].chars().next().unwrap();
-        if ch.is_whitespace() {
-            i += ch.len_utf8();
-        } else {
-            break;
-        }
+    while let Some(len) = inline_whitespace_at(s, i) {
+        i += len;
     }
     i
+}
+
+/// Byte length of the § 3.3 whitespace code point starting at byte
+/// offset `i`, or `None` if the code point at `i` is not whitespace.
+/// Same closed character class as [`skip_segment_ws`]: the four
+/// single-byte ASCII members plus `char::is_whitespace` for `>= 0x80`
+/// (§ 3.3 fixes the 25-code-point White_Space list, which
+/// `char::is_whitespace` matches exactly). A mid-code-point
+/// (non-boundary) offset is never whitespace: callers scan
+/// byte-at-a-time and may sit on a continuation byte of a
+/// non-whitespace character.
+fn inline_whitespace_at(s: &str, i: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let b = *bytes.get(i)?;
+    if b == b' ' || b == b'\t' || b == 0x0B || b == 0x0C {
+        return Some(1);
+    }
+    if b < 0x80 || !s.is_char_boundary(i) {
+        return None;
+    }
+    let ch = s[i..].chars().next()?;
+    if ch.is_whitespace() {
+        Some(ch.len_utf8())
+    } else {
+        None
+    }
 }
 
 /// Scan key text for the pair separator, treating quoted-segment
@@ -1038,11 +1050,18 @@ pub(crate) fn split_top_level<'a>(
                 continue;
             }
             _ => {
-                if bytes[i] != b' ' && bytes[i] != b'\t' {
-                    // Non-whitespace content consumes the value-start
-                    // position (mirrors `scan_inline_closer`'s `_` arm).
-                    value_start = false;
+                // § 3.3 whitespace: skip the whole code point without
+                // consuming the value-start position (R4-F3) — NBSP's
+                // 0xC2 lead byte must not clear `value_start`, and the
+                // per-byte `i += 1` below would strand its 0xA0
+                // continuation byte mid-code-point.
+                if let Some(len) = inline_whitespace_at(input, i) {
+                    i += len;
+                    continue;
                 }
+                // Non-whitespace content consumes the value-start
+                // position (mirrors `scan_inline_closer`'s `_` arm).
+                value_start = false;
                 i += 1;
             }
         }
@@ -1121,9 +1140,14 @@ fn split_top_level_fast(input: &str, line_num: usize, span: Span, body: InlineBo
                 continue;
             }
             _ => {
-                if bytes[i] != b' ' && bytes[i] != b'\t' {
-                    value_start = false;
+                // § 3.3 whitespace: whole-code-point skip that leaves
+                // the value-start position intact (R4-F3, mirrors the
+                // slow path).
+                if let Some(len) = inline_whitespace_at(input, i) {
+                    i += len;
+                    continue;
                 }
+                value_start = false;
             }
         }
         i += 1;
@@ -1583,9 +1607,17 @@ pub(crate) fn scan_inline_closer(
                     }
                 }
                 _ => {
-                    if b != b' ' && b != b'\t' {
-                        value_start = false;
+                    // § 3.3 whitespace: whole-code-point skip, leaving
+                    // the value-start position intact (R4-F3). `prev`
+                    // takes the sequence's last byte — whitespace bytes
+                    // are never `:` or `\`, so `::` raw-marker detection
+                    // sees exactly what the per-byte loop would see.
+                    if let Some(len) = inline_whitespace_at(input, i) {
+                        prev = bytes[i + len - 1];
+                        i += len;
+                        continue;
                     }
+                    value_start = false;
                 }
             }
             prev = b;
@@ -1718,9 +1750,17 @@ pub(crate) fn scan_inline_closer(
                 value_start = false;
             }
             _ => {
-                if b != b' ' && b != b'\t' {
-                    value_start = false;
+                // § 3.3 whitespace: whole-code-point skip, leaving
+                // the value-start position intact (R4-F3). `prev`
+                // takes the sequence's last byte — whitespace bytes
+                // are never `:` or `\`, so `::` raw-marker detection
+                // sees exactly what the per-byte loop would see.
+                if let Some(len) = inline_whitespace_at(input, i) {
+                    prev = bytes[i + len - 1];
+                    i += len;
+                    continue;
                 }
+                value_start = false;
             }
         }
         prev = b;
