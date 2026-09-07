@@ -952,6 +952,756 @@ pub(crate) enum InlineBody {
     Array,
 }
 
+// ---------------------------------------------------------------------------
+// Shared single-loop inline scanner
+// ---------------------------------------------------------------------------
+//
+// `split_top_level`, `split_top_level_fast`, `find_matching_close` and
+// `scan_inline_closer` are thin wrappers over ONE byte-at-a-time state
+// machine ([`Scanner::run`]). The three former hand-written scanners
+// duplicated overlapping state machines and successive review rounds
+// each found a defect fixed in one copy but not another; the shared
+// loop carries every policy decision as an associated `const` of the
+// [`ScanCfg`] trait so each (entry point × quote-mode) instantiation
+// monomorphizes into its own specialized copy where every policy check
+// folds away at compile time — no `dyn`, no runtime enum dispatch in
+// the byte loop.
+//
+// Preserved-quirk inventory (all LOAD-BEARING current behavior):
+// 1. scan-fast leaves `value_start` untouched at a nested closer;
+//    scan-slow clears it (`CLEAR_VS_ON_NESTED_CLOSE`).
+// 2. scan-fast opener `[` leaves `in_key` untouched; scan-slow/find
+//    set `in_key = (b == b'{')`.
+// 3. find-object discards saved `seg_start` on EVERY closer
+//    (`RESTORE_SEG_ON_MATCH = false`); find-array restores it on
+//    kind-matched closers (`= true`).
+// 4. scan's comma sets `value_start = true` even in object scopes;
+//    split's comma sets `value_start = !body_object`.
+// 5. split maps an unterminated quoted key to
+//    `UnterminatedInlineCompound`, and dotted-key-then-EOF to
+//    whitespace-only-rest → no trailing segment, else `EmptyKey`;
+//    find/scan map both to `None`/`NotFound`.
+// 6. scan validates escapes (full-length advance,
+//    `BadEscapeSequence` precedence); find/split skip 2 bytes
+//    unvalidated (validation happens later in `process_escapes`).
+// 7. `prev` tracking (scan only): ws arm sets prev to the run's last
+//    byte; quoted-span continue sets prev to the closing quote byte;
+//    `\\` sets prev to `\\`.
+// 8. scan's lone-`:`-in-value rule (R5-F2) clears `value_start`
+//    unless the next byte is `:`.
+// 9. find counts depth for ONE kind; scan counts BOTH kinds against
+//    one shared depth and requires the depth-0 closer to be the
+//    body's own kind.
+// 10. The segment-start skip block runs only when
+//     `TRACK_QUOTES && in_key && seg_start`.
+
+/// Per open compound: the opener byte plus the enclosing key-position,
+/// segment-start and raw state. A closer restores that state only when
+/// it matches the most recently opened compound kind, so crossed
+/// closers don't corrupt key tracking (R4-F2 / R6-F1).
+struct ScopeFrame {
+    kind: u8,
+    saved_in_key: bool,
+    saved_seg_start: bool,
+    saved_raw: bool,
+}
+
+/// Why the shared scanner loop stopped.
+enum ScanStop {
+    /// Depth returned to 0 at `idx`; `byte` is the closer byte
+    /// (`}`/`]`) seen there.
+    Closer { idx: usize, byte: u8 },
+    /// The seg-start whitespace skip consumed the rest of the input.
+    EofAfterWsSkip,
+    /// A quoted key segment never closed.
+    UnterminatedQuote,
+    /// [`scan_escape`] rejection with the ready-made error payload.
+    BadEscape(Error),
+    /// Input exhausted without any of the above.
+    Exhausted,
+}
+
+/// Policy for `value_start` at a comma.
+#[derive(Clone, Copy)]
+enum CommaVs {
+    /// scan: every loop-seen comma opens a value position.
+    Always,
+    /// split: `value_start = !body_object` (§ 5.3.3 "Keys only").
+    BodyNegated,
+    /// find: never reads `value_start`.
+    None,
+}
+
+/// Compile-time policy knobs of the shared scanner. Every `const` is
+/// folded away by monomorphization, so each config's byte loop is the
+/// specialized machine of exactly one former hand-written scanner.
+trait ScanCfg {
+    /// Quote/segment-start tracking (§ 5.3.3). `false` for every
+    /// *Fast config.
+    const TRACK_QUOTES: bool;
+    /// Maintain the scope stack (find slow + scan, both modes);
+    /// `false` for find-fast and split.
+    const USE_STACK: bool;
+    /// Openers nest only at `value_start && !raw` (§ 5.8.5); when
+    /// `false` (find) every opener nests in place, naive counting.
+    const OPENER_GATED: bool;
+    /// split: sub-scan a candidate nested compound with its own pair
+    /// ([`scan_inline_closer`]) and jump over it.
+    const OPENER_JUMP: bool;
+    /// scan: BOTH closer kinds decrement the shared depth; find: only
+    /// the body's own `close` kind counts.
+    const DECREMENT_ANY_CLOSER: bool;
+    /// split: `}`/`]` are ordinary content (§ 5.8.5 shields commas
+    /// only inside value-start compounds).
+    const CLOSER_LITERAL: bool;
+    /// scan only: [`scan_escape`] validation with
+    /// `BadEscapeSequence` precedence (§ 5.2 rules-6–9 preamble).
+    const VALIDATE_ESCAPES: bool;
+    /// scan only: `::` raw marker (§ 5.4) + `prev` byte tracking.
+    const TRACK_RAW: bool;
+    /// split: record a segment at every loop-seen comma.
+    const COMMA_SPLITS: bool;
+    /// find/scan: comma key context comes from the CURRENT scope (the
+    /// stack top, R5-F1/R6-F1); split: from the body kind.
+    const COMMA_CTX_SCOPE: bool;
+    /// `value_start` policy at a comma (quirk 4).
+    const COMMA_VS: CommaVs;
+    /// scan: an unescaped comma ends raw mode (R5-F3).
+    const COMMA_CLEARS_RAW: bool;
+    /// scan/split: a key `:` sets `value_start`; find: no-op.
+    const COLON_SETS_VS: bool;
+    /// split: a non-key `:` clears `value_start` — `:` is never § 3.3
+    /// whitespace, so split's old `_` fall-through applies.
+    const COLON_ELSE_CLEAR_VS: bool;
+    /// Restore `in_key` from a kind-matched popped scope.
+    const RESTORE_IN_KEY_ON_MATCH: bool;
+    /// find-object: FALSE (quirk 3: both `}` and `]` arms set
+    /// `seg_start = false` even after a kind-matched pop);
+    /// find-array + scan-slow: TRUE.
+    const RESTORE_SEG_ON_MATCH: bool;
+    /// scan-slow only: restore saved raw state on a kind match
+    /// (§ 5.8.5, R4-F1).
+    const RESTORE_RAW_ON_MATCH: bool;
+    /// find-slow + scan-slow: a closer that matches NO scope kind
+    /// still forces `seg_start = false`.
+    const MISMATCH_SEG_FALSE: bool;
+    /// scan-SLOW only: a nested closer clears `value_start`;
+    /// scan-fast deliberately leaves it untouched (quirk 1).
+    const CLEAR_VS_ON_NESTED_CLOSE: bool;
+}
+
+/// `find_matching_close`, quote-free fast path (the pre-0.7 loop).
+/// Writes to `in_key`/`value_start`/`seg_start` are never read in this
+/// config — the const-gates keep them out of the loop.
+struct FindFast;
+impl ScanCfg for FindFast {
+    const TRACK_QUOTES: bool = false;
+    const USE_STACK: bool = false;
+    const OPENER_GATED: bool = false;
+    const OPENER_JUMP: bool = false;
+    const DECREMENT_ANY_CLOSER: bool = false;
+    const CLOSER_LITERAL: bool = false;
+    const VALIDATE_ESCAPES: bool = false;
+    const TRACK_RAW: bool = false;
+    const COMMA_SPLITS: bool = false;
+    const COMMA_CTX_SCOPE: bool = true;
+    const COMMA_VS: CommaVs = CommaVs::None;
+    const COMMA_CLEARS_RAW: bool = false;
+    const COLON_SETS_VS: bool = false;
+    const COLON_ELSE_CLEAR_VS: bool = false;
+    const RESTORE_IN_KEY_ON_MATCH: bool = false;
+    const RESTORE_SEG_ON_MATCH: bool = false;
+    const RESTORE_RAW_ON_MATCH: bool = false;
+    const MISMATCH_SEG_FALSE: bool = false;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+}
+
+/// `find_matching_close`, object body with quote bytes: key-position
+/// tracking PER NESTING LEVEL — every `{` opens a fresh pair list, so
+/// the enclosing level's state is saved and restored around it.
+/// Quirk 3: both `]` and `}` arms set `seg_start = false` even after a
+/// kind-matched pop (`RESTORE_SEG_ON_MATCH = false`).
+struct FindObjQ;
+impl ScanCfg for FindObjQ {
+    const TRACK_QUOTES: bool = true;
+    const USE_STACK: bool = true;
+    const OPENER_GATED: bool = false;
+    const OPENER_JUMP: bool = false;
+    const DECREMENT_ANY_CLOSER: bool = false;
+    const CLOSER_LITERAL: bool = false;
+    const VALIDATE_ESCAPES: bool = false;
+    const TRACK_RAW: bool = false;
+    const COMMA_SPLITS: bool = false;
+    const COMMA_CTX_SCOPE: bool = true;
+    const COMMA_VS: CommaVs = CommaVs::None;
+    const COMMA_CLEARS_RAW: bool = false;
+    const COLON_SETS_VS: bool = false;
+    const COLON_ELSE_CLEAR_VS: bool = false;
+    const RESTORE_IN_KEY_ON_MATCH: bool = true;
+    const RESTORE_SEG_ON_MATCH: bool = false;
+    const RESTORE_RAW_ON_MATCH: bool = false;
+    const MISMATCH_SEG_FALSE: bool = true;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+}
+
+/// `find_matching_close`, array body with quote bytes: depth still
+/// counts only this `[`/`]` pair, but nested `{` objects track key
+/// positions per scope (R3-F2). Unlike the object body, a kind-matched
+/// closer restores the saved `seg_start` too (`RESTORE_SEG_ON_MATCH =
+/// true`).
+struct FindArrQ;
+impl ScanCfg for FindArrQ {
+    const TRACK_QUOTES: bool = true;
+    const USE_STACK: bool = true;
+    const OPENER_GATED: bool = false;
+    const OPENER_JUMP: bool = false;
+    const DECREMENT_ANY_CLOSER: bool = false;
+    const CLOSER_LITERAL: bool = false;
+    const VALIDATE_ESCAPES: bool = false;
+    const TRACK_RAW: bool = false;
+    const COMMA_SPLITS: bool = false;
+    const COMMA_CTX_SCOPE: bool = true;
+    const COMMA_VS: CommaVs = CommaVs::None;
+    const COMMA_CLEARS_RAW: bool = false;
+    const COLON_SETS_VS: bool = false;
+    const COLON_ELSE_CLEAR_VS: bool = false;
+    const RESTORE_IN_KEY_ON_MATCH: bool = true;
+    const RESTORE_SEG_ON_MATCH: bool = true;
+    const RESTORE_RAW_ON_MATCH: bool = false;
+    const MISMATCH_SEG_FALSE: bool = true;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+}
+
+/// `scan_inline_closer`, quote-free fast path. `value_start` marks an
+/// unconsumed value position (§ 5.8.5); both closer kinds decrement
+/// the shared depth. Quirks: opener `[` leaves `in_key` untouched (the
+/// next `,` re-derives it) and a nested closer leaves `value_start`
+/// untouched.
+struct ScanFast;
+impl ScanCfg for ScanFast {
+    const TRACK_QUOTES: bool = false;
+    const USE_STACK: bool = true;
+    const OPENER_GATED: bool = true;
+    const OPENER_JUMP: bool = false;
+    const DECREMENT_ANY_CLOSER: bool = true;
+    const CLOSER_LITERAL: bool = false;
+    const VALIDATE_ESCAPES: bool = true;
+    const TRACK_RAW: bool = true;
+    const COMMA_SPLITS: bool = false;
+    const COMMA_CTX_SCOPE: bool = true;
+    const COMMA_VS: CommaVs = CommaVs::Always;
+    const COMMA_CLEARS_RAW: bool = true;
+    const COLON_SETS_VS: bool = true;
+    const COLON_ELSE_CLEAR_VS: bool = false;
+    const RESTORE_IN_KEY_ON_MATCH: bool = false;
+    const RESTORE_SEG_ON_MATCH: bool = false;
+    const RESTORE_RAW_ON_MATCH: bool = false;
+    const MISMATCH_SEG_FALSE: bool = false;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+}
+
+/// `scan_inline_closer`, slow path (quote bytes present): the
+/// per-level key-position machine plus the same value-position /
+/// raw-marker tracking as the fast path; closers restore the
+/// enclosing scope's key, segment-start and raw state (R4-F2) and
+/// clear `value_start`.
+struct ScanQ;
+impl ScanCfg for ScanQ {
+    const TRACK_QUOTES: bool = true;
+    const USE_STACK: bool = true;
+    const OPENER_GATED: bool = true;
+    const OPENER_JUMP: bool = false;
+    const DECREMENT_ANY_CLOSER: bool = true;
+    const CLOSER_LITERAL: bool = false;
+    const VALIDATE_ESCAPES: bool = true;
+    const TRACK_RAW: bool = true;
+    const COMMA_SPLITS: bool = false;
+    const COMMA_CTX_SCOPE: bool = true;
+    const COMMA_VS: CommaVs = CommaVs::Always;
+    const COMMA_CLEARS_RAW: bool = true;
+    const COLON_SETS_VS: bool = true;
+    const COLON_ELSE_CLEAR_VS: bool = false;
+    const RESTORE_IN_KEY_ON_MATCH: bool = true;
+    const RESTORE_SEG_ON_MATCH: bool = true;
+    const RESTORE_RAW_ON_MATCH: bool = true;
+    const MISMATCH_SEG_FALSE: bool = true;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = true;
+}
+
+/// `split_top_level`, quote-free fast path (also serving object bodies
+/// without quote bytes). Implements the § 5.8.5 value-start rule via
+/// sub-scans; `}`/`]` are ordinary content.
+struct SplitFast;
+impl ScanCfg for SplitFast {
+    const TRACK_QUOTES: bool = false;
+    const USE_STACK: bool = false;
+    const OPENER_GATED: bool = true;
+    const OPENER_JUMP: bool = true;
+    const DECREMENT_ANY_CLOSER: bool = false;
+    const CLOSER_LITERAL: bool = true;
+    const VALIDATE_ESCAPES: bool = false;
+    const TRACK_RAW: bool = false;
+    const COMMA_SPLITS: bool = true;
+    const COMMA_CTX_SCOPE: bool = false;
+    const COMMA_VS: CommaVs = CommaVs::BodyNegated;
+    const COMMA_CLEARS_RAW: bool = false;
+    const COLON_SETS_VS: bool = true;
+    const COLON_ELSE_CLEAR_VS: bool = true;
+    const RESTORE_IN_KEY_ON_MATCH: bool = false;
+    const RESTORE_SEG_ON_MATCH: bool = false;
+    const RESTORE_RAW_ON_MATCH: bool = false;
+    const MISMATCH_SEG_FALSE: bool = false;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+}
+
+/// `split_top_level`, object body with quote bytes: quoted KEYS are
+/// comma-opaque (§ 5.3.3), quotes in value positions are content.
+struct SplitQ;
+impl ScanCfg for SplitQ {
+    const TRACK_QUOTES: bool = true;
+    const USE_STACK: bool = false;
+    const OPENER_GATED: bool = true;
+    const OPENER_JUMP: bool = true;
+    const DECREMENT_ANY_CLOSER: bool = false;
+    const CLOSER_LITERAL: bool = true;
+    const VALIDATE_ESCAPES: bool = false;
+    const TRACK_RAW: bool = false;
+    const COMMA_SPLITS: bool = true;
+    const COMMA_CTX_SCOPE: bool = false;
+    const COMMA_VS: CommaVs = CommaVs::BodyNegated;
+    const COMMA_CLEARS_RAW: bool = false;
+    const COLON_SETS_VS: bool = true;
+    const COLON_ELSE_CLEAR_VS: bool = true;
+    const RESTORE_IN_KEY_ON_MATCH: bool = false;
+    const RESTORE_SEG_ON_MATCH: bool = false;
+    const RESTORE_RAW_ON_MATCH: bool = false;
+    const MISMATCH_SEG_FALSE: bool = false;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+}
+
+/// The shared byte-at-a-time scanner. All hot state lives in fields
+/// that [`Scanner::run`] copies into LOCALS for the whole loop (the
+/// former hand-written loops kept state in register-allocatable
+/// locals; a field-per-iteration machine measured +15–20% slower on
+/// deeply-nested quote-free documents) and writes back once after the
+/// loop.
+struct Scanner<'a, C: ScanCfg> {
+    input: &'a str,
+    bytes: &'a [u8],
+    open: u8,
+    close: u8,
+    body_object: bool,
+    line_num: usize,
+    span: Span,
+    i: usize,
+    depth: i32,
+    in_key: bool,
+    seg_start: bool,
+    value_start: bool,
+    raw: bool,
+    prev: u8,
+    stack: Vec<ScopeFrame>,
+    segments: Vec<&'a str>,
+    seg_at: usize,
+    _cfg: std::marker::PhantomData<C>,
+}
+
+impl<'a, C: ScanCfg> Scanner<'a, C> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        input: &'a str,
+        open: u8,
+        close: u8,
+        body_object: bool,
+        line_num: usize,
+        span: Span,
+    ) -> Self {
+        Self {
+            input,
+            bytes: input.as_bytes(),
+            open,
+            close,
+            body_object,
+            line_num,
+            span,
+            i: 0,
+            depth: 0,
+            in_key: false,
+            seg_start: false,
+            value_start: false,
+            raw: false,
+            prev: open,
+            stack: Vec::new(),
+            segments: Vec::new(),
+            seg_at: 0,
+            _cfg: std::marker::PhantomData,
+        }
+    }
+
+    fn run(&mut self) -> ScanStop {
+        let input = self.input;
+        let bytes = self.bytes;
+        let len = bytes.len();
+        let open = self.open;
+        let close = self.close;
+        let body_object = self.body_object;
+        let mut i = self.i;
+        let mut depth = self.depth;
+        let mut in_key = self.in_key;
+        let mut seg_start = self.seg_start;
+        let mut value_start = self.value_start;
+        let mut raw = self.raw;
+        let mut prev = self.prev;
+        let mut seg_at = self.seg_at;
+        let mut stack = std::mem::take(&mut self.stack);
+        let mut segments = std::mem::take(&mut self.segments);
+
+        let stop = loop {
+            if i >= len {
+                break ScanStop::Exhausted;
+            }
+
+            // (1) quoted key segment start: only when quote tracking,
+            // in a key position, at a fresh segment start (quirk 10).
+            if C::TRACK_QUOTES && in_key && seg_start {
+                i = skip_segment_ws(input, i);
+                // The skip may consume every byte that remains: after
+                // a trailing comma (or a dotted-key `.`) only
+                // whitespace can follow, leaving `i` at EOF;
+                // `bytes[i]` below then indexed out of bounds
+                // (R3-F1).
+                if i >= len {
+                    break ScanStop::EofAfterWsSkip;
+                }
+                if is_quote_byte(bytes[i]) {
+                    match quoted_span_end(bytes, i) {
+                        Some(end) => {
+                            // `prev` takes the closing quote byte —
+                            // what a per-byte loop would leave in
+                            // `prev` after the span (TRACK_RAW only).
+                            if C::TRACK_RAW {
+                                prev = bytes[end];
+                            }
+                            i = end + 1;
+                            seg_start = false;
+                            continue;
+                        }
+                        None => break ScanStop::UnterminatedQuote,
+                    }
+                }
+                seg_start = false;
+            }
+
+            let b = bytes[i];
+            match b {
+                b'\\' => {
+                    if C::VALIDATE_ESCAPES {
+                        // § 5.2 rules-6–9 preamble: an invalid escape
+                        // beats the rule 8/9 decision
+                        // (`BadEscapeSequence` precedence). Advance by
+                        // the FULL escape length (unlike find/split's
+                        // `i += 2`, which suffices there because hex
+                        // digits are not structural and validation
+                        // happens later in `process_escapes`). `prev`
+                        // becomes `\\` so an escaped `:` never forms a
+                        // `::` raw marker (R5-F4).
+                        match scan_escape(bytes, i) {
+                            Err(seq) => {
+                                break ScanStop::BadEscape(Error::Structured(
+                                    ErrorKind::BadEscapeSequence {
+                                        line: self.line_num as u32,
+                                        span: self.span,
+                                        sequence: seq,
+                                    },
+                                ))
+                            }
+                            Ok(esc) => {
+                                // A recognized escape in value
+                                // position consumes the scalar start
+                                // (§ 3.7 / § 5.8.5, R4-F4): the
+                                // decoded byte cannot reopen
+                                // structural dispatch.
+                                value_start = false;
+                                if C::TRACK_RAW {
+                                    prev = b'\\';
+                                }
+                                i += esc.len();
+                                continue;
+                            }
+                        }
+                    }
+                    // find/split: skip the escaped character, no
+                    // validation (validation happens later in
+                    // `process_escapes`).
+                    value_start = false;
+                    i += 2;
+                    continue;
+                }
+                b':' => {
+                    if in_key {
+                        // Key/value boundary: quotes after this are
+                        // content.
+                        in_key = false;
+                        if C::COLON_SETS_VS {
+                            value_start = true;
+                        }
+                    } else if C::TRACK_RAW && prev == b':' && value_start {
+                        // `::` raw marker (§ 5.4 — in array bodies
+                        // too): the rest of the item's value is a
+                        // String — braces/brackets in it are content.
+                        raw = true;
+                    } else if C::TRACK_RAW {
+                        // A lone `:` opening the value's scalar
+                        // (§ 5.8.5, R5-F2) consumes the value
+                        // position: a following `{`/`[` is literal
+                        // content, not a nested opener. A `:`
+                        // immediately followed by another `:` stays
+                        // armed for the `::` marker check above on
+                        // the next iteration.
+                        if value_start && bytes.get(i + 1) != Some(&b':') {
+                            value_start = false;
+                        }
+                    } else if C::COLON_ELSE_CLEAR_VS {
+                        // `:` is never § 3.3 whitespace: split's old
+                        // `_` fall-through for a non-key colon.
+                        value_start = false;
+                    }
+                }
+                b',' => {
+                    if C::COMMA_SPLITS {
+                        segments.push(&input[seg_at..i]);
+                        seg_at = i + 1;
+                    }
+                    if C::COMMA_CTX_SCOPE {
+                        // Next pair / item begins: re-derive key
+                        // context from the CURRENT scope (the
+                        // innermost opener on the stack), not the
+                        // outermost one (R5-F1/R6-F1) — an Object
+                        // scope starts a key position, an Array
+                        // scope stays a value position (§ 5.3.3
+                        // "Keys only").
+                        let scope_object = stack.last().map_or(body_object, |f| f.kind == b'{');
+                        in_key = scope_object;
+                        if C::TRACK_QUOTES {
+                            seg_start = scope_object;
+                        }
+                    } else {
+                        // split: the body kind decides (the stack is
+                        // always empty at a split comma).
+                        in_key = body_object;
+                        if C::TRACK_QUOTES {
+                            seg_start = body_object;
+                        }
+                    }
+                    // An unescaped comma ALWAYS ends raw mode (R5-F3).
+                    if C::COMMA_CLEARS_RAW {
+                        raw = false;
+                    }
+                    match C::COMMA_VS {
+                        CommaVs::Always => value_start = true,
+                        CommaVs::BodyNegated => value_start = !body_object,
+                        CommaVs::None => {}
+                    }
+                }
+                b'.' if C::TRACK_QUOTES && in_key => {
+                    seg_start = true;
+                }
+                b'{' | b'[' => {
+                    let gated_open = !C::OPENER_GATED || (value_start && !raw);
+                    if !gated_open {
+                        // Mid-scalar (or raw-mode) opener: a literal
+                        // byte with no structural meaning; balancing
+                        // is irrelevant (R3-F4, § 5.8.5) — commas
+                        // inside it still split.
+                        value_start = false;
+                    } else if C::OPENER_JUMP {
+                        // split: sub-scan the candidate nested
+                        // compound with its own pair. The matching
+                        // closer is found with the value-start-aware
+                        // `scan_inline_closer` (a mid-scalar opener
+                        // inside the span must not count);
+                        // `find_matching_close` would balance naive
+                        // byte counts and skip spans that per
+                        // § 5.8.5 are NOT one compound.
+                        let (o, c) = if b == b'{' {
+                            (b'{', b'}')
+                        } else {
+                            (b'[', b']')
+                        };
+                        if let InlineCloserScan::Found(pos) =
+                            scan_inline_closer(&input[i..], o, c, self.line_num, self.span)
+                        {
+                            // Skip over the entire nested compound.
+                            i += pos + 1;
+                            value_start = false;
+                            if C::TRACK_QUOTES {
+                                seg_start = false;
+                            }
+                            continue;
+                        }
+                        // No closer inside the body — treat as
+                        // literal byte (mid-value brace). Escapes are
+                        // validated later by `process_escapes`, so a
+                        // `BadEscape` scan result is deliberately not
+                        // propagated here.
+                        value_start = false;
+                        i += 1;
+                        continue;
+                    } else {
+                        // Count in place.
+                        if C::DECREMENT_ANY_CLOSER || b == open {
+                            depth += 1;
+                        }
+                        if C::USE_STACK {
+                            // Save the enclosing key-position and raw
+                            // state (§ 5.8.5, R4-F1 / R6-F1).
+                            stack.push(ScopeFrame {
+                                kind: b,
+                                saved_in_key: in_key,
+                                saved_seg_start: seg_start,
+                                saved_raw: raw,
+                            });
+                        }
+                        // After an array's `[` the next position is
+                        // still a value position (its first item,
+                        // § 5.8.5); after a nested `{` comes key
+                        // context. find never reads `value_start`, so
+                        // this write is harmless there.
+                        value_start = b == b'[';
+                        if C::TRACK_QUOTES {
+                            in_key = b == b'{';
+                            seg_start = b == b'{';
+                        } else if b == b'{' {
+                            // scan-fast quirk: `[` leaves `in_key`
+                            // untouched; the next `,` re-derives it
+                            // (quirk 2).
+                            in_key = true;
+                        }
+                    }
+                }
+                b'}' | b']' if !C::CLOSER_LITERAL => {
+                    if !C::DECREMENT_ANY_CLOSER && b != close {
+                        // find's other-kind closer: restore-only, no
+                        // depth change.
+                        if C::TRACK_QUOTES {
+                            let want = if b == b']' { b'[' } else { b'{' };
+                            if stack.last().is_some_and(|f| f.kind == want) {
+                                let f = stack.pop().unwrap();
+                                in_key = f.saved_in_key;
+                                seg_start = if C::RESTORE_SEG_ON_MATCH {
+                                    f.saved_seg_start
+                                } else {
+                                    // The closer itself consumed a
+                                    // position, so segment-start
+                                    // tracking stays off until the
+                                    // next re-arm (quirk 3).
+                                    false
+                                };
+                            } else {
+                                seg_start = false;
+                            }
+                        }
+                    } else {
+                        // Both closer kinds decrement the shared
+                        // depth: a nested compound of the OTHER
+                        // delimiter type still closes (an array item
+                        // may be an object and vice versa). An
+                        // unescaped closer ALWAYS ends raw mode and is
+                        // structural (R5-F3):
+                        // `<inline-raw-scalar>` terminates on the
+                        // FIRST unescaped `,`, `}`, or `]` regardless
+                        // of which scope it belongs to — raw mode only
+                        // makes leading openers literal (§ 5.8.5).
+                        raw = false;
+                        depth -= 1;
+                        if depth == 0 {
+                            // A closer that returns depth to zero
+                            // must be the body's own closer; a crossed
+                            // one (e.g. `[{a: 1]`) is not a matching
+                            // closer (§ 5.2's matching-closer rule).
+                            break ScanStop::Closer { idx: i, byte: b };
+                        }
+                        // Nested closer: pop it only when it matches
+                        // the most recently opened compound kind
+                        // (compare the stored OPENER to the closer's
+                        // matching opener, R4-F2), so crossed closers
+                        // don't corrupt tracking.
+                        let want = if b == b']' { b'[' } else { b'{' };
+                        if stack.last().is_some_and(|f| f.kind == want) {
+                            let f = stack.pop().unwrap();
+                            if C::RESTORE_IN_KEY_ON_MATCH {
+                                in_key = f.saved_in_key;
+                            }
+                            if C::TRACK_QUOTES {
+                                seg_start = if C::RESTORE_SEG_ON_MATCH {
+                                    f.saved_seg_start
+                                } else {
+                                    // The `}`/`]` itself consumed a
+                                    // position, so segment-start
+                                    // tracking stays off until the
+                                    // next re-arm (quirk 3).
+                                    false
+                                };
+                                if C::RESTORE_RAW_ON_MATCH {
+                                    // Per-scope raw tracking
+                                    // (§ 5.8.5, R4-F1 / R4-F2).
+                                    raw = f.saved_raw;
+                                }
+                            }
+                        } else if C::MISMATCH_SEG_FALSE && C::TRACK_QUOTES {
+                            seg_start = false;
+                        }
+                        // scan-SLOW only; scan-fast deliberately
+                        // leaves `value_start` untouched (quirk 1).
+                        if C::CLEAR_VS_ON_NESTED_CLOSE {
+                            value_start = false;
+                        }
+                    }
+                }
+                _ => {
+                    // § 3.3 whitespace: skip the whole code point
+                    // without consuming the value-start position
+                    // (R4-F3) — NBSP's 0xC2 lead byte must not clear
+                    // `value_start`, and a per-byte `i += 1` would
+                    // strand its 0xA0 continuation byte mid-code-point.
+                    // `prev` takes the run's LAST byte (TRACK_RAW
+                    // only) — whitespace bytes are never `:` or `\`,
+                    // so `::` raw-marker detection sees exactly what
+                    // the per-byte loop would see.
+                    if let Some(ws_len) = inline_whitespace_at(input, i) {
+                        if C::TRACK_RAW {
+                            prev = bytes[i + ws_len - 1];
+                        }
+                        i += ws_len;
+                        continue;
+                    }
+                    // Non-whitespace content consumes the value-start
+                    // position.
+                    value_start = false;
+                }
+            }
+            prev = b;
+            i += 1;
+        };
+
+        self.i = i;
+        self.depth = depth;
+        self.in_key = in_key;
+        self.seg_start = seg_start;
+        self.value_start = value_start;
+        self.raw = raw;
+        self.prev = prev;
+        self.seg_at = seg_at;
+        self.stack = stack;
+        self.segments = segments;
+        stop
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Splitting on top-level commas (wrappers over the shared machine)
+// ---------------------------------------------------------------------------
+
 /// Split `input` on unescaped `,` at nesting depth 0.
 ///
 /// Unlike a naive brace-counting approach, this correctly handles the
@@ -964,16 +1714,18 @@ pub(crate) enum InlineBody {
 /// per the mid-value-brace rule).
 ///
 /// In [`InlineBody::Object`] mode, quoted key segments (spec 0.7
-/// § 5.3.3) are opaque to comma splitting — `\{"a,b": 1, c: 2\}`
+/// § 5.3.3) are opaque to comma splitting — `{"a,b": 1, c: 2}`
 /// splits into two pairs — while quotes in value positions are
 /// ordinary content (`a: "x,y", b: 2` splits inside the quotes). An
 /// unterminated quoted key segment raises `UnterminatedInlineCompound`.
-pub(crate) fn split_top_level<'a>(
-    input: &'a str,
+// (`input: &str` instead of `<'a>(input: &'a str)`) — type-identical,
+// no call-site changes.
+pub(crate) fn split_top_level(
+    input: &str,
     line_num: usize,
     span: Span,
     body: InlineBody,
-) -> Result<Vec<&'a str>, Error> {
+) -> Result<Vec<&str>, Error> {
     let bytes = input.as_bytes();
     if body == InlineBody::Array || !has_quote_bytes(bytes) {
         return Ok(split_top_level_fast(input, line_num, span, body));
@@ -981,140 +1733,50 @@ pub(crate) fn split_top_level<'a>(
 
     // Slow path (object body with quote bytes): track key/value and
     // segment-start state so quoted KEYS are comma-opaque.
-    let mut segments: Vec<&'a str> = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    let mut in_key = true;
-    let mut seg_start = true;
-    let mut value_start = false;
-
-    while i < bytes.len() {
-        if in_key && seg_start {
-            i = skip_segment_ws(input, i);
+    let object = body == InlineBody::Object;
+    let (open, close) = if object { (b'{', b'}') } else { (b'[', b']') };
+    let mut sc: Scanner<'_, SplitQ> = Scanner::new(input, open, close, object, line_num, span);
+    sc.in_key = object;
+    sc.seg_start = object;
+    sc.value_start = !object;
+    match sc.run() {
+        ScanStop::UnterminatedQuote => {
+            // Unterminated quoted key segment (§ 5.3.3).
+            Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                line: line_num as u32,
+                span,
+            }))
+        }
+        ScanStop::EofAfterWsSkip => {
             // The skip may consume every byte that remains: after a
             // trailing comma (or a dotted-key `.`) only whitespace can
-            // follow, leaving `i` at EOF; `bytes[i]` below then indexed
-            // out of bounds (R3-F1). Two possible outcomes:
-            if i >= bytes.len() {
-                if input[start..].trim().is_empty() {
-                    // Only whitespace after the last comma: a valid
-                    // trailing comma — emit no final segment (the
-                    // callers treat an empty last segment identically).
-                    return Ok(segments);
-                }
+            // follow (R3-F1). Two possible outcomes:
+            if input[sc.seg_at..].trim().is_empty() {
+                // Only whitespace after the last comma: a valid
+                // trailing comma — emit no final segment (the
+                // callers treat an empty last segment identically).
+                Ok(sc.segments)
+            } else {
                 // A `.` armed this segment start and only whitespace
                 // followed: a dotted key whose final segment is empty
                 // (`b.` / `.`) — EmptyKey, the same category
                 // `insert_value` raises for `a.: 1` (spec 0.7 § 6.5).
-                return Err(Error::Structured(ErrorKind::EmptyKey {
+                Err(Error::Structured(ErrorKind::EmptyKey {
                     line: line_num as u32,
                     span,
-                }));
+                }))
             }
-            if is_quote_byte(bytes[i]) {
-                match quoted_span_end(bytes, i) {
-                    Some(end) => {
-                        i = end + 1;
-                        seg_start = false;
-                        continue;
-                    }
-                    None => {
-                        // Unterminated quoted key segment (§ 5.3.3).
-                        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-                            line: line_num as u32,
-                            span,
-                        }));
-                    }
-                }
-            }
-            seg_start = false;
         }
-        match bytes[i] {
-            b'\\' => {
-                // Skip escaped character. We validate escapes later
-                // during process_escapes; here we just need to not
-                // count `\,`, `\{`, `\}`, `\[`, `\]` as structural.
-                // A recognized escape in value position consumes the
-                // scalar start (§ 3.7 / § 5.8.5, R4-F4): the decoded
-                // byte cannot reopen structural dispatch, so a later
-                // `[`/`{` in the same value stays literal data.
-                value_start = false;
-                i += 2;
-            }
-            b'.' if in_key => {
-                seg_start = true;
-                i += 1;
-            }
-            b':' if in_key => {
-                // Key/value boundary — quotes after this are content.
-                in_key = false;
-                value_start = true;
-                i += 1;
-            }
-            b'{' | b'[' if value_start => {
-                // Only a value-start opener opens a nested compound; its
-                // commas stay internal (§ 5.8.5). The matching closer is
-                // found with the value-start-aware `scan_inline_closer`
-                // (a mid-scalar opener inside the span must not count);
-                // `find_matching_close` would balance naive byte counts
-                // and skip spans that per § 5.8.5 are NOT one compound.
-                let open = bytes[i];
-                let close = if open == b'{' { b'}' } else { b']' };
-                if let InlineCloserScan::Found(close_pos) =
-                    scan_inline_closer(&input[i..], open, close, line_num, span)
-                {
-                    // Skip over the entire nested compound.
-                    i += close_pos + 1;
-                    value_start = false;
-                    seg_start = false;
-                    continue;
-                }
-                // No closer inside the body — treat as literal byte
-                // (mid-value brace). Escapes are validated later by
-                // `process_escapes`, so a `BadEscape` scan result is
-                // deliberately not propagated here.
-                value_start = false;
-                i += 1;
-            }
-            b'{' | b'[' => {
-                // Mid-scalar opener: a literal byte with no structural
-                // meaning; balancing is irrelevant (R3-F4, § 5.8.5) —
-                // commas inside it still split.
-                value_start = false;
-                i += 1;
-            }
-            b',' => {
-                segments.push(&input[start..i]);
-                start = i + 1;
-                i += 1;
-                // Next pair begins: back to key context.
-                in_key = true;
-                seg_start = true;
-                value_start = false;
-                continue;
-            }
-            _ => {
-                // § 3.3 whitespace: skip the whole code point without
-                // consuming the value-start position (R4-F3) — NBSP's
-                // 0xC2 lead byte must not clear `value_start`, and the
-                // per-byte `i += 1` below would strand its 0xA0
-                // continuation byte mid-code-point.
-                if let Some(len) = inline_whitespace_at(input, i) {
-                    i += len;
-                    continue;
-                }
-                // Non-whitespace content consumes the value-start
-                // position (mirrors `scan_inline_closer`'s `_` arm).
-                value_start = false;
-                i += 1;
-            }
+        ScanStop::Exhausted => {
+            // Last segment (after final comma, or the whole string if
+            // no comma).
+            sc.segments.push(&input[sc.seg_at..]);
+            Ok(sc.segments)
+        }
+        ScanStop::Closer { .. } | ScanStop::BadEscape(_) => {
+            unreachable!("split scanner cannot stop on a closer or bad escape")
         }
     }
-
-    // Last segment (after final comma, or the whole string if no comma)
-    segments.push(&input[start..]);
-
-    Ok(segments)
 }
 
 /// Quote-free fast path for [`split_top_level`] (also serving object
@@ -1128,83 +1790,30 @@ pub(crate) fn split_top_level<'a>(
 /// the body start and every position after `,` are value positions
 /// (§ 5.3.3 "Keys only").
 fn split_top_level_fast(input: &str, line_num: usize, span: Span, body: InlineBody) -> Vec<&str> {
-    let bytes = input.as_bytes();
     let object = body == InlineBody::Object;
-    let mut segments: Vec<&str> = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    let mut in_key = object;
-    let mut value_start = !object;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => {
-                // Consumed atomically (mirrors `scan_inline_closer`):
-                // the escaped bracket byte is never seen here. A
-                // recognized escape in value position consumes the
-                // scalar start (§ 3.7 / § 5.8.5, R4-F4): the decoded
-                // byte cannot reopen structural dispatch.
-                value_start = false;
-                i += 2;
-                continue;
-            }
-            b'{' | b'[' if value_start => {
-                let open = bytes[i];
-                let close = if open == b'{' { b'}' } else { b']' };
-                if let InlineCloserScan::Found(close_pos) =
-                    scan_inline_closer(&input[i..], open, close, line_num, span)
-                {
-                    i += close_pos + 1;
-                    value_start = false;
-                    continue;
-                }
-                // Not closed inside the body — literal byte (mid-value
-                // brace). Escapes are validated later by
-                // `process_escapes`, so a `BadEscape` scan result is
-                // deliberately not propagated here.
-                value_start = false;
-                i += 1;
-                continue;
-            }
-            b'{' | b'[' => {
-                // Mid-scalar opener: a literal byte with no structural
-                // meaning; balancing is irrelevant (R3-F4, § 5.8.5) —
-                // commas inside it still split.
-                value_start = false;
-            }
-            b':' if in_key => {
-                in_key = false;
-                value_start = true;
-            }
-            // Literal `}`/`]` closers fall through to `_`: they have
-            // no comma-shielding effect (§ 5.8.5 shields commas only
-            // inside value-start compounds), matching the slow path.
-            b',' => {
-                segments.push(&input[start..i]);
-                start = i + 1;
-                i += 1;
-                in_key = object;
-                value_start = !object;
-                continue;
-            }
-            _ => {
-                // § 3.3 whitespace: whole-code-point skip that leaves
-                // the value-start position intact (R4-F3, mirrors the
-                // slow path).
-                if let Some(len) = inline_whitespace_at(input, i) {
-                    i += len;
-                    continue;
-                }
-                value_start = false;
-            }
+    let (open, close) = if object { (b'{', b'}') } else { (b'[', b']') };
+    let mut sc: Scanner<'_, SplitFast> = Scanner::new(input, open, close, object, line_num, span);
+    sc.in_key = object;
+    sc.seg_start = object;
+    sc.value_start = !object;
+    match sc.run() {
+        ScanStop::Exhausted => {
+            // Last segment (after final comma, or the whole string if
+            // no comma).
+            sc.segments.push(&input[sc.seg_at..]);
+            sc.segments
         }
-        i += 1;
+        ScanStop::Closer { .. } => {
+            unreachable!("quote-free split scanner cannot stop on a closer")
+        }
+        ScanStop::BadEscape(_) => {
+            unreachable!("quote-free split scanner never validates escapes")
+        }
+        ScanStop::UnterminatedQuote | ScanStop::EofAfterWsSkip => {
+            unreachable!("quote-free split scanner tracks no quoted key segments")
+        }
     }
-
-    segments.push(&input[start..]);
-    segments
 }
-
 // ---------------------------------------------------------------------------
 // Delimiter matching helpers
 // ---------------------------------------------------------------------------
@@ -1231,237 +1840,33 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
         return None;
     }
 
+    // line_num/span: find's configs never build errors, so the
+    // placeholder 0 / `Span::EMPTY` values are never observed.
     if !has_quote_bytes(bytes) {
         // Fast path: no quote tracking — the pre-0.7 loop, unchanged.
-        let mut depth: i32 = 0;
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\\' => {
-                    i += 2; // skip escaped character
-                    continue;
-                }
-                b if b == open => {
-                    depth += 1;
-                }
-                b if b == close => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        return None;
+        run_find::<FindFast>(input, open, close, open == b'{')
+    } else if open == b'{' {
+        // Slow path (object body with quote bytes).
+        run_find::<FindObjQ>(input, open, close, true)
+    } else {
+        // Slow path (array body with quote bytes somewhere).
+        run_find::<FindArrQ>(input, open, close, false)
     }
-    if open == b'{' {
-        // Slow path (object body with quote bytes): key-position tracking,
-        // PER NESTING LEVEL — every `{` opens a fresh pair list, so the
-        // enclosing level's in_key state is saved and restored around it.
-        let mut depth: i32 = 0;
-        let mut i = 0;
-        let mut in_key = true;
-        let mut seg_start = true;
-        // Per open compound: the opener byte plus the enclosing
-        // key-position state (R6-F1). A `,` re-derives key context from
-        // the CURRENT scope — the innermost opener on this stack — not
-        // from the outermost one: a comma in a nested Array scope is a
-        // value position (§ 5.3.3 "Keys only"), so a quote opening an
-        // array item there is ordinary content, and only an Object
-        // scope's comma begins a fresh key. Mirrors
-        // `scan_inline_closer`'s `nested`/`open_stack` derivation.
-        let mut scope_stack: Vec<(u8, bool, bool)> = Vec::new();
-        while i < bytes.len() {
-            if in_key && seg_start {
-                i = skip_segment_ws(input, i);
-                // The skip may consume every remaining byte (text ending in
-                // whitespace after a trailing comma or dot); `bytes[i]`
-                // below then indexed out of bounds (R3-F1). Nothing left to
-                // scan — no matching close exists.
-                if i >= bytes.len() {
-                    return None;
-                }
-                if is_quote_byte(bytes[i]) {
-                    // Unterminated span: the rest of the input is segment
-                    // content (for bracket balance: no matching close).
-                    let end = quoted_span_end(bytes, i)?;
-                    i = end + 1;
-                    seg_start = false;
-                    continue;
-                }
-                seg_start = false;
-            }
-            match bytes[i] {
-                b'\\' => {
-                    i += 2; // skip escaped character
-                    continue;
-                }
-                b'.' if in_key => {
-                    seg_start = true;
-                }
-                b':' => {
-                    // Key/value boundary: quotes after this are content.
-                    in_key = false;
-                }
-                b',' => {
-                    // Next pair / item begins: a fresh key position in an
-                    // Object scope; an Array scope stays a value position
-                    // (R6-F1, § 5.3.3 "Keys only").
-                    let scope_object = scope_stack.last().is_some_and(|(k, _, _)| *k == b'{');
-                    in_key = scope_object;
-                    seg_start = scope_object;
-                }
-                b'[' => {
-                    // A nested Array scope has no key context (§ 5.3.3
-                    // "Keys only"); it takes no part in `{`/`}` depth
-                    // counting, but the enclosing state is saved so `]`
-                    // can restore it.
-                    scope_stack.push((b'[', in_key, seg_start));
-                    in_key = false;
-                    seg_start = false;
-                }
-                b']' => {
-                    if scope_stack.last().is_some_and(|(k, _, _)| *k == b'[') {
-                        let (_, saved_in_key, _) = scope_stack.pop().unwrap();
-                        in_key = saved_in_key;
-                    }
-                    // The `]` itself consumed a position, so segment-start
-                    // tracking stays off until the next re-arm.
-                    seg_start = false;
-                }
-                b if b == open => {
-                    depth += 1;
-                    // A `{` opens a fresh pair list at any level: save the
-                    // enclosing key-position state and restart tracking for
-                    // the nested body.
-                    scope_stack.push((b'{', in_key, seg_start));
-                    in_key = true;
-                    seg_start = true;
-                }
-                b if b == close => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                    // Matching close of a nested object: restore the
-                    // enclosing pair list's key-position state — only when
-                    // the `{` scope is innermost, so a crossed closer
-                    // doesn't corrupt tracking (mirrors
-                    // `scan_inline_closer`). The `}` itself consumed a
-                    // position, so segment-start tracking stays off until
-                    // the next re-arm.
-                    if scope_stack.last().is_some_and(|(k, _, _)| *k == b'{') {
-                        let (_, saved_in_key, _) = scope_stack.pop().unwrap();
-                        in_key = saved_in_key;
-                    }
-                    seg_start = false;
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        return None;
-    }
-
-    // Slow path (array body with quote bytes somewhere): depth still
-    // counts only this `[`/`]` pair, but nested `{` objects track key
-    // positions per scope (R3-F2): a quoted key segment of a nested
-    // object is opaque to the `]` count, while quotes in the array's
-    // own value positions stay ordinary content (§ 5.3.3 "Keys only").
-    let mut depth: i32 = 0;
-    let mut i = 0;
-    let mut in_key = false;
-    let mut seg_start = false;
-    // Per open compound: the opener byte plus the enclosing key-position
-    // state. A closer restores that state only when it matches the most
-    // recently opened compound kind, so crossed closers don't corrupt
-    // key tracking.
-    let mut scope_stack: Vec<(u8, bool, bool)> = Vec::new();
-    while i < bytes.len() {
-        if in_key && seg_start {
-            i = skip_segment_ws(input, i);
-            // The skip may consume every remaining byte (text ending in
-            // whitespace after a trailing comma or dot); `bytes[i]`
-            // below then indexed out of bounds (R3-F1). Nothing left to
-            // scan — no matching close exists.
-            if i >= bytes.len() {
-                return None;
-            }
-            if is_quote_byte(bytes[i]) {
-                // Unterminated span: the rest of the input is segment
-                // content (for bracket balance: no matching close).
-                let end = quoted_span_end(bytes, i)?;
-                i = end + 1;
-                seg_start = false;
-                continue;
-            }
-            seg_start = false;
-        }
-        match bytes[i] {
-            b'\\' => {
-                i += 2; // skip escaped character
-                continue;
-            }
-            b'.' if in_key => {
-                seg_start = true;
-            }
-            b':' if in_key => {
-                // Key/value boundary: quotes after this are content.
-                in_key = false;
-            }
-            b',' => {
-                // Next pair / item begins: a fresh key position in an
-                // object scope; array scope positions stay value
-                // positions.
-                let scope_object = scope_stack.last().is_some_and(|(k, _, _)| *k == b'{');
-                in_key = scope_object;
-                seg_start = scope_object;
-            }
-            b'{' => {
-                // An object scope opens a fresh pair list at any level:
-                // save the enclosing key-position state and restart
-                // tracking for the nested body.
-                scope_stack.push((b'{', in_key, seg_start));
-                in_key = true;
-                seg_start = true;
-            }
-            b'}' => {
-                if scope_stack.last().is_some_and(|(k, _, _)| *k == b'{') {
-                    let (_, saved_in_key, saved_seg_start) = scope_stack.pop().unwrap();
-                    in_key = saved_in_key;
-                    seg_start = saved_seg_start;
-                } else {
-                    seg_start = false;
-                }
-            }
-            b'[' => {
-                depth += 1;
-                scope_stack.push((b'[', in_key, seg_start));
-                in_key = false;
-                seg_start = false;
-            }
-            b']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-                if scope_stack.last().is_some_and(|(k, _, _)| *k == b'[') {
-                    let (_, saved_in_key, saved_seg_start) = scope_stack.pop().unwrap();
-                    in_key = saved_in_key;
-                    seg_start = saved_seg_start;
-                } else {
-                    seg_start = false;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
 }
 
+fn run_find<C: ScanCfg>(input: &str, open: u8, close: u8, object: bool) -> Option<usize> {
+    let mut sc: Scanner<'_, C> = Scanner::new(input, open, close, object, 0, Span::EMPTY);
+    sc.in_key = object;
+    sc.seg_start = object;
+    sc.value_start = false;
+    match sc.run() {
+        ScanStop::Closer { idx, byte } => (byte == close).then_some(idx),
+        ScanStop::EofAfterWsSkip
+        | ScanStop::UnterminatedQuote
+        | ScanStop::BadEscape(_)
+        | ScanStop::Exhausted => None,
+    }
+}
 /// Find the first unescaped `:` in `s` that is at nesting depth 0.
 /// Used to split inline pairs into key and value.
 ///
@@ -1596,338 +2001,64 @@ pub(crate) fn scan_inline_closer(
     line_num: usize,
     span: Span,
 ) -> InlineCloserScan {
-    let bad_escape = |sequence: String| {
-        InlineCloserScan::BadEscape(Error::Structured(ErrorKind::BadEscapeSequence {
-            line: line_num as u32,
-            span,
-            sequence,
-        }))
-    };
     let bytes = input.as_bytes();
     let object = open == b'{';
-    // The caller guarantees `input` starts with `open`; the opener itself
-    // is depth 1, so scanning starts at byte 1.
+    // The caller guarantees `input` starts with `open`; the opener
+    // itself is depth 1, so scanning starts at byte 1.
     if bytes.is_empty() || bytes[0] != open {
         return InlineCloserScan::NotFound;
     }
     // R3-F2: the gate is "any quote byte anywhere" — quote tracking
-    // itself is per nested Object scope below, not per outer opener.
-    let track_quotes = has_quote_bytes(bytes);
-    if !track_quotes {
-        // Fast path: no quote tracking. `value_start` marks an unconsumed
-        // value position (body start in arrays — including the position
-        // right after the array's `[`, which is its first item — and
-        // after `:`/`,` otherwise); per § 5.8.5 a `{`/`[` only nests
-        // there.
-        let mut depth: i32 = 1;
-        let mut i = 1;
-        let mut in_key = object;
-        let mut value_start = !object;
-        let mut raw = false;
-        // Opener kinds of currently-open NESTED scopes; the body's own
-        // kind is `open` (§ 5.8.5, R4-F1: raw is terminated by the
-        // current scope's own closer, not the outermost one).
-        let mut nested: Vec<u8> = Vec::new();
-        let mut prev = open;
-        while i < bytes.len() {
-            let b = bytes[i];
-            match b {
-                b'\\' => {
-                    // § 5.2 rules-6–9 preamble: an invalid escape beats
-                    // the rule 8/9 decision. Advance by the FULL escape
-                    // length (unlike `find_matching_close`'s `i += 2`,
-                    // which suffices there because hex digits are not
-                    // structural). `prev` becomes `\\` so an escaped
-                    // `:` never forms a `::` raw marker.
-                    match scan_escape(bytes, i) {
-                        Err(seq) => return bad_escape(seq),
-                        Ok(esc) => {
-                            // A recognized escape in value position
-                            // consumes the scalar start (§ 3.7 /
-                            // § 5.8.5, R4-F4): the decoded byte cannot
-                            // reopen structural dispatch.
-                            value_start = false;
-                            i += esc.len();
-                        }
-                    }
-                    prev = b'\\';
-                    continue;
-                }
-                b':' => {
-                    if in_key {
-                        // Key/value boundary: quotes after this are content.
-                        in_key = false;
-                        value_start = true;
-                    } else if prev == b':' && value_start {
-                        // `::` raw marker (§ 5.4 — in array bodies too):
-                        // the rest of the item's value is a String —
-                        // braces/brackets in it are content.
-                        raw = true;
-                    } else if value_start && bytes.get(i + 1) != Some(&b':') {
-                        // A lone `:` opening the value's scalar (§ 5.8.5,
-                        // R5-F2) consumes the value position: a following
-                        // `{`/`[` is literal content, not a nested opener.
-                        // A `:` immediately followed by another `:` stays
-                        // armed for the `::` marker check above on the
-                        // next iteration.
-                        value_start = false;
-                    }
-                }
-                b',' => {
-                    // Next pair / item begins: re-derive key context from
-                    // the CURRENT scope (`nested.last()`), not the
-                    // outermost opener (R5-F1) — an Object scope starts a
-                    // key position, an Array scope stays a value position
-                    // (§ 5.3.3 "Keys only"). Mirrors the slow path's
-                    // open_stack-based derivation.
-                    let scope_object = nested.last().map_or(object, |k| *k == b'{');
-                    in_key = scope_object;
-                    raw = false;
-                    value_start = true;
-                }
-                b'{' | b'[' if value_start && !raw => {
-                    // Only a value-position opener nests (§ 5.8.5); a
-                    // non-value-start (or raw-mode) opener is a literal
-                    // byte that falls through to `_`.
-                    depth += 1;
-                    nested.push(b);
-                    // After an array's `[` the next position is still a
-                    // value position (its first item, § 5.8.5); after a
-                    // nested `{` comes key context.
-                    value_start = b == b'[';
-                    if b == b'{' {
-                        in_key = true;
-                    }
-                }
-                b'}' | b']' => {
-                    // Both closer kinds decrement the shared depth: a
-                    // nested compound of the OTHER delimiter type still
-                    // closes (an array item may be an object and vice
-                    // versa). An unescaped closer ALWAYS ends raw mode
-                    // and is structural (R5-F3): `<inline-raw-scalar>`
-                    // terminates on the FIRST unescaped `,`, `}`, or `]`
-                    // regardless of which scope it belongs to — raw mode
-                    // only makes leading openers literal (§ 5.8.5). A
-                    // closer that returns depth to zero must be the
-                    // body's own closer; a crossed one (e.g. `[{a: 1]`)
-                    // is not a matching closer (§ 5.2's matching-closer
-                    // rule).
-                    raw = false;
-                    depth -= 1;
-                    if depth == 0 {
-                        return if b == close {
-                            InlineCloserScan::Found(i)
-                        } else {
-                            InlineCloserScan::NotFound
-                        };
-                    }
-                    // Nested closer matching the current scope's opener
-                    // kind: pop it (compare stored OPENER to the closer's
-                    // matching opener, R4-F2). (`raw` was already reset
-                    // at the top of this arm — R5-F3.) `in_key`/`value_start`
-                    // are deliberately not restored here: the next `,`
-                    // re-derives key context fresh from the CURRENT scope
-                    // via `nested.last()` (R5-F1); deriving it from the
-                    // outermost opener instead is exactly the bug that made
-                    // closer-site restoration look unnecessary, which is
-                    // why R5-F1 is fixed at the comma site, not the closer
-                    // site.
-                    let kind_matched = match b {
-                        b'}' => nested.last() == Some(&b'{'),
-                        _ => nested.last() == Some(&b'['),
-                    };
-                    if kind_matched {
-                        nested.pop();
-                    }
-                }
-                _ => {
-                    // § 3.3 whitespace: whole-code-point skip, leaving
-                    // the value-start position intact (R4-F3). `prev`
-                    // takes the sequence's last byte — whitespace bytes
-                    // are never `:` or `\`, so `::` raw-marker detection
-                    // sees exactly what the per-byte loop would see.
-                    if let Some(len) = inline_whitespace_at(input, i) {
-                        prev = bytes[i + len - 1];
-                        i += len;
-                        continue;
-                    }
-                    value_start = false;
-                }
-            }
-            prev = b;
-            i += 1;
-        }
-        return InlineCloserScan::NotFound;
+    // itself is per nested Object scope in the machine, not per outer
+    // opener.
+    if !has_quote_bytes(bytes) {
+        // Fast path: no quote tracking. `value_start` marks an
+        // unconsumed value position (body start in arrays — including
+        // the position right after the array's `[`, which is its first
+        // item — and after `:`/`,` otherwise); per § 5.8.5 a `{`/`[`
+        // only nests there.
+        run_scan::<ScanFast>(input, open, close, object, line_num, span)
+    } else {
+        // Slow path (quote bytes present): the per-level key-position
+        // machine plus the same value-position / raw-marker tracking.
+        // Object bodies start at their first key segment; array bodies
+        // start at their first item — a value position with no key
+        // context (§ 5.3.3 "Keys only").
+        run_scan::<ScanQ>(input, open, close, object, line_num, span)
     }
+}
 
-    // Slow path (object body with quote bytes): the per-level
-    // key-position machine of `find_matching_close`, plus the same
-    // value-position / raw-marker tracking as the fast path. Escapes
-    // inside a quoted span are NOT validated — an unterminated quoted
-    // key remains quote-opaque and stays `UnterminatedInlineCompound`
-    // (§ 6.16), even if a bad escape occurs inside that unclosed
-    // quoted segment.
-    let mut depth: i32 = 1;
-    let mut i = 1;
-    // Object bodies start at their first key segment; array bodies
-    // start at their first item — a value position with no key context
-    // (§ 5.3.3 "Keys only").
-    let mut in_key = object;
-    let mut seg_start = object;
-    let mut value_start = !object;
-    let mut raw = false;
-    let mut prev = open;
-    // Per open compound: the opener byte plus the enclosing key-position
-    // and raw state. A closer restores that state only when it matches
-    // the most recently opened compound kind, so crossed closers don't
-    // corrupt key tracking (R4-F2).
-    let mut open_stack: Vec<(u8, bool, bool, bool)> = Vec::new();
-    while i < bytes.len() {
-        if in_key && seg_start {
-            i = skip_segment_ws(input, i);
-            // The skip may consume every remaining byte (text ending in
-            // whitespace after a trailing comma or dot); `bytes[i]`
-            // below then indexed out of bounds (R3-F1). Nothing left in
-            // this text — no closer here (§ 5.2 rule 9 continues on the
-            // next line).
-            if i >= bytes.len() {
-                return InlineCloserScan::NotFound;
-            }
-            if is_quote_byte(bytes[i]) {
-                // Unterminated span: the rest of the input is segment
-                // content (for bracket balance: no matching close).
-                // Escapes inside it stay unvalidated (§ 6.16 opacity).
-                let end = match quoted_span_end(bytes, i) {
-                    Some(end) => end,
-                    None => return InlineCloserScan::NotFound,
-                };
-                i = end + 1;
-                seg_start = false;
-                prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(open);
-                continue;
-            }
-            seg_start = false;
-        }
-        let b = bytes[i];
-        match b {
-            b'\\' => {
-                // Outside quoted spans: validate (see fast path).
-                match scan_escape(bytes, i) {
-                    Err(seq) => return bad_escape(seq),
-                    Ok(esc) => {
-                        // A recognized escape in value position
-                        // consumes the scalar start (§ 3.7 / § 5.8.5,
-                        // R4-F4): the decoded byte cannot reopen
-                        // structural dispatch.
-                        value_start = false;
-                        i += esc.len();
-                    }
-                }
-                prev = b'\\';
-                continue;
-            }
-            b'.' if in_key => {
-                seg_start = true;
-            }
-            b':' => {
-                if in_key {
-                    // Key/value boundary: quotes after this are content.
-                    in_key = false;
-                    value_start = true;
-                } else if prev == b':' && value_start {
-                    // `::` raw marker — see fast path.
-                    raw = true;
-                } else if value_start && bytes.get(i + 1) != Some(&b':') {
-                    // A lone `:` opening the value's scalar (§ 5.8.5,
-                    // R5-F2) consumes the value position: a following
-                    // `{`/`[` is literal content, not a nested opener.
-                    // A `:` immediately followed by another `:` stays
-                    // armed for the `::` marker check above on the
-                    // next iteration.
-                    value_start = false;
-                }
-            }
-            b',' => {
-                // Next pair / item begins: a fresh key position in an
-                // object scope; array scope positions stay value
-                // positions (§ 5.3.3 "Keys only").
-                // After the R4-F2 fix the stack top correctly reflects
-                // the ENCLOSING scope even after nested closers.
-                let scope_object = open_stack.last().map_or(object, |(k, _, _, _)| *k == b'{');
-                in_key = scope_object;
-                seg_start = scope_object;
-                raw = false;
-                value_start = true;
-            }
-            b'{' | b'[' if value_start && !raw => {
-                // Only a value-position opener nests (§ 5.8.5); a
-                // non-value-start (or raw-mode) opener is a literal
-                // byte that falls through to `_`.
-                depth += 1;
-                // After an array's `[` the next position is still a value
-                // position (its first item); after a nested `{` comes a
-                // fresh key position. Save the enclosing key-position
-                // and raw state (§ 5.8.5, R4-F1); an array scope has no
-                // key context (§ 5.3.3 "Keys only").
-                open_stack.push((b, in_key, seg_start, raw));
-                value_start = b == b'[';
-                in_key = b == b'{';
-                seg_start = b == b'{';
-            }
-            b'}' | b']' => {
-                // Both closer kinds decrement (see fast path). An
-                // unescaped closer ALWAYS ends raw mode and is
-                // structural (R5-F3): `<inline-raw-scalar>` terminates
-                // on the FIRST unescaped `,`, `}`, or `]` regardless of
-                // which scope it belongs to — raw mode only makes
-                // leading openers literal (§ 5.8.5).
-                raw = false;
-                depth -= 1;
-                if depth == 0 {
-                    // A closer that returns depth to zero must be the
-                    // body's own closer kind, else the body has no
-                    // matching closer.
-                    return if b == close {
-                        InlineCloserScan::Found(i)
-                    } else {
-                        InlineCloserScan::NotFound
-                    };
-                }
-                // Matching close of a nested compound: restore the
-                // enclosing key-position and raw state only when the
-                // closer matches the most recently opened compound kind
-                // (compare the stored OPENER against the closer's
-                // matching opener kind, R4-F2 / `find_matching_close`).
-                let kind_matched = match b {
-                    b'}' => open_stack.last().is_some_and(|(k, _, _, _)| *k == b'{'),
-                    _ => open_stack.last().is_some_and(|(k, _, _, _)| *k == b'['),
-                };
-                if kind_matched {
-                    let (_, saved_in_key, saved_seg_start, saved_raw) = open_stack.pop().unwrap();
-                    in_key = saved_in_key;
-                    seg_start = saved_seg_start;
-                    raw = saved_raw;
-                } else {
-                    seg_start = false;
-                }
-                value_start = false;
-            }
-            _ => {
-                // § 3.3 whitespace: whole-code-point skip, leaving
-                // the value-start position intact (R4-F3). `prev`
-                // takes the sequence's last byte — whitespace bytes
-                // are never `:` or `\`, so `::` raw-marker detection
-                // sees exactly what the per-byte loop would see.
-                if let Some(len) = inline_whitespace_at(input, i) {
-                    prev = bytes[i + len - 1];
-                    i += len;
-                    continue;
-                }
-                value_start = false;
+fn run_scan<C: ScanCfg>(
+    input: &str,
+    open: u8,
+    close: u8,
+    object: bool,
+    line_num: usize,
+    span: Span,
+) -> InlineCloserScan {
+    let mut sc: Scanner<'_, C> = Scanner::new(input, open, close, object, line_num, span);
+    sc.i = 1;
+    sc.depth = 1;
+    sc.in_key = object;
+    sc.seg_start = object;
+    sc.value_start = !object;
+    match sc.run() {
+        // § 5.2's matching-closer rule: a closer that returns depth to
+        // zero must be the body's own closer kind (a crossed one, e.g.
+        // `[{a: 1]`, is not a matching closer).
+        ScanStop::Closer { idx, byte } => {
+            if byte == close {
+                InlineCloserScan::Found(idx)
+            } else {
+                InlineCloserScan::NotFound
             }
         }
-        prev = b;
-        i += 1;
+        // Includes the unterminated-quoted-key case: § 6.16 keeps that
+        // `UnterminatedInlineCompound` upstream, so the scan stops
+        // there without validating anything inside the swallowed span.
+        ScanStop::EofAfterWsSkip | ScanStop::UnterminatedQuote | ScanStop::Exhausted => {
+            InlineCloserScan::NotFound
+        }
+        ScanStop::BadEscape(e) => InlineCloserScan::BadEscape(e),
     }
-    InlineCloserScan::NotFound
 }
