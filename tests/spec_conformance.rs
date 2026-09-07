@@ -98,24 +98,29 @@ fn ktav_to_json(v: &Value) -> JsonValue {
     }
 }
 
-/// Ordered recursive comparison. Numbers are compared by parsing to f64
-/// to handle different textual representations of the same value (e.g.
-/// `1e9` vs `1000000000.0`).
+/// Ordered recursive comparison. Numbers are kind-aware and exact:
+/// an integer-spelled token only matches an integer-spelled token and
+/// a float-spelled token only a float-spelled one (`1` != `1.0`);
+/// integers compare exactly at any magnitude (no f64 round-trip);
+/// floats compare as binary64 values with the sign of zero preserved
+/// (`0.0` != `-0.0`, spec § 5.9.8), so different spellings of the same
+/// value (`1e9` vs `1000000000.0`) still compare equal.
 fn json_eq_ordered(a: &JsonValue, b: &JsonValue) -> bool {
     match (a, b) {
         (JsonValue::Null, JsonValue::Null) => true,
         (JsonValue::Bool(x), JsonValue::Bool(y)) => x == y,
         (JsonValue::Number(x), JsonValue::Number(y)) => {
-            // Try numeric comparison via f64 first (handles e.g. 1e9 vs 1000000000.0)
             let x_str = x.to_string();
             let y_str = y.to_string();
-            if x_str == y_str {
-                return true;
-            }
-            // Fall back to f64 comparison
-            match (x_str.parse::<f64>(), y_str.parse::<f64>()) {
-                (Ok(xf), Ok(yf)) => xf == yf,
-                _ => false,
+            match (
+                json_number_is_float_spelled(&x_str),
+                json_number_is_float_spelled(&y_str),
+            ) {
+                (false, false) => json_integers_equal(&x_str, &y_str),
+                (true, true) => json_floats_equal(&x_str, &y_str),
+                // Kind mismatch: a ktav Integer must never equal a Float
+                // regardless of numeric value, in either direction.
+                (false, true) | (true, false) => false,
             }
         }
         (JsonValue::String(x), JsonValue::String(y)) => x == y,
@@ -130,6 +135,98 @@ fn json_eq_ordered(a: &JsonValue, b: &JsonValue) -> bool {
         }
         _ => false,
     }
+}
+
+/// Classify a JSON number token by its lexical spelling, the same rule
+/// `json_to_ktav` applies in the oracle→Value direction: `.`/`e`/`E`
+/// makes it float-spelled, otherwise integer-spelled. This recovers the
+/// original `ktav::Value` kind on the ktav side because both scalar
+/// kinds store canonical spellings (§ 5.9.8: Integer is base-10
+/// decimal; Float is ryu decimal/scientific and always carries `.` or
+/// `e`), and `serde_json` is compiled with `arbitrary_precision`, so
+/// `Number::to_string()` returns the exact token.
+fn json_number_is_float_spelled(token: &str) -> bool {
+    token.contains(['.', 'e', 'E'])
+}
+
+/// Exact integer comparison. JSON integers carry no exponent or
+/// leading zeros, so after normalising `-0`, string equality is exact
+/// numeric equality at any magnitude — no f64 round-trip, which cannot
+/// represent all i64 values (e.g. `9223372036854775807` parses to the
+/// same f64 as `9223372036854775806`).
+fn json_integers_equal(x: &str, y: &str) -> bool {
+    let norm = if x == "-0" { "0" } else { x };
+    let normy = if y == "-0" { "0" } else { y };
+    norm == normy
+}
+
+/// Float comparison within the crate's binary64 domain. Values compare
+/// as `f64` (so `1e9` == `1000000000.0`), except that the sign of zero
+/// is significant: § 5.9.8 keeps `0.0` and `-0.0` as distinct canonical
+/// spellings, so the comparator must not collapse them through IEEE
+/// 754 `0.0 == -0.0`. Spellings outside the finite binary64 domain
+/// (e.g. `1e400`, which parses to infinity) have no value to compare —
+/// they match only textually.
+fn json_floats_equal(x: &str, y: &str) -> bool {
+    match (x.parse::<f64>(), y.parse::<f64>()) {
+        (Ok(xf), Ok(yf)) if xf.is_finite() && yf.is_finite() => {
+            if xf == 0.0 && yf == 0.0 {
+                xf.is_sign_negative() == yf.is_sign_negative()
+            } else {
+                xf == yf
+            }
+        }
+        _ => x == y,
+    }
+}
+
+#[test]
+fn json_eq_ordered_number_semantics() {
+    let n = |s: &str| JsonValue::Number(JsonNumber::from_string_unchecked(s.to_string()));
+
+    // Kind is respected in both directions (review finding F5).
+    assert!(json_eq_ordered(&n("1"), &n("1")));
+    assert!(!json_eq_ordered(&n("1"), &n("1.0")));
+    assert!(!json_eq_ordered(&n("1.0"), &n("1")));
+    assert!(!json_eq_ordered(&n("0"), &n("0.0")));
+
+    // Integers compare exactly — no f64 round-trip: both spellings
+    // parse to the same f64 but are different integers.
+    assert!(json_eq_ordered(
+        &n("9223372036854775806"),
+        &n("9223372036854775806")
+    ));
+    assert!(!json_eq_ordered(
+        &n("9223372036854775806"),
+        &n("9223372036854775807")
+    ));
+    assert!(json_eq_ordered(
+        &n("-9223372036854775808"),
+        &n("-9223372036854775808")
+    ));
+
+    // Floats compare as binary64 values — different spellings of the
+    // same value are equal...
+    assert!(json_eq_ordered(&n("1e9"), &n("1000000000.0")));
+    assert!(json_eq_ordered(
+        &n("9007199254740992.0"),
+        &n("9.007199254740992e15")
+    ));
+    // ...but the sign of zero is significant (spec § 5.9.8).
+    assert!(json_eq_ordered(&n("0.0"), &n("0.0")));
+    assert!(json_eq_ordered(&n("-0.0"), &n("-0.0")));
+    assert!(!json_eq_ordered(&n("0.0"), &n("-0.0")));
+    assert!(!json_eq_ordered(&n("-0.0"), &n("0.0")));
+
+    // Non-number leaves are unaffected.
+    assert!(json_eq_ordered(
+        &JsonValue::Array(vec![n("1"), n("2")]),
+        &JsonValue::Array(vec![n("1"), n("2")])
+    ));
+    assert!(!json_eq_ordered(
+        &JsonValue::Array(vec![n("1"), n("2")]),
+        &JsonValue::Array(vec![n("1"), n("2.0")])
+    ));
 }
 
 /// Walk `root` recursively and collect every `.json` file.
