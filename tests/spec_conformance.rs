@@ -367,6 +367,148 @@ fn json_to_ktav(v: &JsonValue) -> Value {
     }
 }
 
+/// Thin-parser gaps tracked under SEPARATE review findings, excluded from
+/// the two thin-API runners below. Each entry pins the exact category the
+/// thin parser produces today, so an entry rots LOUDLY: if a listed
+/// fixture starts passing, or fails with a different category, the runner
+/// panics with removal instructions instead of silently passing.
+///
+/// F2 (review finding F2, P1): no explicit top-level-root state — a
+/// whole-document inline root (§ 5.0.1 rules 2/3) or a lone-`{`/`[`
+/// multi-line root (rules 4/5) is re-dispatched through ordinary pair /
+/// item handling, and content after a consumed root is never detected.
+/// F3 (review finding F3, P2): the linear event model closes a
+/// dotted-key object before later lines can extend it, rejecting two
+/// spec-valid documents with `KeyPathConflict`.
+const THIN_KNOWN_GAPS: &[(&str, &str, &str)] = &[
+    // (path relative to the bucket dir, finding, category the thin parser produces today)
+    // --- F2: invalid fixtures ---
+    (
+        "top_level/content_after_inline_root.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "top_level/multi_inline_objects_jsonl_style.ktav",
+        "F2",
+        "MissingSeparator",
+    ),
+    // --- F2: valid fixtures rejected by the thin API ---
+    (
+        "top_level/multiline_object_opener.ktav",
+        "F2",
+        "MissingSeparator",
+    ),
+    ("top_level_inline/object.ktav", "F2", "InvalidKey"),
+    (
+        "top_level_inline/empty_object.ktav",
+        "F2",
+        "MissingSeparator",
+    ),
+    (
+        "top_level_inline/leading_whitespace.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    ("top_level_inline/with_comments.ktav", "F2", "InvalidKey"),
+    (
+        "inline/escape/lowercase_unicode_hex.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "inline/escape/recognized_escape_forces_string_number.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "inline/unescaped_quote_value_discriminator.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "key_escaping/unicode_escape_forces_string_digit.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "key_escaping/unicode_escape_forces_string_keyword.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "key_escaping/unicode_escape_forces_string_paren.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "quoted_keys/comma_inside_quoted_key_in_inline.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    (
+        "quoted_keys/inline_pair_quoted_key_with_brace.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    ("raw_marker/inline_leading_bracket.ktav", "F2", "InvalidKey"),
+    (
+        "scalars/pair_raw_prefix_trailing_whitespace.ktav",
+        "F2",
+        "InvalidKey",
+    ),
+    // --- F3: valid fixtures rejected by the thin API ---
+    (
+        "dotted_keys/extend_explicit_object.ktav",
+        "F3",
+        "KeyPathConflict",
+    ),
+    (
+        "dotted_keys/reopen_after_sibling.ktav",
+        "F3",
+        "KeyPathConflict",
+    ),
+];
+
+/// Look up a fixture in [`THIN_KNOWN_GAPS`] by its path relative to the
+/// bucket dir (`invalid/` rels in the thin invalid runner, `valid/` rels
+/// in the thin valid runner). The two tables never collide: no `valid/`
+/// fixture shares a name with a listed `invalid/` fixture or vice versa.
+fn thin_known_gap(rel: &str) -> Option<&'static str> {
+    // `rel` comes from `Path::display`, so separators are OS-native;
+    // the table spells `/`.
+    let normalized = rel.replace('\\', "/");
+    THIN_KNOWN_GAPS
+        .iter()
+        .find(|(path, _, _)| *path == normalized.as_str())
+        .map(|(_, finding, _)| *finding)
+}
+
+/// Assert that a known-gap fixture still fails with EXACTLY its pinned
+/// category. `Ok(())` or a changed category both panic loudly so the
+/// allowlist cannot rot silently.
+fn check_known_gap(rel: &str, finding: &str, pinned: &str, result: &Result<(), ktav::Error>) {
+    let actual = match result {
+        Ok(()) => panic!(
+            "thin parser now accepts {rel}: finding {finding} appears fixed — \
+             remove the entry from THIN_KNOWN_GAPS and re-run"
+        ),
+        Err(ktav::Error::Structured(kind)) => kind.code_name(),
+        Err(other) => panic!(
+            "thin parser's category for known-gap fixture {rel} changed from \
+             {pinned} to a non-structured error: {other}; update \
+             THIN_KNOWN_GAPS (and the linked finding) consciously"
+        ),
+    };
+    if actual != pinned {
+        panic!(
+            "thin parser's category for known-gap fixture {rel} changed from \
+             {pinned} to {actual}: update THIN_KNOWN_GAPS (and the linked \
+             finding) consciously"
+        );
+    }
+}
+
 #[test]
 fn valid_fixtures_match_oracle() {
     let Some(spec_root) = resolve_spec_root() else {
@@ -520,6 +662,7 @@ fn invalid_fixtures_categories_match_oracles_via_thin_api() {
 
     let mut failures: Vec<String> = Vec::new();
     let mut invalid_utf8 = 0;
+    let mut known_gaps = 0;
 
     for fixture in &fixtures {
         let Ok(text) = std::str::from_utf8(&fixture.bytes) else {
@@ -529,7 +672,21 @@ fn invalid_fixtures_categories_match_oracles_via_thin_api() {
             invalid_utf8 += 1;
             continue;
         };
-        match ktav::parse_events(text, |_ev: ktav::ParseEvent<'_>| ()) {
+        let result = ktav::parse_events(text, |_ev: ktav::ParseEvent<'_>| ());
+        if let Some(finding) = thin_known_gap(&fixture.rel) {
+            // Tracked under a separate review finding: pin the exact
+            // category the thin parser produces today so the entry rots
+            // loudly when the finding is fixed.
+            let pinned = THIN_KNOWN_GAPS
+                .iter()
+                .find(|(path, _, _)| *path == fixture.rel.replace('\\', "/").as_str())
+                .map(|(_, _, cat)| *cat)
+                .unwrap();
+            known_gaps += 1;
+            check_known_gap(&fixture.rel, finding, pinned, &result);
+            continue;
+        }
+        match result {
             Ok(()) => failures.push(format!(
                 "thin API accepted invalid fixture {}, expected {}",
                 fixture.rel, fixture.expected
@@ -561,8 +718,9 @@ fn invalid_fixtures_categories_match_oracles_via_thin_api() {
         );
     }
     eprintln!(
-        "spec_conformance::invalid (thin API): {} fixtures rejected with matching categories ({} invalid-UTF-8 fixtures are byte-entry-only)",
-        fixtures.len() - invalid_utf8,
+        "spec_conformance::invalid (thin API): {} fixtures rejected with matching categories, {} excluded under known findings F2/F3 ({} invalid-UTF-8 fixtures are byte-entry-only)",
+        fixtures.len() - invalid_utf8 - known_gaps,
+        known_gaps,
         invalid_utf8
     );
 }
@@ -588,9 +746,11 @@ fn valid_fixtures_parse_via_thin_api() {
     }
 
     let mut failures: Vec<String> = Vec::new();
+    let mut known_gaps = 0;
 
     for ktav_path in &files {
         let rel = ktav_path.strip_prefix(&root).unwrap_or(ktav_path).display();
+        let rel = rel.to_string();
         let text = match fs::read_to_string(ktav_path) {
             Ok(t) => t,
             Err(e) => {
@@ -598,7 +758,21 @@ fn valid_fixtures_parse_via_thin_api() {
                 continue;
             }
         };
-        if let Err(e) = ktav::parse_events(&text, |_| {}) {
+        let result = ktav::parse_events(&text, |_| {});
+        if let Some(finding) = thin_known_gap(&rel) {
+            // Tracked under a separate review finding: pin the exact
+            // category the thin parser produces today so the entry rots
+            // loudly when the finding is fixed.
+            let pinned = THIN_KNOWN_GAPS
+                .iter()
+                .find(|(path, _, _)| *path == rel.replace('\\', "/").as_str())
+                .map(|(_, _, cat)| *cat)
+                .unwrap();
+            known_gaps += 1;
+            check_known_gap(&rel, finding, pinned, &result);
+            continue;
+        }
+        if let Err(e) = result {
             failures.push(format!("thin API rejected valid fixture {}: {}", rel, e));
         }
     }
@@ -612,8 +786,9 @@ fn valid_fixtures_parse_via_thin_api() {
         );
     }
     eprintln!(
-        "spec_conformance::valid (thin API): {} fixtures accepted",
-        files.len()
+        "spec_conformance::valid (thin API): {} fixtures accepted, {} excluded under known findings F2/F3",
+        files.len() - known_gaps,
+        known_gaps
     );
 }
 

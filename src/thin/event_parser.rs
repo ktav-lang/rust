@@ -19,7 +19,8 @@ use memchr::{memchr, memchr2};
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 use crate::parser::classify::{is_float_literal, is_pair_shape, try_parse_integer};
 use crate::parser::inline::{
-    decode_key_segment, key_is_single_segment, scan_unescaped_colon, split_key_path, ColonScan,
+    decode_key_segment, key_is_single_segment, malformed_closer_not_at_end, scan_inline_closer,
+    scan_unescaped_colon, split_key_path, ColonScan, InlineCloserScan,
 };
 use crate::parser::leading_bom_len;
 use crate::parser::validate::{check_key, KeyValidity};
@@ -187,6 +188,12 @@ pub(crate) struct EventParser<'a> {
     /// Byte offset of the `(` / `((` line that started a multi-line
     /// string, if one is currently being collected.
     pub(crate) multiline_opener: Option<u32>,
+    /// `true` until the first non-blank, non-comment line has been
+    /// handled. Used to diagnose a first content line starting with
+    /// `{`/`[` through the § 5.2 closer scan before any pair/key
+    /// dispatch (spec § 5.0.1 rules-2–5 addendum). Explicit inline
+    /// roots are review finding F2 — out of scope here.
+    first_content_line: bool,
 }
 
 impl<'a> EventParser<'a> {
@@ -197,6 +204,7 @@ impl<'a> EventParser<'a> {
             collecting: None,
             opener_offsets: Vec::with_capacity(8),
             multiline_opener: None,
+            first_content_line: true,
         };
         match root_kind {
             RootKind::Object => p.stack.push(Frame::new_object(bump)),
@@ -337,6 +345,37 @@ impl<'a> EventParser<'a> {
         }
 
         let trimmed_span = trimmed_span_in(raw, trimmed, line_start);
+
+        let first_content = core::mem::take(&mut self.first_content_line);
+        if first_content
+            && trimmed.len() > 1
+            && (trimmed.starts_with('{') || trimmed.starts_with('['))
+        {
+            // § 5.0.1 rules-2–5 addendum / § 5.2 rules 6–9: a first content
+            // line whose first byte is `{`/`[` is diagnosed by the same closer
+            // scan as a value body, before pair-candidate or key handling —
+            // `[bad]: 1` is never a pair candidate. A body closed at its last
+            // byte keeps the existing root dispatch (explicit inline roots are
+            // review finding F2, out of scope here).
+            let (open, close) = if trimmed.starts_with('{') {
+                (b'{', b'}')
+            } else {
+                (b'[', b']')
+            };
+            match scan_inline_closer(trimmed, open, close, line_num, trimmed_span) {
+                InlineCloserScan::BadEscape(err) => return Err(err),
+                InlineCloserScan::NotFound => {
+                    return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                        line: line_num as u32,
+                        span: trimmed_span,
+                    }));
+                }
+                InlineCloserScan::Found(idx) if idx != trimmed.len() - 1 => {
+                    return Err(malformed_closer_not_at_end(line_num, trimmed_span));
+                }
+                InlineCloserScan::Found(_) => {}
+            }
+        }
 
         if trimmed == "}" {
             return self.close_frame(BracketKind::Object, line_num, trimmed_span, events);
@@ -1013,6 +1052,40 @@ fn classify_separator<'a>(after_colon: &'a str) -> Separator<'a> {
     Separator::Plain
 }
 
+/// § 5.2 rules 6–9 for a non-empty `{`/`[`-prefixed value body, mirroring
+/// the owned parser's `classify::dispatch_inline_compound`: one closer
+/// scan decides closed shape (parse per § 5.8, re-emitted as events),
+/// closer-followed-by-content (`MalformedInlineCompound`), no closer
+/// (`UnterminatedInlineCompound`), with `BadEscapeSequence` taking
+/// precedence per the rules-6–9 preamble.
+fn dispatch_inline_events<'a>(
+    trimmed: &'a str,
+    open: u8,
+    close: u8,
+    line_num: usize,
+    span: Span,
+    bump: &'a Bump,
+) -> Result<ValueStart<'a>> {
+    match scan_inline_closer(trimmed, open, close, line_num, span) {
+        InlineCloserScan::BadEscape(err) => Err(err),
+        InlineCloserScan::NotFound => {
+            Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                line: line_num as u32,
+                span,
+            }))
+        }
+        InlineCloserScan::Found(idx) if idx == trimmed.len() - 1 => {
+            let value = if open == b'{' {
+                crate::parser::inline::parse_inline_object(trimmed, line_num, span, false)?
+            } else {
+                crate::parser::inline::parse_inline_array(trimmed, line_num, span, false)?
+            };
+            Ok(ValueStart::InlineEvents(value_to_events(&value, bump)))
+        }
+        InlineCloserScan::Found(_) => Err(malformed_closer_not_at_end(line_num, span)),
+    }
+}
+
 /// Classify a value body per § 5.2 rules 1-15 (0.5.0).
 #[inline]
 fn classify<'a>(
@@ -1028,39 +1101,20 @@ fn classify<'a>(
         return Ok(ValueStart::OpenArray);
     }
 
-    // § 5.2 rules 6-9: inline compounds
+    // § 5.2 rules 6-9: inline compounds — diagnosed by one closer scan
+    // (see `dispatch_inline_events`). Empty compounds shortcut first.
     if trimmed.starts_with('{') {
         if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyObject);
         }
-        if trimmed.ends_with('}') {
-            // Try to parse inline object → emit as events
-            let value =
-                crate::parser::inline::parse_inline_object(trimmed, line_num, trimmed_span, false)?;
-            let events = value_to_events(&value, bump);
-            return Ok(ValueStart::InlineEvents(events));
-        }
-        // Unterminated inline compound
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-        }));
+        return dispatch_inline_events(trimmed, b'{', b'}', line_num, trimmed_span, bump);
     }
 
     if trimmed.starts_with('[') {
         if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyArray);
         }
-        if trimmed.ends_with(']') {
-            let value =
-                crate::parser::inline::parse_inline_array(trimmed, line_num, trimmed_span, false)?;
-            let events = value_to_events(&value, bump);
-            return Ok(ValueStart::InlineEvents(events));
-        }
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-        }));
+        return dispatch_inline_events(trimmed, b'[', b']', line_num, trimmed_span, bump);
     }
 
     // Multi-line string openers

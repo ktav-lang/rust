@@ -178,8 +178,18 @@ fn key_with_special_chars() {
     struct Cfg {
         _x: String,
     }
+    // § 5.2 rules 6–9: a first content line starting with `[` is
+    // diagnosed by the § 5.2 closer scan before key handling — the
+    // closer at index 4 is not the last byte, so this is
+    // MalformedInlineCompound, not InvalidKey (matches the invalid
+    // fixture `inline/leading_bracket_before_separator.ktav`).
     let err = from_str::<Cfg>("[foo]: bar\n").unwrap_err();
-    assert!(syntax_msg(&err).contains("Invalid key"), "got: {:?}", err);
+    assert!(
+        syntax_msg(&err).contains("MalformedInlineCompound")
+            || syntax_msg(&err).contains("not the last byte"),
+        "got: {:?}",
+        err
+    );
 }
 
 #[test]
