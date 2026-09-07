@@ -1203,13 +1203,15 @@ fn split_top_level_fast(input: &str, line_num: usize, span: Span, body: InlineBo
 /// For object bodies (`open == b'{'`), brackets inside quoted key
 /// segments are opaque to bracket-balance counting (spec 0.7 § 5.3.3:
 /// same reason an escaped bracket is). Array bodies' own positions are
-/// value positions, so quotes there
-/// are content (§ 5.3.3 "Keys only"), but Object scopes nested inside
-/// still track key positions — a quoted key segment of a nested object
-/// is opaque to `]` counting too (R3-F2: the gate is per nested scope,
-/// not the outer opener). Key-position tracking is per nesting level:
-/// every `{` opens a fresh pair list, so the
-/// enclosing level's key context is saved and restored around it.
+/// value positions, so quotes there are content (§ 5.3.3 "Keys only"),
+/// but Object scopes nested inside still track key positions — a quoted
+/// key segment of a nested object is opaque to `]` counting too (R3-F2:
+/// the gate is per nested scope, not the outer opener). Key-position
+/// tracking is per nesting level, and BOTH compound kinds open a scope
+/// whose kind decides what a `,` begins (R6-F1): an Object scope's comma
+/// starts a fresh key position, an Array scope's comma stays a value
+/// position, and the enclosing level's key context is saved and restored
+/// around each nested body.
 pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
     let bytes = input.as_bytes();
     if bytes.is_empty() || bytes[0] != open {
@@ -1249,7 +1251,15 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
         let mut i = 0;
         let mut in_key = true;
         let mut seg_start = true;
-        let mut key_stack: Vec<bool> = Vec::new();
+        // Per open compound: the opener byte plus the enclosing
+        // key-position state (R6-F1). A `,` re-derives key context from
+        // the CURRENT scope — the innermost opener on this stack — not
+        // from the outermost one: a comma in a nested Array scope is a
+        // value position (§ 5.3.3 "Keys only"), so a quote opening an
+        // array item there is ordinary content, and only an Object
+        // scope's comma begins a fresh key. Mirrors
+        // `scan_inline_closer`'s `nested`/`open_stack` derivation.
+        let mut scope_stack: Vec<(u8, bool, bool)> = Vec::new();
         while i < bytes.len() {
             if in_key && seg_start {
                 i = skip_segment_ws(input, i);
@@ -1283,16 +1293,37 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
                     in_key = false;
                 }
                 b',' => {
-                    // Next pair begins: back to key context.
-                    in_key = true;
-                    seg_start = true;
+                    // Next pair / item begins: a fresh key position in an
+                    // Object scope; an Array scope stays a value position
+                    // (R6-F1, § 5.3.3 "Keys only").
+                    let scope_object = scope_stack.last().is_some_and(|(k, _, _)| *k == b'{');
+                    in_key = scope_object;
+                    seg_start = scope_object;
+                }
+                b'[' => {
+                    // A nested Array scope has no key context (§ 5.3.3
+                    // "Keys only"); it takes no part in `{`/`}` depth
+                    // counting, but the enclosing state is saved so `]`
+                    // can restore it.
+                    scope_stack.push((b'[', in_key, seg_start));
+                    in_key = false;
+                    seg_start = false;
+                }
+                b']' => {
+                    if scope_stack.last().is_some_and(|(k, _, _)| *k == b'[') {
+                        let (_, saved_in_key, _) = scope_stack.pop().unwrap();
+                        in_key = saved_in_key;
+                    }
+                    // The `]` itself consumed a position, so segment-start
+                    // tracking stays off until the next re-arm.
+                    seg_start = false;
                 }
                 b if b == open => {
                     depth += 1;
                     // A `{` opens a fresh pair list at any level: save the
                     // enclosing key-position state and restart tracking for
                     // the nested body.
-                    key_stack.push(in_key);
+                    scope_stack.push((b'{', in_key, seg_start));
                     in_key = true;
                     seg_start = true;
                 }
@@ -1302,10 +1333,16 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
                         return Some(i);
                     }
                     // Matching close of a nested object: restore the
-                    // enclosing pair list's key-position state. The `}`
-                    // itself consumed a position, so segment-start tracking
-                    // stays off until the next re-arm.
-                    in_key = key_stack.pop().unwrap_or(true);
+                    // enclosing pair list's key-position state — only when
+                    // the `{` scope is innermost, so a crossed closer
+                    // doesn't corrupt tracking (mirrors
+                    // `scan_inline_closer`). The `}` itself consumed a
+                    // position, so segment-start tracking stays off until
+                    // the next re-arm.
+                    if scope_stack.last().is_some_and(|(k, _, _)| *k == b'{') {
+                        let (_, saved_in_key, _) = scope_stack.pop().unwrap();
+                        in_key = saved_in_key;
+                    }
                     seg_start = false;
                 }
                 _ => {}
