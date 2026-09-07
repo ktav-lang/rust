@@ -995,6 +995,11 @@ pub(crate) fn split_top_level<'a>(
                 // Skip escaped character. We validate escapes later
                 // during process_escapes; here we just need to not
                 // count `\,`, `\{`, `\}`, `\[`, `\]` as structural.
+                // A recognized escape in value position consumes the
+                // scalar start (§ 3.7 / § 5.8.5, R4-F4): the decoded
+                // byte cannot reopen structural dispatch, so a later
+                // `[`/`{` in the same value stays literal data.
+                value_start = false;
                 i += 2;
             }
             b'.' if in_key => {
@@ -1096,7 +1101,11 @@ fn split_top_level_fast(input: &str, line_num: usize, span: Span, body: InlineBo
         match bytes[i] {
             b'\\' => {
                 // Consumed atomically (mirrors `scan_inline_closer`):
-                // the escaped bracket byte is never seen here.
+                // the escaped bracket byte is never seen here. A
+                // recognized escape in value position consumes the
+                // scalar start (§ 3.7 / § 5.8.5, R4-F4): the decoded
+                // byte cannot reopen structural dispatch.
+                value_start = false;
                 i += 2;
                 continue;
             }
@@ -1550,6 +1559,11 @@ pub(crate) fn scan_inline_closer(
                     match scan_escape(bytes, i) {
                         Err(seq) => return bad_escape(seq),
                         Ok(esc) => {
+                            // A recognized escape in value position
+                            // consumes the scalar start (§ 3.7 /
+                            // § 5.8.5, R4-F4): the decoded byte cannot
+                            // reopen structural dispatch.
+                            value_start = false;
                             i += esc.len();
                         }
                     }
@@ -1681,6 +1695,11 @@ pub(crate) fn scan_inline_closer(
                 match scan_escape(bytes, i) {
                     Err(seq) => return bad_escape(seq),
                     Ok(esc) => {
+                        // A recognized escape in value position
+                        // consumes the scalar start (§ 3.7 / § 5.8.5,
+                        // R4-F4): the decoded byte cannot reopen
+                        // structural dispatch.
+                        value_start = false;
                         i += esc.len();
                     }
                 }
