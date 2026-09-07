@@ -377,10 +377,11 @@ pub(crate) fn needs_raw_marker(s: &str) -> bool {
 }
 
 fn needs_raw_marker_content(s: &str) -> bool {
+    // Keywords, and the bare multi-line openers `(` / `((`, must use `::`.
+    // `()` / `(())` parse as the empty String (§ 5.2 rule 5). Other
+    // `(`-prefixed bodies (e.g. `(tail`) re-parse as the same String and
+    // need no marker (spec 0.7 fixture `inline/paren_scalar_is_string`).
     if matches!(s, "null" | "true" | "false" | "(" | "((" | "()" | "(())") {
-        return true;
-    }
-    if s.starts_with('(') {
         return true;
     }
     // § 5.2 rules 13–14: number literals must be forced to String via `::`

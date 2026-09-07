@@ -83,29 +83,30 @@ fn parens_as_array_items_round_trip() {
             "((".into(),
             "()".into(),
             "(())".into(),
-            "(abc)".into(), // under 0.5.0, also needs `::` since `(` is ambiguous
+            "(abc)".into(), // 0.7: plain `(`-prefixed body, round-trips without `::`
         ],
     };
     let s = to_string(&cfg).unwrap();
-    // All paren-prefixed items use `::` under 0.5.0.
+    // Bare openers and the inline-empty forms use `::`.
     assert!(s.contains(":: (\n"));
     assert!(s.contains(":: ((\n"));
     assert!(s.contains(":: ()\n"));
     assert!(s.contains(":: (())\n"));
-    assert!(s.contains(":: (abc)\n"));
+    assert!(s.contains("(abc)\n"));
+    assert!(!s.contains(":: (abc)"));
     let back: ArrCfg = from_str(&s).unwrap();
     assert_eq!(cfg, back);
 }
 
 #[test]
-fn partial_parens_need_marker_under_050() {
-    // Under 0.5.0, any value starting with `(` is ambiguous with
-    // multi-line openers and MUST use `::`.
+fn partial_parens_round_trip_without_marker() {
+    // Spec 0.7: a longer `(`-prefixed value is NOT ambiguous (only the
+    // bare `(` / `((` openers are) and round-trips without `::`.
     let cfg = Cfg {
         x: "(hello)".into(),
     };
     let s = to_string(&cfg).unwrap();
-    assert_eq!(s, "x:: (hello)\n");
+    assert_eq!(s, "x: (hello)\n");
     let back: Cfg = from_str(&s).unwrap();
     assert_eq!(cfg, back);
 }

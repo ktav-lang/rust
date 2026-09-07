@@ -1071,16 +1071,10 @@ fn classify<'a>(
         _ => {}
     }
 
-    // Paren-prefixed text — under 0.5.0, `(` starts a multiline opener,
-    // so a string starting with `(` that isn't one of the exact openers
-    // above is an error (parser rejects it via InlineNonEmptyCompound).
-    if trimmed.starts_with('(') {
-        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-            body: "paren-string".to_string(),
-        }));
-    }
+    // Spec 0.7 § 5.2: only the bare tokens `(` / `((` open multi-line
+    // strings; anything else starting with `(` is an ordinary inline
+    // scalar and falls through to classification below (mirrors
+    // parser/classify.rs; fixture `inline/paren_scalar_is_string`).
 
     // § 5.2 rules 10-12: keywords
     match trimmed {

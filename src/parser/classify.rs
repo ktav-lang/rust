@@ -92,16 +92,11 @@ pub(super) fn classify_value_start(
         _ => {}
     }
 
-    // Paren-prefixed text that is NOT a multi-line opener: under 0.5.0,
-    // `(value)` etc. are still ambiguous with multi-line openers.
-    // A string whose first byte is `(` MUST use `::`.
-    if trimmed.starts_with('(') {
-        return Err(Error::Structured(ErrorKind::InlineNonEmptyCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-            body: "paren-string".to_string(),
-        }));
-    }
+    // Spec 0.7 § 5.2: only the bare tokens `(` / `((` (followed by
+    // line-end) open multi-line strings — anything else starting with `(`
+    // is an ordinary inline scalar and falls through to classification
+    // below (fixture `inline/paren_scalar_is_string`: `d: (tail` inline
+    // and, by the same § 5.2 value grammar, on its own line).
 
     // § 5.2 rules 10–12: JSON keywords
     match trimmed {

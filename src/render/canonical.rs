@@ -758,6 +758,9 @@ mod tests {
             ("d", s("(())")),
         ]);
         let out = emit_canonical(&v).unwrap();
+        // Spec 0.7: bare `(` / `((` (multi-line openers) and `()` / `(())`
+        // (rule 5, → empty String) need `::`; other `(`-prefixed strings
+        // round-trip plain (fixture `inline/paren_scalar_is_string`).
         assert!(out.contains("a:: (\n"));
         assert!(out.contains("b:: ((\n"));
         assert!(out.contains("c:: ()\n"));

@@ -266,6 +266,12 @@ fn parse_inline_value_raw(
         }));
     }
 
+    // section 5.2 rule 5: `()` / `(())` → empty String, on the RAW body
+    // (escape provenance: `\u0028\u0029` stays a literal String "()").
+    if trimmed == "()" || trimmed == "(())" {
+        return Ok(Value::String("".into()));
+    }
+
     // Plain inline scalar — process escapes, then classify per section 5.2.
     // 0.7 § 3.7 / § 5.2: a recognised escape anywhere in the raw body
     // forces String (rule 15) — the decoded body is never re-classified as
@@ -273,13 +279,13 @@ fn parse_inline_value_raw(
     // form, so a `\` byte surviving in `trimmed` is exactly the "had at
     // least one recognised escape" signal.
     let processed = process_escapes(trimmed, line_num, span)?;
-    let body = processed.trim();
+    let body = processed;
 
     if trimmed.contains('\\') {
         return Ok(Value::String(body.into()));
     }
 
-    classify_inline_scalar(body, line_num, span, strict)
+    classify_inline_scalar(&body, line_num, span, strict)
 }
 
 /// Classify an inline scalar body (after escape processing and trimming)

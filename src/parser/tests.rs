@@ -948,11 +948,11 @@ fn parse_named_escapes_still_work_regression() {
     assert_eq!(cfg.get("d"), Some(&Value::String("]".into())));
     assert_eq!(cfg.get("e"), Some(&Value::String("{".into())));
     assert_eq!(cfg.get("f"), Some(&Value::String("[".into())));
-    // § 5.2 (spec.md 857-860): inline scalar bodies are trimmed AFTER
-    // escape processing, so `\n`/`\r` decode to whitespace-only values
-    // that trim to the empty string (spec-mandated decode→trim order).
-    assert_eq!(cfg.get("g"), Some(&Value::String("".into())));
-    assert_eq!(cfg.get("h"), Some(&Value::String("".into())));
+    // § 4 / § 3.7 (spec 0.7): trimming is a source-matching concern and
+    // happens BEFORE decoding, so `\n`/`\r` decode to real edge
+    // whitespace that survives in the String value.
+    assert_eq!(cfg.get("g"), Some(&Value::String("\n".into())));
+    assert_eq!(cfg.get("h"), Some(&Value::String("\r".into())));
     assert_eq!(cfg.get("i"), Some(&Value::String(".".into())));
     assert_eq!(cfg.get("j"), Some(&Value::String(":".into())));
 }
@@ -967,13 +967,14 @@ fn parse_unicode_escape_high_then_malformed_low_errors() {
 }
 
 #[test]
-fn parse_unicode_escape_trimmed_after_decode() {
-    // § 5.2: trim applies AFTER escape processing, so decoded edge
-    // whitespace (here U+0009 tabs) is removed.
+fn parse_unicode_escape_preserves_decoded_edge_whitespace() {
+    // Renamed behaviour per spec 0.7 § 4 / § 3.7: decoded edge whitespace
+    // (here U+0009 tabs) is PRESERVED — only source-level edge whitespace
+    // is trimmed.
     let v = crate::parse("cfg: {v: \\u0009A\\u0009}").unwrap();
     let obj = v.as_object().unwrap();
     let cfg = obj.get("cfg").unwrap().as_object().unwrap();
-    assert_eq!(cfg.get("v"), Some(&Value::String("A".into())));
+    assert_eq!(cfg.get("v"), Some(&Value::String("\tA\t".into())));
 }
 
 #[test]

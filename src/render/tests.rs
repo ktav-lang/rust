@@ -45,8 +45,9 @@ fn keyword_strings_need_marker() {
 
 #[test]
 fn multiline_open_tokens_need_marker() {
-    // Strings that would be mistaken for multi-line openers / inline-empty
-    // forms must be protected with `::`.
+    // Strings equal to the multi-line openers `(` / `((` — and the
+    // inline-empty forms `()` / `(())` (§ 5.2 rule 5) — must be protected
+    // with `::`.
     assert!(needs_raw_marker("("));
     assert!(needs_raw_marker("(("));
     assert!(needs_raw_marker("()"));
@@ -54,11 +55,12 @@ fn multiline_open_tokens_need_marker() {
 }
 
 #[test]
-fn paren_prefixed_strings_need_marker() {
-    // Under 0.5.0, any string starting with `(` is ambiguous with
-    // multi-line openers and must use `::`.
-    assert!(needs_raw_marker("(foo"));
-    assert!(needs_raw_marker("(abc)"));
+fn paren_prefixed_strings_round_trip_without_marker() {
+    // Spec 0.7 § 5.2 rule 5 matches only the exact bodies `()`/`(())`;
+    // other `(`-prefixed strings are ordinary Strings that round-trip
+    // without `::` (fixture `inline/paren_scalar_is_string`).
+    assert!(!needs_raw_marker("(foo"));
+    assert!(!needs_raw_marker("(abc)"));
 }
 
 #[test]
