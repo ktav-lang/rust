@@ -1,9 +1,10 @@
 //! Regression tests for review round-4 findings R4-F1 and R4-F2 —
 //! spec 0.7 § 5.8.2 / § 5.8.4 / § 5.8.5 / § 5.3.3.
 //!
-//! R4-F1 (per-scope raw closer): a `::` raw scalar nested inside an inner
-//! compound must be terminated only by ITS OWN containing scope's closer,
-//! never by an outer container's closer.
+//! R4-F1 (per-scope raw openers): a `::` raw scalar nested inside an inner
+//! compound makes only LEADING OPENERS literal (§ 5.8.5); R5-F3 corrects the
+//! closer side: the scalar terminates on the FIRST unescaped `,`, `}`, or
+//! `]`, regardless of which scope the closer byte belongs to.
 //!
 //! R4-F2 (scope restoration after nested closers): closing a nested
 //! Array/Object must restore the enclosing Object's key-context.
@@ -132,17 +133,10 @@ fn nested_raw_array_in_object() {
 
 #[test]
 fn raw_content_openers_stay_literal() {
-    // 7. `{` inside a raw value must NOT start nesting; non-matching closer
-    //    `]` stays content (§ 5.8.5)
-    let src = r"{a:: x{y]}
-";
-    assert_eq!(
-        parse(src).unwrap(),
-        obj(&[("a", Value::String("x{y]".into()))]),
-        "literal opener in raw value failed for {src:?}"
-    );
-
-    // 8. same invariant inside a NESTED raw scope; `}` terminates the raw
+    // 8. a `[` inside a raw value must NOT start nesting (§ 5.8.5). The
+    //    scalar `x[` is terminated by the object's OWN closer `}` — the
+    //    first unescaped closer it meets is a matching one, so the R5-F3
+    //    fix changes nothing here and this stays a positive test.
     let src = r"[{a:: x[}]
 ";
     assert_eq!(
@@ -151,14 +145,120 @@ fn raw_content_openers_stay_literal() {
         "literal opener in nested raw value failed for {src:?}"
     );
 
-    // 9. crossed closer inside raw content stays content; the raw value ends
-    //    at its containing scope's own delimiter (`}`)
+    // 33. escaped-`[` variant: `\[` decodes to a literal `[` in the
+    //     scalar; the unescaped `}` still closes the object.
+    let src = r"[{a:: x\[}]
+";
+    assert_eq!(
+        parse(src).unwrap(),
+        arr(&[obj(&[("a", Value::String("x[".into()))])]),
+        "escaped opener in nested raw value failed for {src:?}"
+    );
+}
+
+#[test]
+fn raw_terminated_by_any_unescaped_closer() {
+    // R5-F3: `<inline-raw-scalar>` terminates on the FIRST unescaped
+    // `,`, `}`, or `]`, regardless of which scope the closer belongs to.
+    // A crossed closer that returns depth to zero without being the
+    // body's own closer leaves the compound unterminated. (The pre-fix
+    // code accepted all of these with the closer smuggled into the
+    // scalar.)
+
+    // 34. primary repro — `]` terminates the scalar but does not match
+    //     the object's `}` (fast path).
+    let src = r"{a:: x]}
+";
+    match parse(src) {
+        Err(Error::Structured(ErrorKind::UnterminatedInlineCompound { .. })) => {}
+        other => panic!("case 34: expected UnterminatedInlineCompound, got {other:?}"),
+    }
+
+    // 35. quoted key forces the slow path — same rejection.
+    let src = r#"{"a":: x]}
+"#;
+    match parse(src) {
+        Err(Error::Structured(ErrorKind::UnterminatedInlineCompound { .. })) => {}
+        other => panic!("case 35: expected UnterminatedInlineCompound, got {other:?}"),
+    }
+
+    // 7. (was: accepted as `x{y]`) a literal `{` stays content, but the
+    //    unescaped `]` still terminates the scalar; the crossed `]`
+    //    returns depth to zero without being the body's `}`.
+    let src = r"{a:: x{y]}
+";
+    match parse(src) {
+        Err(Error::Structured(ErrorKind::UnterminatedInlineCompound { .. })) => {}
+        other => panic!("case 7: expected UnterminatedInlineCompound, got {other:?}"),
+    }
+
+    // 9. (was: accepted as `x]`) a crossed `]` inside a nested raw
+    //    scalar leaves the object without its matching closer.
     let src = r"[{a:: x]}]
+";
+    match parse(src) {
+        Err(Error::Structured(ErrorKind::UnterminatedInlineCompound { .. })) => {}
+        other => panic!("case 9: expected UnterminatedInlineCompound, got {other:?}"),
+    }
+}
+
+#[test]
+fn raw_escaped_closer_stays_content() {
+    // Controls: escaping the closer keeps it in the scalar (§ 3.7);
+    // these must pass before AND after the fix.
+
+    // 36. the R5-F3 control.
+    let src = r"{a:: x\]}
+";
+    assert_eq!(
+        parse(src).unwrap(),
+        obj(&[("a", Value::String("x]".into()))]),
+        "escaped closer control failed for {src:?}"
+    );
+
+    // 37. slow-path (quoted key) variant.
+    let src = r#"{"a":: x\]}
+"#;
+    assert_eq!(
+        parse(src).unwrap(),
+        obj(&[("a", Value::String("x]".into()))]),
+        "slow-path escaped closer control failed for {src:?}"
+    );
+
+    // 38. escaped variant of old case 7: `\]` keeps the closer in the
+    //     scalar, the literal `{` stays content, `}` closes the object.
+    let src = r"{a:: x{y\]}
+";
+    assert_eq!(
+        parse(src).unwrap(),
+        obj(&[("a", Value::String("x{y]".into()))]),
+        "escaped closer after literal opener failed for {src:?}"
+    );
+
+    // 39. escaped variant of old case 9: `\]` inside the nested scalar;
+    //     the object's `}` and the array's `]` close normally.
+    let src = r"[{a:: x\]}]
 ";
     assert_eq!(
         parse(src).unwrap(),
         arr(&[obj(&[("a", Value::String("x]".into()))])]),
-        "crossed closer in raw content failed for {src:?}"
+        "escaped crossed closer failed for {src:?}"
+    );
+}
+
+#[test]
+fn raw_terminated_by_comma_mid_nesting() {
+    // 40. an unescaped `,` terminates a raw scalar inside a nested
+    //     compound: `x` ends at the comma and `b` is a sibling pair.
+    let src = r"[{a:: x, b: 2}]
+";
+    assert_eq!(
+        parse(src).unwrap(),
+        arr(&[obj(&[
+            ("a", Value::String("x".into())),
+            ("b", Value::Integer("2".into())),
+        ])]),
+        "comma-terminated raw scalar mid-nesting failed for {src:?}"
     );
 }
 
@@ -439,6 +539,50 @@ fn thin_api() {
     );
 }
 
+#[test]
+fn thin_api_raw_closer_termination() {
+    // 41. escaped closer decodes inside the event stream.
+    let src = r"{a:: x\]}
+";
+    assert_eq!(
+        collect(src),
+        vec![
+            Ev::BeginObject,
+            Ev::Key("a".into()),
+            Ev::Str("x]".into()),
+            Ev::EndObject,
+        ],
+        "thin events for escaped-closer control failed for {src:?}"
+    );
+
+    // 42. unescaped crossed closer → UnterminatedInlineCompound.
+    let src = r"{a:: x]}
+";
+    let err = parse_events(src, |_| {}).unwrap_err();
+    match &err {
+        Error::Structured(ErrorKind::UnterminatedInlineCompound { .. }) => {}
+        other => panic!("case 42: expected UnterminatedInlineCompound, got {other:?}"),
+    }
+
+    // 43. comma terminates the raw scalar mid-nesting (event view).
+    let src = r"[{a:: x, b: 2}]
+";
+    assert_eq!(
+        collect(src),
+        vec![
+            Ev::BeginArray,
+            Ev::BeginObject,
+            Ev::Key("a".into()),
+            Ev::Str("x".into()),
+            Ev::Key("b".into()),
+            Ev::Integer("2".into()),
+            Ev::EndObject,
+            Ev::EndArray,
+        ],
+        "thin events for comma-terminated raw failed for {src:?}"
+    );
+}
+
 // --- Group F: typed API ---------------------------------------------------------
 
 #[test]
@@ -460,4 +604,24 @@ fn typed_api() {
         json!({"a": [1], "x}": 2}),
         "typed scope-restore repro failed for {src:?}"
     );
+}
+
+#[test]
+fn typed_api_raw_closer_termination() {
+    use serde_json::json;
+
+    // 44. escaped-closer control via the typed API.
+    let src = r"{a:: x\]}
+";
+    let v: serde_json::Value = from_str(src).unwrap();
+    assert_eq!(v, json!({"a": "x]"}), "typed escaped-closer control failed");
+
+    // 45. rejection via the typed API.
+    let src = r"{a:: x]}
+";
+    let err = from_str::<serde_json::Value>(src).unwrap_err();
+    match &err {
+        Error::Structured(ErrorKind::UnterminatedInlineCompound { .. }) => {}
+        other => panic!("case 45: expected UnterminatedInlineCompound, got {other:?}"),
+    }
 }

@@ -221,10 +221,20 @@ fn pins_unchanged() {
         parse("{a:\u{a0}: 1}\n").unwrap(),
         obj(&[("a", Value::String(": 1".into()))])
     );
-    // Raw marker still makes the bracket literal.
+    // Raw marker still makes the LEADING bracket literal (§ 5.8.5), but
+    // the scalar's terminator grammar (R5-F3) still applies: the
+    // unescaped `]` terminates the scalar and crosses the object scope,
+    // so the document is rejected.
+    let err = parse("{a::\u{a0}[1]}\n").unwrap_err();
+    match &err {
+        Error::Structured(ErrorKind::UnterminatedInlineCompound { .. }) => {}
+        other => panic!("expected UnterminatedInlineCompound, got {other:?}"),
+    }
+    // Same literal-opener intent in valid form: an escaped `]` stays in
+    // the scalar; the unescaped `}` closes the object.
     assert_eq!(
-        parse("{a::\u{a0}[1]}\n").unwrap(),
-        obj(&[("a", Value::String("[1]".into()))])
+        parse("{a::\u{a0}[\\]1}\n").unwrap(),
+        obj(&[("a", Value::String("[]1".into()))])
     );
     // Interior NBSP is content.
     assert_eq!(

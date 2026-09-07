@@ -530,12 +530,27 @@ fn parse_inline_closer_scan_value_positions_and_raw_items() {
         Some(&Value::Integer("2".into()))
     );
 
-    // Raw `::` item in an array body: braces in it are content (§ 5.4).
-    let v = crate::parse("x: [:: {abc}]").unwrap();
+    // Raw `::` item in an array body: a leading `{` is content (§ 5.8.5),
+    // but the scalar terminates at the FIRST unescaped closer (R5-F3) —
+    // the `}` burns the array's depth budget, so the array has no
+    // matching closer. (Pre-fix this swallowed the `}` into the scalar.)
+    match crate::parse("x: [:: {abc}]") {
+        Err(crate::Error::Structured(crate::error::ErrorKind::UnterminatedInlineCompound {
+            ..
+        })) => {}
+        other => panic!("expected UnterminatedInlineCompound, got {other:?}"),
+    }
+    match crate::parse("[:: {abc}]") {
+        Err(crate::Error::Structured(crate::error::ErrorKind::UnterminatedInlineCompound {
+            ..
+        })) => {}
+        other => panic!("expected UnterminatedInlineCompound, got {other:?}"),
+    }
+    // Escaping the closers keeps the braces in the scalar (§ 3.7); the
+    // unescaped `]` closes the array.
+    let v = crate::parse("x: [:: \\{abc\\}]").unwrap();
     let arr = v.as_object().unwrap().get("x").unwrap().as_array().unwrap();
     assert_eq!(arr[0], Value::String("{abc}".into()));
-    let v = crate::parse("[:: {abc}]").unwrap();
-    assert_eq!(v.as_array().unwrap()[0], Value::String("{abc}".into()));
 
     // Slow path (quote bytes present): array-of-object value after a
     // quoted key/value pair.

@@ -602,17 +602,6 @@ fn has_quote_bytes(bytes: &[u8]) -> bool {
     bytes.contains(&b'"') || bytes.contains(&b'\'') || bytes.contains(&b'`')
 }
 
-/// The closer byte that terminates the compound opened by `kind`
-/// (`'{'` → `'}'`, `'['` → `']'`; equal to the body's own `close` when
-/// `kind` is the outermost opener).
-fn close_for_kind(kind: u8) -> u8 {
-    if kind == b'{' {
-        b'}'
-    } else {
-        b']'
-    }
-}
-
 /// Skip line-bounded § 3.3 whitespace: the closed 25-code-point list is
 /// frozen by the spec, and LF/CR cannot occur here (lines are
 /// pre-split). Returns the index of the first non-whitespace byte at or
@@ -1660,19 +1649,20 @@ pub(crate) fn scan_inline_closer(
                         in_key = true;
                     }
                 }
-                b'}' | b']'
-                    if !raw || b == close_for_kind(nested.last().copied().unwrap_or(open)) =>
-                {
+                b'}' | b']' => {
                     // Both closer kinds decrement the shared depth: a
                     // nested compound of the OTHER delimiter type still
                     // closes (an array item may be an object and vice
-                    // versa). The per-scope gate (R4-F1, § 5.8.5): raw
-                    // mode ends only at the current scope's own closer —
-                    // any other closer byte is raw content falling
-                    // through to `_`. A closer that returns depth to
-                    // zero must be the body's own closer; a crossed one
-                    // (e.g. `[{a: 1]`) is not a matching closer (§ 5.2's
-                    // matching-closer rule).
+                    // versa). An unescaped closer ALWAYS ends raw mode
+                    // and is structural (R5-F3): `<inline-raw-scalar>`
+                    // terminates on the FIRST unescaped `,`, `}`, or `]`
+                    // regardless of which scope it belongs to — raw mode
+                    // only makes leading openers literal (§ 5.8.5). A
+                    // closer that returns depth to zero must be the
+                    // body's own closer; a crossed one (e.g. `[{a: 1]`)
+                    // is not a matching closer (§ 5.2's matching-closer
+                    // rule).
+                    raw = false;
                     depth -= 1;
                     if depth == 0 {
                         return if b == close {
@@ -1683,23 +1673,21 @@ pub(crate) fn scan_inline_closer(
                     }
                     // Nested closer matching the current scope's opener
                     // kind: pop it (compare stored OPENER to the closer's
-                    // matching opener, R4-F2). Restore `raw = false`:
-                    // provably always correct, since the opener guard
-                    // `value_start && !raw` means a scope can never be
-                    // pushed while its enclosing scope is in raw mode
-                    // (§ 5.8.5) — literal raw openers never start
-                    // nesting. `in_key`/`value_start` are deliberately not restored here:
-                    // the next `,` re-derives key context fresh from the CURRENT scope via
-                    // `nested.last()` (R5-F1); deriving it from the outermost opener instead
-                    // is exactly the bug that made closer-site restoration look unnecessary,
-                    // which is why R5-F1 is fixed at the comma site, not the closer site.
+                    // matching opener, R4-F2). (`raw` was already reset
+                    // at the top of this arm — R5-F3.) `in_key`/`value_start`
+                    // are deliberately not restored here: the next `,`
+                    // re-derives key context fresh from the CURRENT scope
+                    // via `nested.last()` (R5-F1); deriving it from the
+                    // outermost opener instead is exactly the bug that made
+                    // closer-site restoration look unnecessary, which is
+                    // why R5-F1 is fixed at the comma site, not the closer
+                    // site.
                     let kind_matched = match b {
                         b'}' => nested.last() == Some(&b'{'),
                         _ => nested.last() == Some(&b'['),
                     };
                     if kind_matched {
                         nested.pop();
-                        raw = false;
                     }
                 }
                 _ => {
@@ -1836,14 +1824,14 @@ pub(crate) fn scan_inline_closer(
                 in_key = b == b'{';
                 seg_start = b == b'{';
             }
-            b'}' | b']'
-                if !raw
-                    || b == close_for_kind(open_stack.last().map_or(open, |(k, _, _, _)| *k)) =>
-            {
-                // Both closer kinds decrement (see fast path). The
-                // per-scope gate (R4-F1, § 5.8.5): raw mode ends only at
-                // the current scope's own closer; any other closer byte
-                // is raw content falling through to `_`.
+            b'}' | b']' => {
+                // Both closer kinds decrement (see fast path). An
+                // unescaped closer ALWAYS ends raw mode and is
+                // structural (R5-F3): `<inline-raw-scalar>` terminates
+                // on the FIRST unescaped `,`, `}`, or `]` regardless of
+                // which scope it belongs to — raw mode only makes
+                // leading openers literal (§ 5.8.5).
+                raw = false;
                 depth -= 1;
                 if depth == 0 {
                     // A closer that returns depth to zero must be the
