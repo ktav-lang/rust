@@ -1616,10 +1616,14 @@ pub(crate) fn scan_inline_closer(
                     }
                 }
                 b',' => {
-                    // Next pair / item begins: fresh value position.
-                    if object {
-                        in_key = true;
-                    }
+                    // Next pair / item begins: re-derive key context from
+                    // the CURRENT scope (`nested.last()`), not the
+                    // outermost opener (R5-F1) — an Object scope starts a
+                    // key position, an Array scope stays a value position
+                    // (§ 5.3.3 "Keys only"). Mirrors the slow path's
+                    // open_stack-based derivation.
+                    let scope_object = nested.last().map_or(object, |k| *k == b'{');
+                    in_key = scope_object;
                     raw = false;
                     value_start = true;
                 }
@@ -1665,11 +1669,11 @@ pub(crate) fn scan_inline_closer(
                     // `value_start && !raw` means a scope can never be
                     // pushed while its enclosing scope is in raw mode
                     // (§ 5.8.5) — literal raw openers never start
-                    // nesting. No `in_key`/`value_start` restoration is
-                    // needed: without quote bytes the opacity mechanism
-                    // cannot occur, and both are only read at `:`/value
-                    // start, always separated from a nested closer by a
-                    // `,` (which re-arms both) or the matching closer.
+                    // nesting. `in_key`/`value_start` are deliberately not restored here:
+                    // the next `,` re-derives key context fresh from the CURRENT scope via
+                    // `nested.last()` (R5-F1); deriving it from the outermost opener instead
+                    // is exactly the bug that made closer-site restoration look unnecessary,
+                    // which is why R5-F1 is fixed at the comma site, not the closer site.
                     let kind_matched = match b {
                         b'}' => nested.last() == Some(&b'{'),
                         _ => nested.last() == Some(&b'['),
