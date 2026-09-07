@@ -329,6 +329,11 @@ impl<'a> ser::Serializer for RootSer<'a> {
         // a single-pair root Object whose value is an Array. The
         // variant name IS the root Object's first serialized key at
         // byte offset 0, so the § 5.9.10 rule (c) guard applies.
+        if variant.is_empty() {
+            return Err(Error::Unrepresentable(
+                crate::error::ReasonCode::EmptyKeyName,
+            ));
+        }
         crate::render::helpers::push_escaped_key_segment(variant, true, self.out);
         if len == 0 {
             self.out.push_str(": []\n");

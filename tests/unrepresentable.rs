@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 
 use ktav::render::render;
+use ktav::ser::to_value;
 use ktav::{
     emit_canonical, from_str, parse, to_string, to_string_force_strings, Error, ObjectMap,
     ReasonCode, Value,
@@ -176,6 +177,37 @@ impl Serialize for EmptyField {
 #[test]
 fn empty_key_name_serde_struct_field() {
     assert_eq!(code_of(to_string(&EmptyField)), ReasonCode::EmptyKeyName);
+}
+
+#[derive(Serialize)]
+enum EmptyTupleVariantName {
+    #[serde(rename = "")]
+    Empty(i64, i64),
+}
+
+#[test]
+fn empty_key_name_serde_tuple_variant() {
+    // A root tuple variant's name IS the root Object's first key
+    // (§ 8.2 single-pair Object); an empty name would emit the
+    // rust#5-shaped `: [...]` document, so § 5.9.0 rejects it before
+    // any byte is written.
+    assert_eq!(
+        code_of(to_string(&EmptyTupleVariantName::Empty(1, 2))),
+        ReasonCode::EmptyKeyName
+    );
+}
+
+#[test]
+fn empty_key_name_serde_tuple_variant_writer_agreement() {
+    // Both writer surfaces must agree on the empty variant name: the
+    // owned to_value + render path already rejected it; the streaming
+    // to_string path must return the same Unrepresentable(EmptyKeyName).
+    let v = to_value(&EmptyTupleVariantName::Empty(1, 2)).unwrap();
+    assert_eq!(code_of(render(&v)), ReasonCode::EmptyKeyName);
+    assert_eq!(
+        code_of(to_string(&EmptyTupleVariantName::Empty(1, 2))),
+        ReasonCode::EmptyKeyName
+    );
 }
 
 // --- NonFiniteFloat --------------------------------------------------------
