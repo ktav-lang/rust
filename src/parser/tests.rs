@@ -546,8 +546,11 @@ fn parse_inline_closer_scan_value_positions_and_raw_items() {
         arr[0].as_object().unwrap().get("b"),
         Some(&Value::Integer("1".into()))
     );
-    // Quoted value segments are opaque to closer scanning.
-    assert!(crate::parse("{a: \"x] y\", b: 1}").is_ok());
+    // § 5.3.3 opacity is keys-only, so the `]` inside the value quotes
+    // is structural; it returns depth to zero without matching the
+    // body's `}`, so the body has no matching closer (§ 5.2 rule 9)
+    // and the document is rejected.
+    assert!(crate::parse("{a: \"x] y\", b: 1}").is_err());
 
     // Root-position array with an object first item.
     let v = crate::parse("[{b: 1}]").unwrap();

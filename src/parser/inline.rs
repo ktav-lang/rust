@@ -1466,19 +1466,6 @@ pub(crate) fn scan_inline_closer(
             }
             seg_start = false;
         }
-        // § 5.8's quote-aware rules: a `"` opening a VALUE is content-
-        // opaque when the span terminates (its brackets are not
-        // structural). An unterminated value quote is plain content —
-        // § 5.3.3's quote opacity is keys-only, so scanning continues
-        // with the `"` as an ordinary byte.
-        if value_start && is_quote_byte(bytes[i]) {
-            if let Some(end) = quoted_span_end(bytes, i) {
-                i = end + 1;
-                value_start = false;
-                prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(open);
-                continue;
-            }
-        }
         let b = bytes[i];
         match b {
             b'\\' => {
