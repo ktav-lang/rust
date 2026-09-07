@@ -20,6 +20,12 @@
 //! naming an earlier-established Object, raises `KeyPathConflict`. The
 //! synthetic `ObjectLevel`s hold no key state at all — only the prefix
 //! needed for longest-common-prefix comparison and emission bookkeeping.
+//!
+//! A compound value's INTERNAL key paths — for both inline (`a: {x: 1}`)
+//! and explicit multi-line compounds — are registered into the enclosing
+//! frame's persistent table, recursively for nested objects, and stop at
+//! array boundaries (arrays are leaves), so later dotted re-entry sees
+//! them (§ 5.3.2 / § 6.3).
 
 use bumpalo::collections::Vec as BumpVec;
 use bumpalo::Bump;
@@ -180,6 +186,15 @@ pub(crate) enum Frame<'a> {
     Object {
         levels: BumpVec<'a, ObjectLevel<'a>>,
         paths: BumpVec<'a, PathEntry<'a>>,
+        /// The decoded key path under which this object lives in its
+        /// ENCLOSING frame's persistent `paths` table — `Some` only for
+        /// objects opened as a keyed pair (`a: { … }` / `a.b: { … }`).
+        /// `None` for root frames and for objects opened inside arrays
+        /// (array elements are unnamed, and arrays are leaves in the
+        /// path model, so paths never cross an array boundary). On a
+        /// general close, the frame's table is folded into the parent's
+        /// under this prefix.
+        key_path: Option<&'a [&'a str]>,
     },
     Array,
 }
@@ -216,12 +231,13 @@ pub(crate) struct ObjectLevel<'a> {
 }
 
 impl<'a> Frame<'a> {
-    pub(crate) fn new_object(bump: &'a Bump) -> Self {
+    pub(crate) fn new_object(bump: &'a Bump, key_path: Option<&'a [&'a str]>) -> Self {
         let mut levels = BumpVec::with_capacity_in(2, bump);
         levels.push(ObjectLevel { prefix: None });
         Frame::Object {
             levels,
             paths: BumpVec::with_capacity_in(8, bump),
+            key_path,
         }
     }
     pub(crate) fn new_array() -> Self {
@@ -398,7 +414,7 @@ impl<'a> EventParser<'a> {
         // § 5.0.1 rule 4: lone `{`
         if trimmed == "{" {
             self.root_is_explicit_compound = true;
-            self.stack.push(Frame::new_object(self.bump));
+            self.stack.push(Frame::new_object(self.bump, None));
             self.opener_offsets.push(trimmed_span.start);
             EventSink::push(events, Event::BeginObject);
             return Ok(true);
@@ -463,7 +479,7 @@ impl<'a> EventParser<'a> {
         // § 5.0.1 rules 6/7: pair-shape → implicit Object root,
         // array-item-shape → implicit Array root.
         if is_pair_shape(trimmed) {
-            self.stack.push(Frame::new_object(self.bump));
+            self.stack.push(Frame::new_object(self.bump, None));
             self.opener_offsets.push(0);
             EventSink::push(events, Event::BeginObject);
         } else {
@@ -560,8 +576,15 @@ impl<'a> EventParser<'a> {
                         events,
                     ),
                     ValueStart::OpenObject => {
-                        self.emit_keyed_open(key, Event::BeginObject, line_num, key_span, events)?;
-                        self.stack.push(Frame::new_object(self.bump));
+                        let full_path = self.emit_keyed_open(
+                            key,
+                            Event::BeginObject,
+                            line_num,
+                            key_span,
+                            events,
+                        )?;
+                        self.stack
+                            .push(Frame::new_object(self.bump, Some(full_path)));
                         self.opener_offsets.push(trimmed_span.end - 1);
                         Ok(())
                     }
@@ -601,6 +624,17 @@ impl<'a> EventParser<'a> {
                             None => unreachable!("inline compound always emits events"),
                         };
                         self.register_value_path(full_path, shape, key, line_num, key_span)?;
+                        if matches!(shape, PathShape::Object) {
+                            // § 5.3.2 / § 6.3: the inline compound's
+                            // internal key paths must be visible to
+                            // later dotted re-entry in THIS frame.
+                            self.register_inline_child_paths(
+                                full_path,
+                                &inline_events,
+                                line_num,
+                                key_span,
+                            )?;
+                        }
                         events.push(Event::Key(leaf));
                         for ev in inline_events {
                             events.push(ev);
@@ -648,7 +682,7 @@ impl<'a> EventParser<'a> {
         Ok(())
     }
 
-    // For "key: {" or "key: [" — emit Key + open, push frame.
+    /// For `key: {` / `key: [` — register the key path and emit `Key` + open; returns the path for the caller's frame `key_path`.
     fn emit_keyed_open<S: EventSink<'a>>(
         &mut self,
         key: &'a str,
@@ -656,13 +690,13 @@ impl<'a> EventParser<'a> {
         line_num: usize,
         key_span: Span,
         events: &mut S,
-    ) -> Result<()> {
+    ) -> Result<&'a [&'a str]> {
         let (leaf, full_path) = self.reconcile_dotted_key(key, line_num, key_span, events)?;
         let shape = path_shape_of(&open);
         self.register_value_path(full_path, shape, key, line_num, key_span)?;
         events.push(Event::Key(leaf));
         events.push(open);
-        Ok(())
+        Ok(full_path)
     }
 
     fn emit_keyed_open_multiline<S: EventSink<'a>>(
@@ -725,7 +759,10 @@ impl<'a> EventParser<'a> {
             }
             ValueStart::OpenObject => {
                 events.push(Event::BeginObject);
-                self.stack.push(Frame::new_object(self.bump));
+                // Array elements are unnamed; paths never cross an
+                // array boundary (arrays are leaves), so `key_path`
+                // is `None` and nothing is folded on close.
+                self.stack.push(Frame::new_object(self.bump, None));
                 self.opener_offsets.push(trimmed_span.end - 1);
             }
             ValueStart::OpenArray => {
@@ -1002,15 +1039,24 @@ impl<'a> EventParser<'a> {
     }
 
     /// Register a fully-decoded key path with the value shape that now
-    /// occupies it, implementing the owned parser's outcome table
-    /// (`parser::insert::insert_value` / `insert_dotted`, § 6.3):
+    /// occupies it, implementing the owned parser's outcome tables
+    /// (`parser::insert::insert_value` / `insert_dotted`, § 6.3). The
+    /// two entry points differ on an OCCUPIED path:
     ///
-    /// - leaf value onto existing Object → `KeyPathConflict`
-    ///   `Overwrite { existing: "object", new_kind }`
-    /// - leaf value onto existing leaf → `DuplicateKey`
-    /// - Object onto existing Object → `DuplicateKey`
-    /// - Object onto existing leaf → `KeyPathConflict`
-    ///   `Overwrite { existing: <kind>, new_kind: "object" }`
+    /// - Dotted key (`path.len() > 1`, mirrors `insert_dotted`): the
+    ///   descent was already validated per-prefix by
+    ///   `reconcile_dotted_key`, so ANY occupied final segment is a
+    ///   `DuplicateKey` — unconditionally, regardless of shape.
+    /// - Single-segment key (`path.len() == 1`, mirrors
+    ///   `insert_value`'s four-arm table):
+    ///
+    ///   - leaf value onto existing Object → `KeyPathConflict`
+    ///     `Overwrite { existing: "object", new_kind }`
+    ///   - leaf value onto existing leaf → `DuplicateKey`
+    ///   - Object onto existing Object → `DuplicateKey`
+    ///   - Object onto existing leaf → `KeyPathConflict`
+    ///     `Overwrite { existing: <kind>, new_kind: "object" }`
+    ///
     /// - absent path → record it.
     fn register_value_path(
         &mut self,
@@ -1021,52 +1067,123 @@ impl<'a> EventParser<'a> {
         key_span: Span,
     ) -> Result<()> {
         match self.stack.last_mut().unwrap() {
-            Frame::Object { paths, .. } => match paths.iter().find(|e| e.path == path) {
-                Some(PathEntry {
-                    shape: PathShape::Object,
-                    ..
-                }) => match shape {
-                    PathShape::Leaf(label) => Err(Error::Structured(ErrorKind::KeyPathConflict {
-                        line: line_num as u32,
-                        path: raw_key.to_string(),
-                        kind: ConflictKind::Overwrite {
-                            existing: "object",
-                            new_kind: label,
-                        },
-                        span: key_span,
-                    })),
-                    PathShape::Object => Err(Error::Structured(ErrorKind::DuplicateKey {
+            Frame::Object { paths, .. } => {
+                let existing = paths.iter().find(|e| e.path == path).map(|e| e.shape);
+                match existing {
+                    // `insert_dotted` parity: an occupied final segment
+                    // of a dotted key is ALWAYS a DuplicateKey — shape
+                    // conflicts along the way were already raised per-
+                    // prefix by `reconcile_dotted_key`.
+                    Some(_) if path.len() > 1 => Err(Error::Structured(ErrorKind::DuplicateKey {
                         line: line_num as u32,
                         key: raw_key.to_string(),
                         span: key_span,
                     })),
-                },
-                Some(PathEntry {
-                    shape: PathShape::Leaf(existing),
-                    ..
-                }) => match shape {
-                    PathShape::Leaf(_) => Err(Error::Structured(ErrorKind::DuplicateKey {
-                        line: line_num as u32,
-                        key: raw_key.to_string(),
-                        span: key_span,
-                    })),
-                    PathShape::Object => Err(Error::Structured(ErrorKind::KeyPathConflict {
-                        line: line_num as u32,
-                        path: raw_key.to_string(),
-                        kind: ConflictKind::Overwrite {
-                            existing,
-                            new_kind: "object",
-                        },
-                        span: key_span,
-                    })),
-                },
-                None => {
-                    paths.push(PathEntry { path, shape });
-                    Ok(())
+                    Some(PathShape::Object) => match shape {
+                        PathShape::Leaf(label) => {
+                            Err(Error::Structured(ErrorKind::KeyPathConflict {
+                                line: line_num as u32,
+                                path: raw_key.to_string(),
+                                kind: ConflictKind::Overwrite {
+                                    existing: "object",
+                                    new_kind: label,
+                                },
+                                span: key_span,
+                            }))
+                        }
+                        PathShape::Object => Err(Error::Structured(ErrorKind::DuplicateKey {
+                            line: line_num as u32,
+                            key: raw_key.to_string(),
+                            span: key_span,
+                        })),
+                    },
+                    Some(PathShape::Leaf(existing)) => match shape {
+                        PathShape::Leaf(_) => Err(Error::Structured(ErrorKind::DuplicateKey {
+                            line: line_num as u32,
+                            key: raw_key.to_string(),
+                            span: key_span,
+                        })),
+                        PathShape::Object => Err(Error::Structured(ErrorKind::KeyPathConflict {
+                            line: line_num as u32,
+                            path: raw_key.to_string(),
+                            kind: ConflictKind::Overwrite {
+                                existing,
+                                new_kind: "object",
+                            },
+                            span: key_span,
+                        })),
+                    },
+                    None => {
+                        paths.push(PathEntry { path, shape });
+                        Ok(())
+                    }
                 }
-            },
+            }
             _ => unreachable!("only objects have keys"),
         }
+    }
+
+    /// Register the INTERNAL key paths of an inline compound value
+    /// (`a: {x: 1}` — events already flattened by `value_to_events`)
+    /// into the ENCLOSING frame's persistent table, under `base` (the
+    /// path just registered for the compound itself). Recurses into
+    /// nested objects; arrays are leaves — nothing inside a bracketed
+    /// array is registered (§ 5.3.2 / § 6.3).
+    ///
+    /// Registration is provably collision-free: the inline `Value` was
+    /// already validated internally by `parse_inline_object`'s
+    /// `insert_value` (each path appears exactly once), and `base` was
+    /// just inserted absent. Errors are still propagated with `?`
+    /// defensively rather than panicking.
+    fn register_inline_child_paths(
+        &mut self,
+        base: &'a [&'a str],
+        events: &[Event<'a>],
+        line_num: usize,
+        key_span: Span,
+    ) -> Result<()> {
+        debug_assert!(matches!(events.first(), Some(Event::BeginObject)));
+        debug_assert!(matches!(events.last(), Some(Event::EndObject)));
+        let inner = &events[1..events.len() - 1];
+        let bump = self.bump;
+        let mut i = 0;
+        while i < inner.len() {
+            let k = match &inner[i] {
+                Event::Key(k) => *k,
+                other => unreachable!("pair position must be Key, got {other:?}"),
+            };
+            // Each Key is immediately followed by exactly one value
+            // event or a bracketed compound — guaranteed by
+            // `value_to_events`.
+            let value_ev = &inner[i + 1];
+            let shape = path_shape_of(value_ev);
+            let child_path: &'a [&'a str] = {
+                let mut v: Vec<&str> = Vec::with_capacity(base.len() + 1);
+                v.extend_from_slice(base);
+                v.push(k);
+                bump.alloc_slice_copy(&v)
+            };
+            self.register_value_path(child_path, shape, k, line_num, key_span)?;
+            match value_ev {
+                Event::BeginObject => {
+                    let j = matching_bracket(inner, i + 1, b'o');
+                    self.register_inline_child_paths(
+                        child_path,
+                        &inner[i + 1..=j],
+                        line_num,
+                        key_span,
+                    )?;
+                    i = j + 1;
+                }
+                Event::BeginArray => {
+                    // Arrays are leaves — skip their interior.
+                    let j = matching_bracket(inner, i + 1, b'a');
+                    i = j + 1;
+                }
+                _ => i += 2,
+            }
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1125,7 +1242,8 @@ impl<'a> EventParser<'a> {
         if matches!(self.stack.last(), Some(Frame::Object { .. })) {
             self.close_synthetics_to_real(events);
         }
-        let got = match self.stack.pop().unwrap() {
+        let popped = self.stack.pop().unwrap();
+        let got = match &popped {
             Frame::Object { .. } => BracketKind::Object,
             Frame::Array => BracketKind::Array,
         };
@@ -1137,6 +1255,61 @@ impl<'a> EventParser<'a> {
                 expected: got.to_compound(),
                 found: expected.close(),
             }));
+        }
+        // § 5.3.2: fold the closed object's persistent table into its
+        // parent object's table under the object's own key path, so a
+        // later dotted re-entry (`a.x: 2`) sees the compound's internal
+        // keys. Arrays are leaves — never fold into (or through) them.
+        //
+        // UNREACHABILITY of the collision arm below: an entry `base++q`
+        // cannot pre-exist in the parent table because (a) `base` was
+        // registered absent when this frame was opened, and (b) the
+        // table maintains the invariant that every registered path's
+        // proper prefixes are present as Object entries (every
+        // registration goes through `reconcile_dotted_key`'s prefix
+        // loop first) — so `base++q` present would imply `base` present,
+        // a contradiction. Nothing writes the parent's table while the
+        // child frame is open: all pair handling targets
+        // `stack.last_mut()`. Insertion order (prefixes before
+        // descendants) is preserved because the child table maintains
+        // the same invariant, so the parent's invariant survives the
+        // fold.
+        if let Frame::Object {
+            paths: child_paths,
+            key_path: Some(base),
+            ..
+        } = &popped
+        {
+            if matches!(self.stack.last(), Some(Frame::Object { .. })) {
+                let entries: Vec<(PathShape, &'a [&'a str])> =
+                    child_paths.iter().map(|e| (e.shape, e.path)).collect();
+                let bump = self.bump;
+                for (shape, q) in entries {
+                    let joined: &'a [&'a str] = {
+                        let mut v: Vec<&str> = Vec::with_capacity(base.len() + q.len());
+                        v.extend_from_slice(base);
+                        v.extend_from_slice(q);
+                        bump.alloc_slice_copy(&v)
+                    };
+                    let parent = match self.stack.last_mut().unwrap() {
+                        Frame::Object { paths, .. } => paths,
+                        _ => unreachable!("checked above"),
+                    };
+                    if parent.iter().any(|e| e.path == joined) {
+                        // Unreachable by the proof above; report
+                        // `DuplicateKey` rather than panicking.
+                        return Err(Error::Structured(ErrorKind::DuplicateKey {
+                            line: line_num as u32,
+                            key: joined.join("."),
+                            span: trimmed_span,
+                        }));
+                    }
+                    parent.push(PathEntry {
+                        path: joined,
+                        shape,
+                    });
+                }
+            }
         }
         let close_event = match got {
             BracketKind::Object => Event::EndObject,
@@ -1260,6 +1433,33 @@ fn path_shape_of(ev: &Event<'_>) -> PathShape {
     match ev {
         Event::BeginObject => PathShape::Object,
         other => PathShape::Leaf(event_label(other)),
+    }
+}
+
+/// Index of the bracket event in `events` matching the opener at
+/// `open_idx`. `kind` is `b'o'` for object brackets, `b'a'` for array
+/// brackets — used by `register_inline_child_paths` to skip leaf-array
+/// interiors and recurse into nested objects.
+fn matching_bracket(events: &[Event<'_>], open_idx: usize, kind: u8) -> usize {
+    let (open, close) = if kind == b'o' {
+        (Event::BeginObject, Event::EndObject)
+    } else {
+        (Event::BeginArray, Event::EndArray)
+    };
+    let mut depth = 0usize;
+    let mut j = open_idx;
+    loop {
+        match events[j] {
+            ref ev if *ev == open => depth += 1,
+            ref ev if *ev == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return j;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
     }
 }
 
