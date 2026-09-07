@@ -3,6 +3,7 @@
 use crate::error::{Error, ReasonCode, Result};
 use crate::parser::classify;
 use crate::value::Value;
+use crate::whitespace::{is_inline_whitespace, is_ktav_whitespace};
 
 pub(super) const INDENT: &str = "    ";
 
@@ -31,28 +32,6 @@ pub(super) const INDENT: &str = "    ";
 /// alongside 4/5. Tracked in `ktav-lang/spec`.
 pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
     matches!(item, Value::Object(_) | Value::Array(_))
-}
-
-/// The § 3.3 whitespace set: exactly twenty-five code points, the
-/// Unicode `White_Space` property as of Unicode 6.3, fixed as a
-/// closed list. The spec forbids delegating to a host-language
-/// Unicode-whitespace primitive (`char::is_whitespace()`) — the list
-/// here is exhaustive, no more and no fewer.
-pub(crate) fn is_ktav_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\u{0009}'
-            | '\u{000A}'
-            | '\u{000B}'
-            | '\u{000C}'
-            | '\u{000D}'
-            | '\u{0020}'
-            | '\u{0085}'
-            | '\u{00A0}'
-            | '\u{1680}'
-            | '\u{2000}'
-            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
-    )
 }
 
 /// Push `\u` followed by exactly four UPPERCASE hex digits naming
@@ -131,8 +110,7 @@ fn key_segment_needs_quotes(key: &str, root_first_key: bool) -> bool {
     }
     // (a) edge whitespace — except LF/CR, which a quoted segment never
     // admits raw, so quoting buys nothing for them.
-    let edge_ws =
-        |c: Option<char>| c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r');
+    let edge_ws = |c: Option<char>| c.is_some_and(is_inline_whitespace);
     edge_ws(first) || edge_ws(last)
 }
 
@@ -145,8 +123,7 @@ fn key_segment_needs_quotes(key: &str, root_first_key: bool) -> bool {
 fn push_bare_key(key: &str, out: &mut String) {
     let first_ch = key.chars().next();
     let last_ch = key.chars().next_back();
-    let edge_ws =
-        |c: Option<char>| c.is_some_and(|c| is_ktav_whitespace(c) && c != '\n' && c != '\r');
+    let edge_ws = |c: Option<char>| c.is_some_and(is_inline_whitespace);
 
     // Fast path: nothing to escape anywhere, and neither edge code
     // point is § 3.3 whitespace → push the whole string verbatim.
@@ -227,10 +204,14 @@ fn push_quoted_key(key: &str, out: &mut String) {
 /// `White_Space` set, so an NBSP/NEL/ideographic-space edge is lost
 /// the same way an ASCII one is; § 5.9.7 also routes control bytes
 /// (other than `TAB`) to the multi-line form. Bodies containing `LF`
-/// are multi-line by definition.
+/// are multi-line by definition. The first/last-char checks use the
+/// FULL § 3.3 class ([`is_ktav_whitespace`]) because the predicate
+/// mirrors the parser's body trim (`str::trim()` equivalent, § 4);
+/// LF/CR are already covered by the third clause (`b < 0x20`), so a
+/// body with LF/CR at an edge is caught regardless.
 pub(crate) fn string_needs_multiline(s: &str) -> bool {
-    s.chars().next().is_some_and(char::is_whitespace)
-        || s.chars().next_back().is_some_and(char::is_whitespace)
+    s.chars().next().is_some_and(is_ktav_whitespace)
+        || s.chars().next_back().is_some_and(is_ktav_whitespace)
         || s.bytes().any(|b| b < 0x20 && b != b'\t')
 }
 

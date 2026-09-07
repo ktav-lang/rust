@@ -9,6 +9,7 @@ use memchr::memchr2;
 
 use crate::error::{Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
+use crate::whitespace::{inline_whitespace_ascii, is_inline_whitespace};
 
 use super::classify::{fast_plain_decimal_i64, is_float_literal, lossy_scalar, try_parse_integer};
 use super::insert::insert_value;
@@ -602,12 +603,12 @@ fn has_quote_bytes(bytes: &[u8]) -> bool {
     bytes.contains(&b'"') || bytes.contains(&b'\'') || bytes.contains(&b'`')
 }
 
-/// Skip line-bounded § 3.3 whitespace: the closed 25-code-point list is
-/// frozen by the spec, and LF/CR cannot occur here (lines are
+/// Skip line-bounded § 3.3 whitespace; LF/CR cannot occur here (lines
+/// are
 /// pre-split). Returns the index of the first non-whitespace byte at or
 /// after `i`. Classification MUST NOT delegate to a host
-/// Unicode-whitespace primitive (§ 3.3); it uses the fixed set in
-/// [`inline_whitespace_at`].
+/// Unicode-whitespace primitive (§ 3.3); it comes from the shared § 3.3
+/// module ([`crate::whitespace`]) via [`inline_whitespace_at`].
 fn skip_segment_ws(s: &str, mut i: usize) -> usize {
     while let Some(len) = inline_whitespace_at(s, i) {
         i += len;
@@ -617,30 +618,27 @@ fn skip_segment_ws(s: &str, mut i: usize) -> usize {
 
 /// Byte length of the § 3.3 whitespace code point starting at byte
 /// offset `i`, or `None` if the code point at `i` is not whitespace.
-/// Membership is the frozen § 3.3 closed 25-code-point list itself,
-/// spelled out below — never a host Unicode-whitespace primitive
+/// Classification comes from the shared § 3.3 module
+/// ([`crate::whitespace`]) — never a host Unicode-whitespace primitive
 /// (`char::is_whitespace` MUST NOT be delegated to, even though it
 /// matches the list today): the four single-byte ASCII members take the
-/// byte fast path, the 19 non-ASCII members the fixed match (the inline
-/// scan never sees LF/CR — lines are pre-split). A mid-code-point
+/// byte fast path ([`inline_whitespace_ascii`]), the decoded-char check
+/// is [`is_inline_whitespace`] (the § 3.3 set minus LF/CR; LF/CR cannot
+/// occur here — lines are pre-split per § 3.2). A mid-code-point
 /// (non-boundary) offset is never whitespace: callers scan
 /// byte-at-a-time and may sit on a continuation byte of a
 /// non-whitespace character.
 fn inline_whitespace_at(s: &str, i: usize) -> Option<usize> {
     let bytes = s.as_bytes();
     let b = *bytes.get(i)?;
-    if b == b' ' || b == b'\t' || b == 0x0B || b == 0x0C {
+    if inline_whitespace_ascii(b) {
         return Some(1);
     }
     if b < 0x80 || !s.is_char_boundary(i) {
         return None;
     }
     let ch = s[i..].chars().next()?;
-    if matches!(
-        ch,
-        '\u{0085}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'
-            ..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
-    ) {
+    if is_inline_whitespace(ch) {
         Some(ch.len_utf8())
     } else {
         None

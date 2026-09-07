@@ -2,6 +2,7 @@
 
 use crate::error::{CompoundKind, Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
+use crate::whitespace::is_ktav_whitespace;
 
 use super::bracket::Bracket;
 use super::classify::{classify_value_start, is_pair_shape};
@@ -122,7 +123,11 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        let trimmed = raw.trim();
+        // § 3.3: fixed 25-code-point class, never the host primitive.
+        // Lines are pre-split on all three § 3.2 terminators (LF/CR/CRLF
+        // — see parse_str_impl), so LF/CR cannot occur; the full class
+        // is used for exact trim parity with str::trim.
+        let trimmed = raw.trim_matches(is_ktav_whitespace);
 
         if trimmed.is_empty() || trimmed.starts_with("##") {
             return Ok(());
@@ -638,7 +643,9 @@ fn require_sep_end(
     body_off: u32,
     trimmed_span: Span,
 ) -> Result<(), Error> {
-    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+    // § 3.3 fixed class; `rest` is a suffix of one pre-split line (§ 3.2),
+    // so LF/CR cannot occur.
+    if rest.is_empty() || rest.starts_with(is_ktav_whitespace) {
         Ok(())
     } else {
         // Compute span: from the marker through the glued body chars

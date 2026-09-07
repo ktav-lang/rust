@@ -52,6 +52,7 @@ use crate::parser::inline::{
 };
 use crate::parser::leading_bom_len;
 use crate::parser::validate::{check_key, KeyValidity};
+use crate::whitespace::is_ktav_whitespace;
 
 use super::event::{Event, EventSink, EventStream};
 
@@ -460,7 +461,11 @@ impl<'a> EventParser<'a> {
             return Ok(());
         }
 
-        let trimmed = raw.trim();
+        // § 3.3: fixed 25-code-point class, never the host primitive.
+        // Lines are pre-split on all three § 3.2 terminators (LF/CR/CRLF
+        // — see parse_events above), so LF/CR cannot occur; the full
+        // class is used for exact trim parity with str::trim.
+        let trimmed = raw.trim_matches(is_ktav_whitespace);
 
         // Under 0.5.0: comments use `##` (not single `#`)
         if trimmed.is_empty() || trimmed.starts_with("##") {
@@ -1463,7 +1468,9 @@ enum Separator<'a> {
 
 #[inline]
 fn require_sep_end(rest: &str, line_num: usize, body_off: u32, trimmed_span: Span) -> Result<()> {
-    if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+    // § 3.3 fixed class; `rest` is a suffix of one pre-split line (§ 3.2),
+    // so LF/CR cannot occur.
+    if rest.is_empty() || rest.starts_with(is_ktav_whitespace) {
         Ok(())
     } else {
         Err(Error::Structured(ErrorKind::MissingSeparatorSpace {
