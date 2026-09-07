@@ -730,7 +730,7 @@ fn invalid_fixtures_categories_match_oracles_via_thin_api() {
 }
 
 #[test]
-fn valid_fixtures_parse_via_thin_api() {
+fn valid_fixtures_match_oracle_via_thin_api() {
     let Some(spec_root) = resolve_spec_root() else {
         eprintln!("skipping spec_conformance::valid (thin API): spec dir not found");
         return;
@@ -778,6 +778,43 @@ fn valid_fixtures_parse_via_thin_api() {
         }
         if let Err(e) = result {
             failures.push(format!("thin API rejected valid fixture {}: {}", rel, e));
+            continue;
+        }
+        // Acceptance alone missed two review-round-2 bugs (F1/F2): the
+        // events `parse_events` yields are un-merged, so a merge-pass
+        // bug cannot reject a valid fixture, and a silent data bug
+        // parses fine while producing the wrong value. Drive the full
+        // public thin path — `from_str` runs `parse_events_merged`
+        // (conditionally `merge_reopened`) then the `EventDeserializer`
+        // — and compare the value against the fixture's own JSON oracle
+        // with the same comparator the owned runner uses.
+        let json_path = ktav_path.with_extension("json");
+        let oracle_src = match fs::read_to_string(&json_path) {
+            Ok(t) => t,
+            Err(e) => {
+                failures.push(format!("read {}: {}", json_path.display(), e));
+                continue;
+            }
+        };
+        let expected: JsonValue = match serde_json::from_str(&oracle_src) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("oracle {}: {}", json_path.display(), e));
+                continue;
+            }
+        };
+        let actual: JsonValue = match ktav::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("from_str {}: {}", rel, e));
+                continue;
+            }
+        };
+        if !json_eq_ordered(&actual, &expected) {
+            failures.push(format!(
+                "thin-API value mismatch in {}:\n  expected: {}\n  actual:   {}",
+                rel, expected, actual
+            ));
         }
     }
 
@@ -790,7 +827,7 @@ fn valid_fixtures_parse_via_thin_api() {
         );
     }
     eprintln!(
-        "spec_conformance::valid (thin API): {} fixtures accepted, {} excluded under known finding F3",
+        "spec_conformance::valid (thin API): {} fixtures accepted and value-matched vs oracles, {} excluded under known gaps",
         files.len() - known_gaps,
         known_gaps
     );
