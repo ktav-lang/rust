@@ -689,40 +689,18 @@ fn classify_root_kind_050(
         return Ok(RootResult::ExplicitArray);
     }
 
-    // Rule 2: closed inline object `{ ... }` — ends with `}`
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        // Could be empty `{}` / `{ }`
-        if trimmed[1..trimmed.len() - 1].trim().is_empty() {
-            let value = Value::Object(crate::value::ObjectMap::default());
-            return Ok(RootResult::InlineObject(value));
-        }
-        let value = inline::parse_inline_object(trimmed, line_num, trimmed_span, strict)?;
-        return Ok(RootResult::InlineObject(value));
-    }
-
-    // Rule 3: closed inline array `[ ... ]` — ends with `]`
-    if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        if trimmed[1..trimmed.len() - 1].trim().is_empty() {
-            let value = Value::Array(Vec::new());
-            return Ok(RootResult::InlineArray(value));
-        }
-        let value = inline::parse_inline_array(trimmed, line_num, trimmed_span, strict)?;
-        return Ok(RootResult::InlineArray(value));
-    }
-
-    // Rule 8 for `{` / `[` that don't match 2-5: starts with brace
-    // but not closed → unterminated inline compound.
+    // § 5.0.1 rules 2/3, plus the rules-2–5 addendum: a first content
+    // line beginning with `{`/`[` is diagnosed by the same § 5.2 scan as
+    // a value body — closed at the end ⇒ the root IS the inline value;
+    // closer followed by content ⇒ MalformedInlineCompound (§ 6.12); no
+    // closer ⇒ UnterminatedInlineCompound (§ 6.11); BadEscapeSequence
+    // wins per the § 5.2 rules-6–9 preamble. This precedence applies
+    // before rule 6: such a line is never a pair candidate (`[bad]: 1`).
     if trimmed.starts_with('{') {
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-        }));
+        return diagnose_root_inline(trimmed, b'{', b'}', line_num, trimmed_span, strict);
     }
     if trimmed.starts_with('[') {
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-        }));
+        return diagnose_root_inline(trimmed, b'[', b']', line_num, trimmed_span, strict);
     }
 
     // Rule 6/7: pair-shape vs array-item. Use the same heuristic
@@ -731,6 +709,46 @@ fn classify_root_kind_050(
         Ok(RootResult::Object)
     } else {
         Ok(RootResult::Array)
+    }
+}
+
+/// § 5.0.1 rules 2/3 + rules-2–5 addendum, for a first content line
+/// beginning with `{`/`[` that is not a lone opener: the same § 5.2
+/// rules 6–9 closer scan as a value body decides closed-inline root vs
+/// `MalformedInlineCompound` (§ 6.12) vs `UnterminatedInlineCompound`
+/// (§ 6.11), with `BadEscapeSequence` taking precedence (§ 5.2
+/// rules-6–9 preamble). Such a line is never a pair candidate.
+fn diagnose_root_inline(
+    trimmed: &str,
+    open: u8,
+    close: u8,
+    line_num: usize,
+    span: Span,
+    strict: bool,
+) -> Result<RootResult, Error> {
+    match inline::scan_inline_closer(trimmed, open, close, line_num, span) {
+        inline::InlineCloserScan::BadEscape(err) => Err(err),
+        inline::InlineCloserScan::NotFound => {
+            Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                line: line_num as u32,
+                span,
+            }))
+        }
+        inline::InlineCloserScan::Found(idx) if idx == trimmed.len() - 1 => {
+            // `parse_inline_*` already yields the empty compound for
+            // `{}` / `[]` (empty inner → default value), so no separate
+            // empty shortcut is needed.
+            if open == b'{' {
+                let value = inline::parse_inline_object(trimmed, line_num, span, strict)?;
+                Ok(RootResult::InlineObject(value))
+            } else {
+                let value = inline::parse_inline_array(trimmed, line_num, span, strict)?;
+                Ok(RootResult::InlineArray(value))
+            }
+        }
+        inline::InlineCloserScan::Found(_) => {
+            Err(inline::malformed_closer_not_at_end(line_num, span))
+        }
     }
 }
 

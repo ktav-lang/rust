@@ -371,6 +371,105 @@ fn parse_float_value(s: &str) -> Option<f64> {
 // Escape processing (section 3.7)
 // ---------------------------------------------------------------------------
 
+/// One recognised § 3.7 escape, scanned at `bytes[i]` (which must be
+/// `\`). The variant determines the sequence's total byte length.
+enum RecognisedEscape {
+    /// Single-character escape: the char to emit; total length is 2 bytes.
+    Simple(char),
+    /// `\uXXXX` mapping to an ordinary (non-surrogate) code point; total
+    /// length is 6 bytes.
+    Unicode(char),
+    /// `\uXXXX\uXXXX` surrogate pair, combined; total length is 12 bytes.
+    SurrogatePair(char),
+}
+
+impl RecognisedEscape {
+    /// Total byte length of the escape sequence (2 for simple escapes,
+    /// 6 for `\uXXXX`, 12 for a full surrogate pair).
+    fn len(&self) -> usize {
+        match self {
+            RecognisedEscape::Simple(_) => 2,
+            RecognisedEscape::Unicode(_) => 6,
+            RecognisedEscape::SurrogatePair(_) => 12,
+        }
+    }
+}
+
+/// Scan one escape sequence. Returns the offending sequence text (the
+/// exact `BadEscapeSequence` payload) on any unrecognised or malformed
+/// form; the recognised table and every error string are identical to
+/// `process_escapes`' decode — this is the single source of both.
+fn scan_escape(bytes: &[u8], i: usize) -> Result<RecognisedEscape, String> {
+    if i + 1 >= bytes.len() {
+        // Backslash at end of line
+        return Err("\\<end-of-line>".to_string());
+    }
+    let next = bytes[i + 1];
+    let simple = match next {
+        b'\\' => Some('\\'),
+        b',' => Some(','),
+        b'}' => Some('}'),
+        b']' => Some(']'),
+        b'{' => Some('{'),
+        b'[' => Some('['),
+        b'n' => Some('\n'),
+        b'r' => Some('\r'),
+        b'.' => Some('.'),
+        b':' => Some(':'),
+        b'"' => Some('"'),
+        b'\'' => Some('\''),
+        b'`' => Some('`'),
+        _ => None,
+    };
+    if let Some(ch) = simple {
+        return Ok(RecognisedEscape::Simple(ch));
+    }
+    if next == b'u' {
+        // `\uXXXX`: exactly four ASCII hex digits (spec 0.7 § 3.7.1).
+        // Validate up-front so nothing is consumed on a malformed escape.
+        if i + 6 > bytes.len() || !bytes[i + 2..i + 6].iter().all(|b| b.is_ascii_hexdigit()) {
+            return Err(render_malformed_unicode_escape(bytes, i));
+        }
+        // All-ASCII validated slice: `from_utf8` cannot fail.
+        let hex = std::str::from_utf8(&bytes[i + 2..i + 6]).unwrap();
+        let value = u32::from_str_radix(hex, 16).expect("4 ASCII hex digits");
+        if (0xD800..=0xDBFF).contains(&value) {
+            // High surrogate: must pair with an immediately following
+            // low-surrogate `\uXXXX` (12 bytes total).
+            if i + 12 <= bytes.len()
+                && bytes[i + 6] == b'\\'
+                && bytes[i + 7] == b'u'
+                && bytes[i + 8..i + 12].iter().all(|b| b.is_ascii_hexdigit())
+            {
+                let low_hex = std::str::from_utf8(&bytes[i + 8..i + 12]).unwrap();
+                let low = u32::from_str_radix(low_hex, 16).expect("4 ASCII hex digits");
+                if (0xDC00..=0xDFFF).contains(&low) {
+                    let combined = 0x10000 + (value - 0xD800) * 0x400 + (low - 0xDC00);
+                    // 0x10000..=0x10FFFF by construction.
+                    let ch = char::from_u32(combined).expect("valid surrogate pair");
+                    return Ok(RecognisedEscape::SurrogatePair(ch));
+                }
+            }
+            // Lone high surrogate (end of input, non-`\u` text, malformed
+            // second escape, or non-low value).
+            return Err(render_malformed_unicode_escape(bytes, i));
+        }
+        if (0xDC00..=0xDFFF).contains(&value) {
+            // Lone low surrogate.
+            return Err(render_malformed_unicode_escape(bytes, i));
+        }
+        // Ordinary BMP code point.
+        let ch = char::from_u32(value).expect("BMP non-surrogate value");
+        return Ok(RecognisedEscape::Unicode(ch));
+    }
+    // Invalid escape
+    if next < 0x80 {
+        Err(format!("\\{}", next as char))
+    } else {
+        Err(format!("\\<0x{:02X}>", next))
+    }
+}
+
 /// Process escape sequences in an inline scalar value.
 ///
 /// Recognised sequences (14, spec 0.7 § 3.7 / § 3.7.1):
@@ -396,103 +495,23 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
 
     while i < bytes.len() {
         if bytes[i] == b'\\' {
-            if i + 1 >= bytes.len() {
-                // Backslash at end of inline body
-                return Err(Error::Structured(ErrorKind::BadEscapeSequence {
-                    line: line_num as u32,
-                    span,
-                    sequence: "\\<end-of-line>".to_string(),
-                }));
-            }
-            let next = bytes[i + 1];
-            match next {
-                b'\\' => out.push('\\'),
-                b',' => out.push(','),
-                b'}' => out.push('}'),
-                b']' => out.push(']'),
-                b'{' => out.push('{'),
-                b'[' => out.push('['),
-                b'n' => out.push('\n'),
-                b'r' => out.push('\r'),
-                b'.' => out.push('.'),
-                b':' => out.push(':'),
-                b'"' => out.push('"'),
-                b'\'' => out.push('\''),
-                b'`' => out.push('`'),
-                b'u' => {
-                    // `\uXXXX`: exactly four ASCII hex digits (spec 0.7
-                    // § 3.7.1). Validate up-front so nothing is consumed
-                    // on a malformed escape.
-                    if i + 6 > bytes.len()
-                        || !bytes[i + 2..i + 6].iter().all(|b| b.is_ascii_hexdigit())
-                    {
-                        return Err(Error::Structured(ErrorKind::BadEscapeSequence {
-                            line: line_num as u32,
-                            span,
-                            sequence: render_malformed_unicode_escape(bytes, i),
-                        }));
-                    }
-                    // All-ASCII validated slice: byte-offset indexing is
-                    // char-boundary-safe.
-                    let hex = &input[i + 2..i + 6];
-                    let value = u32::from_str_radix(hex, 16).expect("4 ASCII hex digits");
-                    if (0xD800..=0xDBFF).contains(&value) {
-                        // High surrogate: must pair with an immediately
-                        // following low-surrogate `\uXXXX` (12 bytes total).
-                        if i + 12 <= bytes.len()
-                            && bytes[i + 6] == b'\\'
-                            && bytes[i + 7] == b'u'
-                            && bytes[i + 8..i + 12].iter().all(|b| b.is_ascii_hexdigit())
-                        {
-                            let low_hex = &input[i + 8..i + 12];
-                            let low = u32::from_str_radix(low_hex, 16).expect("4 ASCII hex digits");
-                            if (0xDC00..=0xDFFF).contains(&low) {
-                                let combined = 0x10000 + (value - 0xD800) * 0x400 + (low - 0xDC00);
-                                // 0x10000..=0x10FFFF by construction.
-                                let ch = char::from_u32(combined).expect("valid surrogate pair");
-                                out.push(ch);
-                                // +12 total: skips the shared `i += 2` below.
-                                i += 12;
-                                continue;
-                            }
-                        }
-                        // Lone high surrogate (end of input, non-`\u` text,
-                        // malformed second escape, or non-low value).
-                        return Err(Error::Structured(ErrorKind::BadEscapeSequence {
-                            line: line_num as u32,
-                            span,
-                            sequence: render_malformed_unicode_escape(bytes, i),
-                        }));
-                    }
-                    if (0xDC00..=0xDFFF).contains(&value) {
-                        // Lone low surrogate.
-                        return Err(Error::Structured(ErrorKind::BadEscapeSequence {
-                            line: line_num as u32,
-                            span,
-                            sequence: render_malformed_unicode_escape(bytes, i),
-                        }));
-                    }
-                    // Ordinary BMP code point.
-                    let ch = char::from_u32(value).expect("BMP non-surrogate value");
-                    out.push(ch);
-                    // +6 total: the shared `i += 2` below finishes the escape.
-                    i += 4;
-                }
-                _ => {
-                    // Invalid escape
-                    let seq = if next < 0x80 {
-                        format!("\\{}", next as char)
-                    } else {
-                        format!("\\<0x{:02X}>", next)
-                    };
+            let esc = match scan_escape(bytes, i) {
+                Err(sequence) => {
                     return Err(Error::Structured(ErrorKind::BadEscapeSequence {
                         line: line_num as u32,
                         span,
-                        sequence: seq,
+                        sequence,
                     }));
                 }
+                Ok(esc) => esc,
+            };
+            let len = esc.len();
+            match esc {
+                RecognisedEscape::Simple(ch)
+                | RecognisedEscape::Unicode(ch)
+                | RecognisedEscape::SurrogatePair(ch) => out.push(ch),
             }
-            i += 2;
+            i += len;
         } else {
             // Safe because we're iterating over valid UTF-8
             let ch = input[i..].chars().next().unwrap();
@@ -1191,4 +1210,328 @@ fn malformed(line_num: usize, span: Span, detail: &str) -> Error {
         span,
         detail: detail.to_string(),
     })
+}
+
+/// Error for § 5.2 rule 8's "closer followed by content" shape: the
+/// scan found a matching closer, but not at the last byte of the body.
+pub(crate) fn malformed_closer_not_at_end(line_num: usize, span: Span) -> Error {
+    malformed(
+        line_num,
+        span,
+        "matching closer is not the last byte of the body; non-whitespace content follows the closed inline compound",
+    )
+}
+
+/// Outcome of the § 5.2 rules 6–9 same-line closer scan for a body
+/// beginning with `{` or `[`.
+pub(crate) enum InlineCloserScan {
+    /// A matching closer (unescaped, depth back to zero) at this byte
+    /// offset.
+    Found(usize),
+    /// No matching closer anywhere on the line — § 5.2 rule 9. Includes
+    /// the unterminated-quoted-key case: § 6.16 keeps that
+    /// `UnterminatedInlineCompound`, so the scan stops there without
+    /// validating anything inside the swallowed span.
+    NotFound,
+    /// An invalid escape was met while scanning outside quoted
+    /// segments — § 5.2 rules 6–9 preamble gives `BadEscapeSequence`
+    /// precedence over the rule 8/9 decision. The payload is the
+    /// ready-to-return error.
+    BadEscape(Error),
+}
+
+/// Scan `input` (which MUST start with `open`) with § 5.8's quote-aware,
+/// escape-aware delimiter rules and report the matching `close`, for the
+/// § 5.2 rules 6–9 dispatch. Shares `find_matching_close`'s quote /
+/// key-position state machine (quote tracking only for `{` bodies,
+/// per-level key-position tracking, unterminated quoted segment ⇒
+/// `NotFound`) and additionally validates every `\X` outside quoted
+/// segments via [`scan_escape`] so `BadEscapeSequence` can take
+/// precedence.
+///
+/// Unlike `find_matching_close`, openers only nest at a VALUE position
+/// (§ 5.8.5 mid-value brace rule: only the first non-ws byte of a value
+/// decides compound-vs-literal), and a `::` raw marker makes the rest of
+/// the pair's value literal — so mid-value braces and raw strings never
+/// swallow the body's matching closer.
+pub(crate) fn scan_inline_closer(
+    input: &str,
+    open: u8,
+    close: u8,
+    line_num: usize,
+    span: Span,
+) -> InlineCloserScan {
+    let bad_escape = |sequence: String| {
+        InlineCloserScan::BadEscape(Error::Structured(ErrorKind::BadEscapeSequence {
+            line: line_num as u32,
+            span,
+            sequence,
+        }))
+    };
+    let bytes = input.as_bytes();
+    let object = open == b'{';
+    // The caller guarantees `input` starts with `open`; the opener itself
+    // is depth 1, so scanning starts at byte 1.
+    if bytes.is_empty() || bytes[0] != open {
+        return InlineCloserScan::NotFound;
+    }
+    let track_quotes = object && has_quote_bytes(bytes);
+    if !track_quotes {
+        // Fast path: no quote tracking. `value_start` marks an unconsumed
+        // value position (body start in arrays — including the position
+        // right after the array's `[`, which is its first item — and
+        // after `:`/`,` otherwise); per § 5.8.5 a `{`/`[` only nests
+        // there.
+        let mut depth: i32 = 1;
+        let mut i = 1;
+        let mut in_key = object;
+        let mut value_start = !object;
+        let mut raw = false;
+        let mut prev = open;
+        while i < bytes.len() {
+            let b = bytes[i];
+            match b {
+                b'\\' => {
+                    // § 5.2 rules-6–9 preamble: an invalid escape beats
+                    // the rule 8/9 decision. Advance by the FULL escape
+                    // length (unlike `find_matching_close`'s `i += 2`,
+                    // which suffices there because hex digits are not
+                    // structural). `prev` becomes `\\` so an escaped
+                    // `:` never forms a `::` raw marker.
+                    match scan_escape(bytes, i) {
+                        Err(seq) => return bad_escape(seq),
+                        Ok(esc) => {
+                            i += esc.len();
+                        }
+                    }
+                    prev = b'\\';
+                    continue;
+                }
+                b':' => {
+                    if in_key {
+                        // Key/value boundary: quotes after this are content.
+                        in_key = false;
+                        value_start = true;
+                    } else if prev == b':' && value_start {
+                        // `::` raw marker (§ 5.4 — in array bodies too):
+                        // the rest of the item's value is a String —
+                        // braces/brackets in it are content.
+                        raw = true;
+                    }
+                }
+                b',' => {
+                    // Next pair / item begins: fresh value position.
+                    if object {
+                        in_key = true;
+                    }
+                    raw = false;
+                    value_start = true;
+                }
+                b'{' | b'[' if value_start && !raw => {
+                    depth += 1;
+                    // After an array's `[` the next position is still a
+                    // value position (its first item, § 5.8.5); after a
+                    // nested `{` comes key context.
+                    value_start = b == b'[';
+                    if b == b'{' {
+                        in_key = true;
+                    }
+                }
+                b'{' | b'[' => {
+                    // § 5.8.5: only a value-position opener nests. Any
+                    // other `{`/`[` is literal content — skipped
+                    // wholesale when it forms a balanced compound that
+                    // ends BEFORE the body's own closer (mirroring
+                    // `split_top_level`, which sees the outer `{}`
+                    // stripped); a blob ending at the last byte would
+                    // swallow the body's own close, so it stays literal
+                    // text and the final closer is decided structurally.
+                    let blob_close = if b == b'{' { b'}' } else { b']' };
+                    if let Some(close_pos) = find_matching_close(&input[i..], b, blob_close)
+                        .filter(|&cp| i + cp < bytes.len() - 1)
+                    {
+                        i += close_pos + 1;
+                        prev = bytes.get(i - 1).copied().unwrap_or(open);
+                    } else {
+                        prev = b;
+                        i += 1;
+                    }
+                    value_start = false;
+                    continue;
+                }
+                b'}' | b']' => {
+                    // Both closer kinds decrement the shared depth: a
+                    // nested compound of the OTHER delimiter type still
+                    // closes (an array item may be an object and vice
+                    // versa). A closer that returns depth to zero must
+                    // be the body's own closer; a crossed one (e.g.
+                    // `[{a: 1]`) is not a matching closer (§ 5.2's
+                    // matching-closer rule).
+                    depth -= 1;
+                    if depth == 0 {
+                        return if b == close {
+                            InlineCloserScan::Found(i)
+                        } else {
+                            InlineCloserScan::NotFound
+                        };
+                    }
+                }
+                _ => {
+                    if b != b' ' && b != b'\t' {
+                        value_start = false;
+                    }
+                }
+            }
+            prev = b;
+            i += 1;
+        }
+        return InlineCloserScan::NotFound;
+    }
+
+    // Slow path (object body with quote bytes): the per-level
+    // key-position machine of `find_matching_close`, plus the same
+    // value-position / raw-marker tracking as the fast path. Escapes
+    // inside a quoted span are NOT validated — an unterminated quoted
+    // key remains quote-opaque and stays `UnterminatedInlineCompound`
+    // (§ 6.16), even if a bad escape occurs inside that unclosed
+    // quoted segment.
+    let mut depth: i32 = 1;
+    let mut i = 1;
+    let mut in_key = true;
+    let mut seg_start = true;
+    let mut value_start = false;
+    let mut raw = false;
+    let mut prev = open;
+    // Per open compound: the opener byte plus the enclosing key-position
+    // state. A closer restores that state only when it matches the most
+    // recently opened compound kind, so crossed closers don't corrupt
+    // key tracking.
+    let mut open_stack: Vec<(u8, bool, bool)> = Vec::new();
+    while i < bytes.len() {
+        if in_key && seg_start {
+            i = skip_segment_ws(input, i);
+            if i < bytes.len() && is_quote_byte(bytes[i]) {
+                // Unterminated span: the rest of the input is segment
+                // content (for bracket balance: no matching close).
+                // Escapes inside it stay unvalidated (§ 6.16 opacity).
+                let end = match quoted_span_end(bytes, i) {
+                    Some(end) => end,
+                    None => return InlineCloserScan::NotFound,
+                };
+                i = end + 1;
+                seg_start = false;
+                prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(open);
+                continue;
+            }
+            seg_start = false;
+        }
+        // § 5.8's quote-aware rules: a `"` opening a VALUE is content-
+        // opaque when the span terminates (its brackets are not
+        // structural). An unterminated value quote is plain content —
+        // § 5.3.3's quote opacity is keys-only, so scanning continues
+        // with the `"` as an ordinary byte.
+        if value_start && is_quote_byte(bytes[i]) {
+            if let Some(end) = quoted_span_end(bytes, i) {
+                i = end + 1;
+                value_start = false;
+                prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(open);
+                continue;
+            }
+        }
+        let b = bytes[i];
+        match b {
+            b'\\' => {
+                // Outside quoted spans: validate (see fast path).
+                match scan_escape(bytes, i) {
+                    Err(seq) => return bad_escape(seq),
+                    Ok(esc) => {
+                        i += esc.len();
+                    }
+                }
+                prev = b'\\';
+                continue;
+            }
+            b'.' if in_key => {
+                seg_start = true;
+            }
+            b':' => {
+                if in_key {
+                    // Key/value boundary: quotes after this are content.
+                    in_key = false;
+                    value_start = true;
+                } else if prev == b':' && value_start {
+                    // `::` raw marker — see fast path.
+                    raw = true;
+                }
+            }
+            b',' => {
+                // Next pair begins: back to key context.
+                in_key = true;
+                seg_start = true;
+                raw = false;
+                value_start = true;
+            }
+            b'{' | b'[' if value_start && !raw => {
+                depth += 1;
+                // After an array's `[` the next position is still a value
+                // position (its first item); after a nested `{` comes key
+                // context. Save the enclosing key-position state.
+                open_stack.push((b, in_key, seg_start));
+                value_start = b == b'[';
+                if b == b'{' {
+                    in_key = true;
+                    seg_start = true;
+                }
+            }
+            b'{' | b'[' => {
+                // § 5.8.5 mid-value / raw-segment opener — see fast path.
+                let blob_close = if b == b'{' { b'}' } else { b']' };
+                if let Some(close_pos) = find_matching_close(&input[i..], b, blob_close)
+                    .filter(|&cp| i + cp < bytes.len() - 1)
+                {
+                    i += close_pos + 1;
+                    prev = bytes.get(i - 1).copied().unwrap_or(open);
+                } else {
+                    prev = b;
+                    i += 1;
+                }
+                value_start = false;
+                seg_start = false;
+                continue;
+            }
+            b'}' | b']' => {
+                // Both closer kinds decrement (see fast path).
+                depth -= 1;
+                if depth == 0 {
+                    // A closer that returns depth to zero must be the
+                    // body's own closer kind, else the body has no
+                    // matching closer.
+                    return if b == close {
+                        InlineCloserScan::Found(i)
+                    } else {
+                        InlineCloserScan::NotFound
+                    };
+                }
+                // Matching close of a nested compound: restore the
+                // enclosing key-position state only when the closer
+                // matches the most recently opened compound kind.
+                if open_stack.last().is_some_and(|(k, _, _)| *k == b) {
+                    let (_, saved_in_key, saved_seg_start) = open_stack.pop().unwrap();
+                    in_key = saved_in_key;
+                    seg_start = saved_seg_start;
+                } else {
+                    seg_start = false;
+                }
+                value_start = false;
+            }
+            _ => {
+                if b != b' ' && b != b'\t' {
+                    value_start = false;
+                }
+            }
+        }
+        prev = b;
+        i += 1;
+    }
+    InlineCloserScan::NotFound
 }

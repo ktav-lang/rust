@@ -502,6 +502,61 @@ fn parse_inline_midvalue_brace_is_literal() {
     assert_eq!(cfg.get("b"), Some(&Value::String("x".into())));
 }
 
+/// Regression tests for the § 5.2 rules 6–9 closer scan
+/// (`scan_inline_closer`): nested compounds at value positions, raw
+/// `::` items in arrays, and quote-path (slow-path) bodies must all
+/// find their matching closer instead of tripping over literal braces.
+#[test]
+fn parse_inline_closer_scan_value_positions_and_raw_items() {
+    // Array whose first item is an object (value position after `[`).
+    let v = crate::parse("x: [{b: 1}]").unwrap();
+    let arr = v.as_object().unwrap().get("x").unwrap().as_array().unwrap();
+    assert_eq!(
+        arr[0].as_object().unwrap().get("b"),
+        Some(&Value::Integer("1".into()))
+    );
+
+    // Array whose first item is a nested array.
+    let v = crate::parse("x: [[1]]").unwrap();
+    let arr = v.as_object().unwrap().get("x").unwrap().as_array().unwrap();
+    let inner = arr[0].as_array().unwrap();
+    assert_eq!(inner[0], Value::Integer("1".into()));
+
+    // Nested at two levels inside object values.
+    let v = crate::parse("{a: [{b: 1, c: 2}]}").unwrap();
+    let a = v.as_object().unwrap().get("a").unwrap().as_array().unwrap();
+    assert_eq!(
+        a[0].as_object().unwrap().get("c"),
+        Some(&Value::Integer("2".into()))
+    );
+
+    // Raw `::` item in an array body: braces in it are content (§ 5.4).
+    let v = crate::parse("x: [:: {abc}]").unwrap();
+    let arr = v.as_object().unwrap().get("x").unwrap().as_array().unwrap();
+    assert_eq!(arr[0], Value::String("{abc}".into()));
+    let v = crate::parse("[:: {abc}]").unwrap();
+    assert_eq!(v.as_array().unwrap()[0], Value::String("{abc}".into()));
+
+    // Slow path (quote bytes present): array-of-object value after a
+    // quoted key/value pair.
+    let v = crate::parse("{k: \"v\", arr: [{b: 1}]}").unwrap();
+    let obj = v.as_object().unwrap();
+    let arr = obj.get("arr").unwrap().as_array().unwrap();
+    assert_eq!(
+        arr[0].as_object().unwrap().get("b"),
+        Some(&Value::Integer("1".into()))
+    );
+    // Quoted value segments are opaque to closer scanning.
+    assert!(crate::parse("{a: \"x] y\", b: 1}").is_ok());
+
+    // Root-position array with an object first item.
+    let v = crate::parse("[{b: 1}]").unwrap();
+    assert_eq!(
+        v.as_array().unwrap()[0].as_object().unwrap().get("b"),
+        Some(&Value::Integer("1".into()))
+    );
+}
+
 #[test]
 fn parse_inline_escape_comma() {
     let v = crate::parse("a: {greeting: hello\\, world}").unwrap();

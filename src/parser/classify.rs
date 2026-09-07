@@ -44,26 +44,12 @@ pub(super) fn classify_value_start(
         if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyObject);
         }
-        // § 5.2 rule 6 vs 8: if the body ends with `}`, try to parse
-        // it as a closed inline object. The parser handles mid-value
-        // braces (§ 5.8.5) correctly — a `{` that is NOT the first
-        // non-ws byte of a value position is literal and does not
-        // create nesting. If parsing succeeds → rule 6. If it fails
-        // with a parse error, propagate that error (the user gets a
-        // more specific diagnostic than "unterminated").
-        if trimmed.ends_with('}') {
-            let value = inline::parse_inline_object(trimmed, line_num, trimmed_span, strict)?;
-            return Ok(ValueStart::InlineValue(value));
-        }
-        // § 5.2 rule 8: starts with `{` but no `}` at the end → unterminated.
-        // Before reporting unterminated, scan for trailing `\` which would
-        // be a BadEscapeSequence (§ 3.7/§ 6.13) — spec says this error
-        // triggers before UnterminatedInlineCompound.
-        check_trailing_backslash(trimmed, line_num, trimmed_span)?;
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-        }));
+        // § 5.2 rules 6–9: one shared § 5.8 quote-aware, escape-aware
+        // closer scan decides between the closed shape (rule 6), a
+        // closer followed by content (rule 8) and no closer (rule 9),
+        // with `BadEscapeSequence` (§ 6.13) taking precedence per the
+        // rules-6–9 preamble.
+        return dispatch_inline_compound(trimmed, b'{', b'}', line_num, trimmed_span, strict);
     }
 
     if trimmed.starts_with('[') {
@@ -71,17 +57,8 @@ pub(super) fn classify_value_start(
         if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyArray);
         }
-        // § 5.2 rule 7: if the body ends with `]`, try to parse it.
-        if trimmed.ends_with(']') {
-            let value = inline::parse_inline_array(trimmed, line_num, trimmed_span, strict)?;
-            return Ok(ValueStart::InlineValue(value));
-        }
-        // § 5.2 rule 9: starts with `[` but no `]` at the end → unterminated.
-        check_trailing_backslash(trimmed, line_num, trimmed_span)?;
-        return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-            line: line_num as u32,
-            span: trimmed_span,
-        }));
+        // § 5.2 rule 7 vs 8/9: same shared scan as the `{` branch.
+        return dispatch_inline_compound(trimmed, b'[', b']', line_num, trimmed_span, strict);
     }
 
     // Multi-line string openers — exact tokens only.
@@ -147,6 +124,42 @@ pub(super) fn classify_value_start(
 
     // § 5.2 rule 15: String
     Ok(ValueStart::Scalar(trimmed.into()))
+}
+
+/// § 5.2 rules 6–9 for a non-empty `{`/`[`-prefixed body: one shared
+/// closer scan decides between the closed shape (rule 6/7 — parse per
+/// § 5.8), a closer followed by content or an internal defect (rule 8 —
+/// `MalformedInlineCompound`), and no closer at all (rule 9 —
+/// `UnterminatedInlineCompound`), with `BadEscapeSequence` taking
+/// precedence per the rules-6–9 preamble.
+fn dispatch_inline_compound(
+    trimmed: &str,
+    open: u8,
+    close: u8,
+    line_num: usize,
+    span: Span,
+    strict: bool,
+) -> Result<ValueStart, Error> {
+    match inline::scan_inline_closer(trimmed, open, close, line_num, span) {
+        inline::InlineCloserScan::BadEscape(err) => Err(err),
+        inline::InlineCloserScan::NotFound => {
+            Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                line: line_num as u32,
+                span,
+            }))
+        }
+        inline::InlineCloserScan::Found(idx) if idx == trimmed.len() - 1 => {
+            let value = if open == b'{' {
+                inline::parse_inline_object(trimmed, line_num, span, strict)?
+            } else {
+                inline::parse_inline_array(trimmed, line_num, span, strict)?
+            };
+            Ok(ValueStart::InlineValue(value))
+        }
+        inline::InlineCloserScan::Found(_) => {
+            Err(inline::malformed_closer_not_at_end(line_num, span))
+        }
+    }
 }
 
 /// Build the strict-mode error for a scalar whose lexical form differs
@@ -593,34 +606,6 @@ fn check_decimal_digits(digits: &[u8]) -> bool {
 /// the renderer to decide when `::` is needed.
 pub fn matches_float_grammar(s: &str) -> bool {
     is_float_literal(s)
-}
-
-/// If the last non-escaped byte in `s` is `\`, return `BadEscapeSequence`.
-/// Used to detect `\<EOL>` inside unterminated inline compounds — the spec
-/// (§ 3.7 / § 6.13) says this error triggers before `UnterminatedInlineCompound`.
-fn check_trailing_backslash(s: &str, line_num: usize, span: Span) -> Result<(), Error> {
-    let bytes = s.as_bytes();
-    if bytes.is_empty() {
-        return Ok(());
-    }
-    // Count consecutive trailing backslashes.
-    let mut n = 0;
-    for &b in bytes.iter().rev() {
-        if b == b'\\' {
-            n += 1;
-        } else {
-            break;
-        }
-    }
-    // An odd number of trailing backslashes means the last one is unescaped.
-    if n % 2 == 1 {
-        return Err(Error::Structured(ErrorKind::BadEscapeSequence {
-            line: line_num as u32,
-            span,
-            sequence: "\\<end-of-line>".to_string(),
-        }));
-    }
-    Ok(())
 }
 
 /// Check if the trimmed line looks like a pair shape (has a `:` with a
