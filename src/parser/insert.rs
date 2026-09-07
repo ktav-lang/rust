@@ -53,7 +53,7 @@ pub(super) fn insert_value(
             }
         }
         let decoded = decode_key_segment(trimmed_key, line_num, span)?;
-        return match table.entry(decoded.as_str().into()) {
+        return match table.entry(decoded.as_ref().into()) {
             Entry::Occupied(e) => {
                 let existing = e.get();
                 if matches!(existing, Value::Object(_)) && !matches!(value, Value::Object(_))
@@ -124,7 +124,7 @@ fn insert_dotted(
         let is_leaf = idx + 1 == n;
         if !is_leaf {
             let entry = table
-                .entry(decoded.as_str().into())
+                .entry(decoded.as_ref().into())
                 .or_insert_with(|| Value::Object(ObjectMap::default()));
             table = match entry {
                 Value::Object(sub) => sub,
@@ -138,7 +138,7 @@ fn insert_dotted(
                 }
             };
         } else {
-            return match table.entry(decoded.as_str().into()) {
+            return match table.entry(decoded.as_ref().into()) {
                 Entry::Occupied(_) => Err(Error::Structured(ErrorKind::DuplicateKey {
                     line: line_num as u32,
                     key: full_path.to_string(),

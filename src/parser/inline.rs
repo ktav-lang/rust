@@ -5,6 +5,8 @@
 //!
 //! Escape sequences (section 3.7) are processed inside inline scalar values.
 
+use std::borrow::Cow;
+
 use memchr::memchr2;
 
 use crate::error::{Error, ErrorKind, Span};
@@ -125,7 +127,7 @@ fn parse_inline_object_inner(
         let value = if is_raw {
             // Raw `::` — value is a String after escape processing + trim
             let processed = process_escapes(value_body.trim(), line_num, span)?;
-            Value::String(processed.into())
+            Value::String(processed.into_owned().into())
         } else {
             // Plain `:` — parse inline value
             parse_inline_value(value_body, line_num, span, depth, strict)?
@@ -183,7 +185,7 @@ fn parse_inline_array_inner(
         // Check for raw marker `::` at the start of an array item
         if let Some(rest) = trimmed.strip_prefix("::") {
             let processed = process_escapes(rest.trim(), line_num, span)?;
-            items.push(Value::String(processed.into()));
+            items.push(Value::String(processed.into_owned().into()));
             continue;
         }
 
@@ -310,17 +312,18 @@ fn parse_inline_value_raw(
     // Plain inline scalar — process escapes, then classify per section 5.2.
     // 0.7 § 3.7 / § 5.2: a recognised escape anywhere in the raw body
     // forces String (rule 15) — the decoded body is never re-classified as
-    // keyword/numeric. `process_escapes` errors on every unrecognised `\X`
-    // form, so a `\` byte surviving in `trimmed` is exactly the "had at
-    // least one recognised escape" signal.
+    // keyword/numeric. `process_escapes` borrows iff the raw body
+    // contains no `\` at all, and errors on every unrecognised `\X`
+    // form, so an owned return means at least one recognised escape was
+    // decoded. (Scanning the DECODED bytes for `\` would be wrong:
+    // `\u0074` decodes to `t` with no backslash left.)
     let processed = process_escapes(trimmed, line_num, span)?;
-    let body = processed;
 
-    if trimmed.contains('\\') {
-        return Ok(Value::String(body.into()));
+    if matches!(&processed, Cow::Owned(_)) {
+        return Ok(Value::String(processed.into_owned().into()));
     }
 
-    classify_inline_scalar(&body, line_num, span, strict)
+    classify_inline_scalar(&processed, line_num, span, strict)
 }
 
 /// Classify an inline scalar body (after escape processing and trimming)
@@ -364,8 +367,8 @@ fn classify_inline_scalar(
         if let Some(val) = parse_float_value(body) {
             let mut buf = ryu::Buffer::new();
             let canonical = buf.format(val);
-            let rendered = crate::render::canonical::canonical_float(canonical);
             if strict {
+                let rendered = crate::render::canonical::canonical_float(canonical);
                 if rendered != body {
                     return Err(lossy_scalar(body, &rendered, line_num, span));
                 }
@@ -517,11 +520,18 @@ fn scan_escape(bytes: &[u8], i: usize) -> Result<RecognisedEscape, String> {
 ///   key form (§ 5.3.3) but are recognised in every context where
 ///   escapes are recognised at all (§ 3.7).
 /// Any other `\X` is a `BadEscapeSequence` error.
-pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Result<String, Error> {
-    // Fast path: if no backslash, the input is already clean — return a
-    // single allocation rather than scanning byte-by-byte.
+///
+/// Returns `Cow::Borrowed` iff the input contains no `\` at all;
+/// `Cow::Owned` iff at least one recognised escape was decoded.
+pub(crate) fn process_escapes<'a>(
+    input: &'a str,
+    line_num: usize,
+    span: Span,
+) -> Result<Cow<'a, str>, Error> {
+    // Fast path: if no backslash, the input is already clean — return it
+    // borrowed, no allocation at all.
     if !input.as_bytes().contains(&b'\\') {
-        return Ok(input.to_string());
+        return Ok(Cow::Borrowed(input));
     }
 
     let bytes = input.as_bytes();
@@ -555,7 +565,7 @@ pub(crate) fn process_escapes(input: &str, line_num: usize, span: Span) -> Resul
         }
     }
 
-    Ok(out)
+    Ok(Cow::Owned(out))
 }
 
 /// Render a malformed `\u` escape for the error payload: `\u` followed
@@ -895,13 +905,18 @@ pub(crate) fn quoted_span_end(bytes: &[u8], open_idx: usize) -> Option<usize> {
 /// only, with NO trimming of the interior (quoted content is never
 /// trimmed — `" a "` decodes to the 3-char key ` a `). Callers must
 /// have validated the segment with `validate::check_key` first.
-/// Returns the decoded String on success or `BadEscapeSequence` on an
-/// unknown `\X`. Identical escape table to [`process_escapes`].
-pub(crate) fn decode_key_segment(
-    input: &str,
+/// Returns a borrowed slice when there is no escape at all: a quoted
+/// segment with no `\` in its interior borrows the interior slice, and
+/// a bare segment with no `\` borrows the input as-is — no allocation.
+/// Any `\` decodes via [`process_escapes`] and yields an owned String,
+/// including `\.`/`\:`, which decode to literal `.`/`:` that are NOT
+/// separators. Errors with `BadEscapeSequence` on an unknown `\X`;
+/// identical escape table to [`process_escapes`].
+pub(crate) fn decode_key_segment<'a>(
+    input: &'a str,
     line_num: usize,
     span: Span,
-) -> Result<String, Error> {
+) -> Result<Cow<'a, str>, Error> {
     // Quoted segment (spec 0.7 § 5.3.3): strip the outer delimiter pair,
     // decode the interior only. Callers must have validated the segment
     // with `check_key` (properly closed, nothing after the closer).
@@ -911,14 +926,14 @@ pub(crate) fn decode_key_segment(
             debug_assert!(input.len() >= 2 && input.as_bytes()[input.len() - 1] == first);
             let interior = &input[1..input.len() - 1];
             if !interior.as_bytes().contains(&b'\\') {
-                return Ok(interior.to_string());
+                return Ok(Cow::Borrowed(interior));
             }
             return process_escapes(interior, line_num, span);
         }
     }
     // Bare segment path (unchanged)
     if !input.as_bytes().contains(&b'\\') {
-        return Ok(input.to_string());
+        return Ok(Cow::Borrowed(input));
     }
     process_escapes(input, line_num, span)
 }

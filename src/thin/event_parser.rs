@@ -1104,10 +1104,11 @@ impl<'a> EventParser<'a> {
     }
 
     /// Decode a key segment per § 3.7 / § 5.3.3. Bare segments without
-    /// a `\` return the source slice as-is (zero-copy fast path); a
-    /// quoted segment (§ 5.3.3) always decodes — its outer delimiters
-    /// must be stripped — as does any segment containing a `\`. The
-    /// decoded byte string is allocated in the bump arena so the
+    /// a `\` return the source slice as-is (zero-copy fast path), as do
+    /// quoted segments (§ 5.3.3) whose interior contains no `\` — the
+    /// key is then the source slice between the delimiters, never
+    /// trimmed. Any segment containing a `\` decodes via
+    /// `decode_key_segment` and is allocated in the bump arena so the
     /// returned `&'a str` outlives the call.
     fn decode_key_in_arena(
         &self,
@@ -1121,6 +1122,16 @@ impl<'a> EventParser<'a> {
             .is_some_and(|&b| b == b'"' || b == b'\'' || b == b'`');
         if !is_quoted && !seg.as_bytes().contains(&b'\\') {
             return Ok(seg);
+        }
+        if is_quoted {
+            debug_assert!(seg.len() >= 2 && seg.as_bytes()[seg.len() - 1] == seg.as_bytes()[0]);
+            let interior = &seg[1..seg.len() - 1];
+            if !interior.as_bytes().contains(&b'\\') {
+                // Validated unescaped quoted interior: the key IS the source
+                // slice between the quotes (§ 5.3.3 — quoted content is never
+                // trimmed). No temporary String, no bump copy.
+                return Ok(interior);
+            }
         }
         let decoded = decode_key_segment(seg, line_num, key_span)?;
         Ok(self.bump.alloc_str(&decoded))
