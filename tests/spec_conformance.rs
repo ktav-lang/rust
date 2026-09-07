@@ -470,90 +470,11 @@ fn json_to_ktav(v: &JsonValue) -> Value {
 /// fixture starts passing, or fails with a different category, the runner
 /// panics with removal instructions instead of silently passing.
 ///
-/// F2 (review finding F2, P1): no explicit top-level-root state — a
-/// whole-document inline root (§ 5.0.1 rules 2/3) or a lone-`{`/`[`
-/// multi-line root (rules 4/5) is re-dispatched through ordinary pair /
-/// item handling, and content after a consumed root is never detected.
 /// F3 (review finding F3, P2): the linear event model closes a
 /// dotted-key object before later lines can extend it, rejecting two
 /// spec-valid documents with `KeyPathConflict`.
 const THIN_KNOWN_GAPS: &[(&str, &str, &str)] = &[
     // (path relative to the bucket dir, finding, category the thin parser produces today)
-    // --- F2: invalid fixtures ---
-    (
-        "top_level/content_after_inline_root.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "top_level/multi_inline_objects_jsonl_style.ktav",
-        "F2",
-        "MissingSeparator",
-    ),
-    // --- F2: valid fixtures rejected by the thin API ---
-    (
-        "top_level/multiline_object_opener.ktav",
-        "F2",
-        "MissingSeparator",
-    ),
-    ("top_level_inline/object.ktav", "F2", "InvalidKey"),
-    (
-        "top_level_inline/empty_object.ktav",
-        "F2",
-        "MissingSeparator",
-    ),
-    (
-        "top_level_inline/leading_whitespace.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    ("top_level_inline/with_comments.ktav", "F2", "InvalidKey"),
-    (
-        "inline/escape/lowercase_unicode_hex.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "inline/escape/recognized_escape_forces_string_number.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "inline/unescaped_quote_value_discriminator.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "key_escaping/unicode_escape_forces_string_digit.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "key_escaping/unicode_escape_forces_string_keyword.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "key_escaping/unicode_escape_forces_string_paren.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "quoted_keys/comma_inside_quoted_key_in_inline.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    (
-        "quoted_keys/inline_pair_quoted_key_with_brace.ktav",
-        "F2",
-        "InvalidKey",
-    ),
-    ("raw_marker/inline_leading_bracket.ktav", "F2", "InvalidKey"),
-    (
-        "scalars/pair_raw_prefix_trailing_whitespace.ktav",
-        "F2",
-        "InvalidKey",
-    ),
     // --- F3: valid fixtures rejected by the thin API ---
     (
         "dotted_keys/extend_explicit_object.ktav",
@@ -815,7 +736,7 @@ fn invalid_fixtures_categories_match_oracles_via_thin_api() {
         );
     }
     eprintln!(
-        "spec_conformance::invalid (thin API): {} fixtures rejected with matching categories, {} excluded under known findings F2/F3 ({} invalid-UTF-8 fixtures are byte-entry-only)",
+        "spec_conformance::invalid (thin API): {} fixtures rejected with matching categories, {} excluded under known finding F3 ({} invalid-UTF-8 fixtures are byte-entry-only)",
         fixtures.len() - invalid_utf8 - known_gaps,
         known_gaps,
         invalid_utf8
@@ -883,7 +804,7 @@ fn valid_fixtures_parse_via_thin_api() {
         );
     }
     eprintln!(
-        "spec_conformance::valid (thin API): {} fixtures accepted, {} excluded under known findings F2/F3",
+        "spec_conformance::valid (thin API): {} fixtures accepted, {} excluded under known finding F3",
         files.len() - known_gaps,
         known_gaps
     );

@@ -41,9 +41,14 @@ use crate::error::Result;
 /// is always immediately followed by its value event (which may itself
 /// open a nested compound).
 ///
-/// The whole document is wrapped in an outer `BeginObject` / `EndObject`
-/// pair, even if the source is empty — Ktav documents are an implicit
-/// top-level object.
+/// The event stream mirrors the document's actual root shape (spec
+/// § 5.0.1): an implicit Object/Array root is bracketed by its own
+/// `BeginObject`/`EndObject` (or array) pair; a whole-document inline
+/// compound (§ 5.0.1 rules 2/3) emits exactly its own bracket pair with
+/// no extra wrapping; a lone-`{`/`[`-opened multi-line root (rules 4/5)
+/// emits its real `Begin` when opened and its real `End` at the matching
+/// close. Empty / comments-only documents default to an empty implicit
+/// Object root (`BeginObject` / `EndObject`).
 ///
 /// # Numeric scalars (spec 0.5.0)
 ///
@@ -110,9 +115,12 @@ impl<'a> ParseEvent<'a> {
 /// because the callback only sees them by reference through
 /// `ParseEvent<'_>`.
 ///
-/// The whole document is bracketed by an outer
-/// `BeginObject` / `EndObject` pair (Ktav documents are an implicit
-/// top-level object).
+/// The event stream mirrors the document's actual root shape (spec
+/// § 5.0.1): implicit roots are bracketed by their Begin/End pair,
+/// whole-document inline compounds (§ 5.0.1 rules 2/3) emit exactly
+/// their own bracket pair, lone-`{`/`[`-opened roots (rules 4/5) emit
+/// their real Begin/End, and empty / comments-only documents default to
+/// an empty implicit Object root.
 ///
 /// # Errors
 ///

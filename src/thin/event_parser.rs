@@ -44,15 +44,7 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     // error Spans still slice the caller's text.
     let start = leading_bom_len(text);
 
-    let root_kind = detect_root_kind(text, bytes, start);
-    EventSink::push(
-        &mut events,
-        match root_kind {
-            RootKind::Object => Event::BeginObject,
-            RootKind::Array => Event::BeginArray,
-        },
-    );
-    let mut p = EventParser::new(bump, root_kind);
+    let mut p = EventParser::new(bump);
 
     // Line splitting: handle CR / CR LF / LF (spec § 3.2)
     //
@@ -104,75 +96,6 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<EventStr
     Ok(events)
 }
 
-/// Per spec § 5.0.1: scan forward to the first non-blank, non-comment
-/// line and classify it as Object (pair shape) or Array (anything
-/// else). Empty / comments-only documents default to Object.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum RootKind {
-    Object,
-    Array,
-}
-
-/// Per spec § 5.0.1: scan forward to the first non-blank, non-comment
-/// line and classify it as Object (pair shape) or Array (anything
-/// else). Empty / comments-only documents default to Object.
-///
-/// The `start` argument skips a leading byte-order mark per spec § 3.1.
-fn detect_root_kind(text: &str, bytes: &[u8], start: usize) -> RootKind {
-    let mut i = start;
-    while i < bytes.len() {
-        let line_start = i;
-        // Find next line terminator (CR / LF / CR LF) via SIMD memchr2.
-        i = memchr2(b'\n', b'\r', &bytes[i..])
-            .map(|p| line_start + p)
-            .unwrap_or(bytes.len());
-        let content_end = i;
-        // Skip terminator
-        if i < bytes.len() {
-            if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                i += 2;
-            } else {
-                i += 1;
-            }
-        }
-        let line = &text[line_start..content_end];
-        let trimmed = line.trim();
-        if !trimmed.is_empty() && !trimmed.starts_with("##") {
-            // First content line — classify (mirrors parser.rs)
-            if trimmed == "}" || trimmed == "]" {
-                return RootKind::Object; // bare closer → main loop emits error
-            }
-            return classify_first_line_root_kind(trimmed);
-        }
-    }
-    RootKind::Object // empty or comments-only
-}
-
-fn classify_first_line_root_kind(trimmed: &str) -> RootKind {
-    // § 5.0.1 rule 4: lone `{`
-    if trimmed == "{" {
-        return RootKind::Object;
-    }
-    // § 5.0.1 rule 5: lone `[`
-    if trimmed == "[" {
-        return RootKind::Array;
-    }
-    // § 5.0.1 rule 2: closed inline object
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        return RootKind::Object;
-    }
-    // § 5.0.1 rule 3: closed inline array
-    if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        return RootKind::Array;
-    }
-    // § 5.0.1 rules 6/7: pair shape vs array item
-    if is_pair_shape(trimmed) {
-        RootKind::Object
-    } else {
-        RootKind::Array
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Parser state
 // ---------------------------------------------------------------------------
@@ -182,36 +105,44 @@ pub(crate) struct EventParser<'a> {
     pub(crate) stack: Vec<Frame<'a>>,
     pub(crate) collecting: Option<Collecting<'a>>,
     /// Byte offset (in original input) of the opener that started each
-    /// frame. Index `0` is the implicit root (always `0`); subsequent
-    /// entries are pushed for each child frame.
+    /// frame — one entry per open frame. The implicit root records `0`
+    /// (it has no opener); an explicit `{`/`[`-opened root records the
+    /// byte offset of its opener, mirroring parser.rs lines 167-186.
     pub(crate) opener_offsets: Vec<u32>,
     /// Byte offset of the `(` / `((` line that started a multi-line
     /// string, if one is currently being collected.
     pub(crate) multiline_opener: Option<u32>,
-    /// `true` until the first non-blank, non-comment line has been
-    /// handled. Used to diagnose a first content line starting with
-    /// `{`/`[` through the § 5.2 closer scan before any pair/key
-    /// dispatch (spec § 5.0.1 rules-2–5 addendum). Explicit inline
-    /// roots are review finding F2 — out of scope here.
-    first_content_line: bool,
+    /// `false` until the first content line is classified and the root
+    /// frame pushed. Spec § 5.0.1 determines the root kind lazily, with
+    /// no pre-scan — mirroring the owned parser.
+    pub(crate) root_initialized: bool,
+    /// Set after a top-level inline compound (§ 5.0.1 rules 2-3) or
+    /// after the matching close of a lone-`{`/`[`-opened root (rules
+    /// 4-5). Any further non-blank, non-comment line is then
+    /// `OrphanLineAfterTopLevelInline`.
+    pub(crate) root_consumed: bool,
+    /// True when the root was opened by a lone `{` or `[` (§ 5.0.1
+    /// rules 4-5); a depth-1 close then consumes the root instead of
+    /// erroring.
+    pub(crate) root_is_explicit_compound: bool,
 }
 
 impl<'a> EventParser<'a> {
-    pub(crate) fn new(bump: &'a Bump, root_kind: RootKind) -> Self {
-        let mut p = EventParser {
+    pub(crate) fn new(bump: &'a Bump) -> Self {
+        // The root frame is pushed lazily by `classify_root` once the
+        // first content line is classified — no pre-scan. `finish`
+        // falls back to an empty Object root if no content line was
+        // ever encountered (§ 5.0.1 rule 1).
+        EventParser {
             bump,
             stack: Vec::with_capacity(8),
             collecting: None,
             opener_offsets: Vec::with_capacity(8),
             multiline_opener: None,
-            first_content_line: true,
-        };
-        match root_kind {
-            RootKind::Object => p.stack.push(Frame::new_object(bump)),
-            RootKind::Array => p.stack.push(Frame::new_array()),
+            root_initialized: false,
+            root_consumed: false,
+            root_is_explicit_compound: false,
         }
-        p.opener_offsets.push(0);
-        p
     }
 }
 
@@ -294,9 +225,21 @@ impl<'a> EventParser<'a> {
                 span: Span::new(start, eof_offset),
             }));
         }
+        // § 5.0.1 rules 2-3: an inline root's events were already
+        // emitted at line 1; rules 4-5: a closed explicit root's End
+        // event was emitted by `close_frame`. Nothing more to emit.
+        if self.root_consumed {
+            debug_assert!(
+                self.stack.is_empty(),
+                "consumed root must have no open frames"
+            );
+            return Ok(());
+        }
         // Close all synthetics still open in the root frame (only
         // applies to Object roots), then emit the matching close
-        // event for whichever kind the root was.
+        // event for whichever kind the root was. An explicit root
+        // opened but never closed EOF-closes identically to an
+        // implicit root (mirrors owned parser finish()).
         match self.stack.last() {
             Some(Frame::Object { .. }) => {
                 self.close_synthetics_until(0, events);
@@ -305,7 +248,12 @@ impl<'a> EventParser<'a> {
             Some(Frame::Array) => {
                 events.push(Event::EndArray);
             }
-            None => unreachable!("root frame is always present after construction"),
+            // Empty / comments-only document — root never initialized;
+            // default to an empty implicit Object root (§ 5.0.1 rule 1).
+            None => {
+                events.push(Event::BeginObject);
+                events.push(Event::EndObject);
+            }
         }
         Ok(())
     }
@@ -346,17 +294,82 @@ impl<'a> EventParser<'a> {
 
         let trimmed_span = trimmed_span_in(raw, trimmed, line_start);
 
-        let first_content = core::mem::take(&mut self.first_content_line);
-        if first_content
-            && trimmed.len() > 1
-            && (trimmed.starts_with('{') || trimmed.starts_with('['))
-        {
-            // § 5.0.1 rules-2–5 addendum / § 5.2 rules 6–9: a first content
-            // line whose first byte is `{`/`[` is diagnosed by the same closer
-            // scan as a value body, before pair-candidate or key handling —
-            // `[bad]: 1` is never a pair candidate. A body closed at its last
-            // byte keeps the existing root dispatch (explicit inline roots are
-            // review finding F2, out of scope here).
+        // § 5.0.1 — if root is already consumed (inline compound or
+        // explicit-compound closed), any further content line is an
+        // orphan. Comments stay legal, hence the ordering after the
+        // blank/comment check above.
+        if self.root_consumed {
+            return Err(Error::Structured(
+                ErrorKind::OrphanLineAfterTopLevelInline {
+                    line: line_num as u32,
+                    span: trimmed_span,
+                },
+            ));
+        }
+
+        // Spec § 5.0.1 — first content line establishes the root kind
+        // (no pre-scan, mirroring the owned parser).
+        if !self.root_initialized {
+            self.root_initialized = true;
+            // `}` / `]` first content line — not a valid root kind;
+            // fall through to the close-frame branch which will raise
+            // UnbalancedBracket against the empty stack.
+            if trimmed != "}"
+                && trimmed != "]"
+                && self.classify_root(trimmed, line_num, trimmed_span, events)?
+            {
+                return Ok(());
+            }
+        }
+
+        if trimmed == "}" {
+            return self.close_frame(BracketKind::Object, line_num, trimmed_span, events);
+        }
+        if trimmed == "]" {
+            return self.close_frame(BracketKind::Array, line_num, trimmed_span, events);
+        }
+
+        if matches!(self.stack.last(), Some(Frame::Array)) {
+            self.handle_array_item(trimmed, line_num, trimmed_span, events)
+        } else {
+            self.handle_object_pair(trimmed, line_num, trimmed_span, events)
+        }
+    }
+
+    /// Classify the first content line (spec § 5.0.1) and push the root
+    /// frame. Returns `Ok(true)` when the line was fully handled (inline
+    /// root or explicit opener) and `Ok(false)` when an implicit root
+    /// was pushed and the SAME line must fall through to ordinary
+    /// closer/pair/item dispatch.
+    fn classify_root<S: EventSink<'a>>(
+        &mut self,
+        trimmed: &'a str,
+        line_num: usize,
+        trimmed_span: Span,
+        events: &mut S,
+    ) -> Result<bool> {
+        // § 5.0.1 rule 4: lone `{`
+        if trimmed == "{" {
+            self.root_is_explicit_compound = true;
+            self.stack.push(Frame::new_object(self.bump));
+            self.opener_offsets.push(trimmed_span.start);
+            EventSink::push(events, Event::BeginObject);
+            return Ok(true);
+        }
+        // § 5.0.1 rule 5: lone `[`
+        if trimmed == "[" {
+            self.root_is_explicit_compound = true;
+            self.stack.push(Frame::new_array());
+            self.opener_offsets.push(trimmed_span.start);
+            EventSink::push(events, Event::BeginArray);
+            return Ok(true);
+        }
+
+        // § 5.0.1 rules 2/3 + the rules-2–5 addendum: a first content
+        // line beginning with `{`/`[` is diagnosed by the same § 5.2
+        // closer scan as a value body — closed at the end ⇒ the root IS
+        // the inline value; such a line is never a pair candidate.
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
             let (open, close) = if trimmed.starts_with('{') {
                 (b'{', b'}')
             } else {
@@ -373,22 +386,45 @@ impl<'a> EventParser<'a> {
                 InlineCloserScan::Found(idx) if idx != trimmed.len() - 1 => {
                     return Err(malformed_closer_not_at_end(line_num, trimmed_span));
                 }
-                InlineCloserScan::Found(_) => {}
+                InlineCloserScan::Found(_) => {
+                    // The line IS the whole-document root. Thin has no
+                    // strict mode (same as `dispatch_inline_events`).
+                    let value = if open == b'{' {
+                        crate::parser::inline::parse_inline_object(
+                            trimmed,
+                            line_num,
+                            trimmed_span,
+                            false,
+                        )?
+                    } else {
+                        crate::parser::inline::parse_inline_array(
+                            trimmed,
+                            line_num,
+                            trimmed_span,
+                            false,
+                        )?
+                    };
+                    for ev in value_to_events(&value, self.bump) {
+                        EventSink::push(events, ev);
+                    }
+                    self.root_consumed = true;
+                    return Ok(true);
+                }
             }
         }
 
-        if trimmed == "}" {
-            return self.close_frame(BracketKind::Object, line_num, trimmed_span, events);
-        }
-        if trimmed == "]" {
-            return self.close_frame(BracketKind::Array, line_num, trimmed_span, events);
-        }
-
-        if matches!(self.stack.last(), Some(Frame::Array)) {
-            self.handle_array_item(trimmed, line_num, trimmed_span, events)
+        // § 5.0.1 rules 6/7: pair-shape → implicit Object root,
+        // array-item-shape → implicit Array root.
+        if is_pair_shape(trimmed) {
+            self.stack.push(Frame::new_object(self.bump));
+            self.opener_offsets.push(0);
+            EventSink::push(events, Event::BeginObject);
         } else {
-            self.handle_object_pair(trimmed, line_num, trimmed_span, events)
+            self.stack.push(Frame::new_array());
+            self.opener_offsets.push(0);
+            EventSink::push(events, Event::BeginArray);
         }
+        Ok(false)
     }
 
     // -----------------------------------------------------------------------
@@ -932,6 +968,40 @@ impl<'a> EventParser<'a> {
         trimmed_span: Span,
         events: &mut S,
     ) -> Result<()> {
+        // Depth-1 close of a lone-`{`/`[`-opened root (§ 5.0.1 rules
+        // 4-5): a matching close consumes the root — the frame is
+        // popped, its End event emitted, and `root_consumed` set
+        // (mirrors owned parser close_frame). Mismatched kind at this
+        // depth errors against the FRAME's kind.
+        if self.stack.len() == 1 && self.root_is_explicit_compound {
+            let frame_kind = match self.stack.last() {
+                Some(Frame::Object { .. }) => BracketKind::Object,
+                _ => BracketKind::Array,
+            };
+            if frame_kind as u8 != expected as u8 {
+                return Err(Error::Structured(ErrorKind::UnbalancedBracket {
+                    line: line_num as u32,
+                    span: trimmed_span,
+                    expected: frame_kind.to_compound(),
+                    found: expected.close(),
+                }));
+            }
+            if matches!(self.stack.last(), Some(Frame::Object { .. })) {
+                self.close_synthetics_to_real(events);
+            }
+            let got = match self.stack.pop().unwrap() {
+                Frame::Object { .. } => BracketKind::Object,
+                Frame::Array => BracketKind::Array,
+            };
+            let _ = self.opener_offsets.pop();
+            self.root_consumed = true;
+            let close_event = match got {
+                BracketKind::Object => Event::EndObject,
+                BracketKind::Array => Event::EndArray,
+            };
+            events.push(close_event);
+            return Ok(());
+        }
         if self.stack.len() <= 1 {
             return Err(Error::Structured(ErrorKind::UnbalancedBracket {
                 line: line_num as u32,
