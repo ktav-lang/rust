@@ -1605,6 +1605,14 @@ pub(crate) fn scan_inline_closer(
                         // the rest of the item's value is a String —
                         // braces/brackets in it are content.
                         raw = true;
+                    } else if value_start && bytes.get(i + 1) != Some(&b':') {
+                        // A lone `:` opening the value's scalar (§ 5.8.5,
+                        // R5-F2) consumes the value position: a following
+                        // `{`/`[` is literal content, not a nested opener.
+                        // A `:` immediately followed by another `:` stays
+                        // armed for the `::` marker check above on the
+                        // next iteration.
+                        value_start = false;
                     }
                 }
                 b',' => {
@@ -1768,6 +1776,14 @@ pub(crate) fn scan_inline_closer(
                 } else if prev == b':' && value_start {
                     // `::` raw marker — see fast path.
                     raw = true;
+                } else if value_start && bytes.get(i + 1) != Some(&b':') {
+                    // A lone `:` opening the value's scalar (§ 5.8.5,
+                    // R5-F2) consumes the value position: a following
+                    // `{`/`[` is literal content, not a nested opener.
+                    // A `:` immediately followed by another `:` stays
+                    // armed for the `::` marker check above on the
+                    // next iteration.
+                    value_start = false;
                 }
             }
             b',' => {
