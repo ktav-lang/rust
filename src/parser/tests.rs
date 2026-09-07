@@ -285,6 +285,85 @@ fn integer_i64_min() {
     assert_eq!(try_parse_integer("-9223372036854775808"), Some(i64::MIN));
 }
 
+#[test]
+fn integer_i64_min_negative_prefixed_radixes() {
+    // Magnitude 2^63 is exactly i64::MIN when negative, for every radix prefix.
+    assert_eq!(try_parse_integer("-0x8000000000000000"), Some(i64::MIN));
+    assert_eq!(
+        try_parse_integer("-0o1000000000000000000000"),
+        Some(i64::MIN)
+    );
+    assert_eq!(
+        try_parse_integer("-0b1000000000000000000000000000000000000000000000000000000000000000"),
+        Some(i64::MIN)
+    );
+}
+
+#[test]
+fn integer_prefixed_boundary_overflow_returns_none() {
+    // Negative magnitude 2^63 + 1 overflows past i64::MIN in every radix.
+    assert_eq!(try_parse_integer("-0x8000000000000001"), None);
+    assert_eq!(try_parse_integer("-0o1000000000000000000001"), None);
+    assert_eq!(
+        try_parse_integer("-0b1000000000000000000000000000000000000000000000000000000000000001"),
+        None
+    );
+    // POSITIVE magnitude 2^63 overflows i64::MAX — only the negative form is i64::MIN.
+    assert_eq!(try_parse_integer("0x8000000000000000"), None);
+    assert_eq!(try_parse_integer("0o1000000000000000000000"), None);
+    assert_eq!(
+        try_parse_integer("0b1000000000000000000000000000000000000000000000000000000000000000"),
+        None
+    );
+}
+
+#[test]
+fn parse_negative_prefixed_i64_min_end_to_end() {
+    // Full pipeline (§ 5.2 rule 13): -2^63 via each prefixed radix parses as
+    // the integer i64::MIN, canonicalized to decimal text.
+    for literal in [
+        "-0x8000000000000000",
+        "-0o1000000000000000000000",
+        "-0b1000000000000000000000000000000000000000000000000000000000000000",
+    ] {
+        let doc = format!("x: {literal}");
+        let v = crate::parse(&doc).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(
+            obj.get("x"),
+            Some(&Value::Integer("-9223372036854775808".into())),
+            "literal {literal}"
+        );
+    }
+}
+
+#[test]
+fn parse_prefixed_overflow_falls_to_string_end_to_end() {
+    // One past the boundary the integer parser returns None and the literal
+    // falls through to String (§ 5.2 rule 13), not an error.
+    for literal in ["-0x8000000000000001", "0x8000000000000000"] {
+        let doc = format!("x: {literal}");
+        let v = crate::parse(&doc).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.get("x"), Some(&Value::String(literal.into())));
+    }
+}
+
+#[test]
+fn parse_strict_negative_prefixed_i64_min() {
+    // Strict mode rejects ALL prefixed radix literals as LossyScalar by
+    // design (see `parse_strict` docs: `0x1A` is lossy) — even when the
+    // value round-trips exactly to i64::MIN. Non-strict `parse` accepts
+    // it (see parse_negative_prefixed_i64_min_end_to_end).
+    let err = crate::parse_strict("x: -0x8000000000000000").unwrap_err();
+    match err {
+        crate::error::Error::Structured(crate::error::ErrorKind::LossyScalar { body, .. }) => {
+            assert_eq!(body, "-0x8000000000000000");
+        }
+        other => panic!("expected LossyScalar, got {other:?}"),
+    }
+}
+
 // --- float literal grammar (0.5.0 § 3.6) -----------------------------------
 
 #[test]

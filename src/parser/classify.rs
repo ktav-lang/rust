@@ -241,12 +241,15 @@ fn parse_prefixed_int(digits: &[u8], radix: u32, negative: bool) -> Option<i64> 
     }
 
     if negative {
-        // -val must fit in i64
-        if val > (i64::MAX as u64) + 1 {
+        // -val must fit in i64; i64::MIN has magnitude (i64::MAX as u64) + 1
+        let min_mag = (i64::MAX as u64) + 1;
+        if val > min_mag {
             return None;
         }
         if val == 0 {
             Some(0) // -0 → 0
+        } else if val == min_mag {
+            Some(i64::MIN)
         } else {
             Some(-(val as i64))
         }

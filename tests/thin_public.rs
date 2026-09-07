@@ -319,6 +319,43 @@ fn float_overflow_falls_back_to_string_event() {
 }
 
 #[test]
+fn thin_parse_events_negative_hex_i64_min() {
+    // The thin path shares try_parse_integer: -2^63 must arrive as
+    // i64::MIN, and one past the boundary must surface as a string,
+    // not an error.
+    assert_eq!(
+        collect("x: -0x8000000000000000"),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("x".into()),
+            Owned::Integer("-9223372036854775808".into()),
+            Owned::EndObject,
+        ]
+    );
+    assert_eq!(
+        collect("x: -0x8000000000000001"),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("x".into()),
+            Owned::Str("-0x8000000000000001".into()),
+            Owned::EndObject,
+        ]
+    );
+}
+
+#[test]
+fn thin_from_str_negative_hex_i64_min() {
+    // ktav::from_str deserialization: "x: -0x8000000000000000" into a
+    // small struct must yield x == i64::MIN.
+    #[derive(serde::Deserialize)]
+    struct Cfg {
+        x: i64,
+    }
+    let cfg: Cfg = ktav::from_str("x: -0x8000000000000000").unwrap();
+    assert_eq!(cfg.x, i64::MIN);
+}
+
+#[test]
 fn float_negative_underflow_is_negative_zero_event() {
     assert_eq!(
         collect("v: -1e-9999"),
