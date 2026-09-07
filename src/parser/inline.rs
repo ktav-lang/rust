@@ -583,6 +583,17 @@ fn has_quote_bytes(bytes: &[u8]) -> bool {
     bytes.contains(&b'"') || bytes.contains(&b'\'') || bytes.contains(&b'`')
 }
 
+/// The closer byte that terminates the compound opened by `kind`
+/// (`'{'` → `'}'`, `'['` → `']'`; equal to the body's own `close` when
+/// `kind` is the outermost opener).
+fn close_for_kind(kind: u8) -> u8 {
+    if kind == b'{' {
+        b'}'
+    } else {
+        b']'
+    }
+}
+
 /// Skip line-bounded § 3.3 whitespace (the Unicode White_Space set;
 /// LF/CR cannot occur — lines are pre-split). Returns the index of the
 /// first non-whitespace byte at or after `i`. § 3.3 fixes the closed
@@ -1509,7 +1520,10 @@ pub(crate) enum InlineCloserScan {
 /// (§ 5.8.5 mid-value brace rule: only the first non-ws byte of a value
 /// decides compound-vs-literal), and a `::` raw marker makes the rest of
 /// the pair's value literal — so mid-value braces and raw strings never
-/// swallow the body's matching closer.
+/// swallow the body's matching closer. Raw tracking is per scope
+/// (§ 5.8.5, R4-F1): a raw value is terminated only by the CURRENT
+/// scope's own unescaped delimiter, and closers restore the enclosing
+/// scope's key context (R4-F2).
 pub(crate) fn scan_inline_closer(
     input: &str,
     open: u8,
@@ -1545,6 +1559,10 @@ pub(crate) fn scan_inline_closer(
         let mut in_key = object;
         let mut value_start = !object;
         let mut raw = false;
+        // Opener kinds of currently-open NESTED scopes; the body's own
+        // kind is `open` (§ 5.8.5, R4-F1: raw is terminated by the
+        // current scope's own closer, not the outermost one).
+        let mut nested: Vec<u8> = Vec::new();
         let mut prev = open;
         while i < bytes.len() {
             let b = bytes[i];
@@ -1595,6 +1613,7 @@ pub(crate) fn scan_inline_closer(
                     // non-value-start (or raw-mode) opener is a literal
                     // byte that falls through to `_`.
                     depth += 1;
+                    nested.push(b);
                     // After an array's `[` the next position is still a
                     // value position (its first item, § 5.8.5); after a
                     // nested `{` comes key context.
@@ -1603,13 +1622,18 @@ pub(crate) fn scan_inline_closer(
                         in_key = true;
                     }
                 }
-                b'}' | b']' if !raw || b == close => {
+                b'}' | b']'
+                    if !raw || b == close_for_kind(nested.last().copied().unwrap_or(open)) =>
+                {
                     // Both closer kinds decrement the shared depth: a
                     // nested compound of the OTHER delimiter type still
                     // closes (an array item may be an object and vice
-                    // versa). A closer that returns depth to zero must
-                    // be the body's own closer; a crossed one (e.g.
-                    // `[{a: 1]`) is not a matching closer (§ 5.2's
+                    // versa). The per-scope gate (R4-F1, § 5.8.5): raw
+                    // mode ends only at the current scope's own closer —
+                    // any other closer byte is raw content falling
+                    // through to `_`. A closer that returns depth to
+                    // zero must be the body's own closer; a crossed one
+                    // (e.g. `[{a: 1]`) is not a matching closer (§ 5.2's
                     // matching-closer rule).
                     depth -= 1;
                     if depth == 0 {
@@ -1618,6 +1642,26 @@ pub(crate) fn scan_inline_closer(
                         } else {
                             InlineCloserScan::NotFound
                         };
+                    }
+                    // Nested closer matching the current scope's opener
+                    // kind: pop it (compare stored OPENER to the closer's
+                    // matching opener, R4-F2). Restore `raw = false`:
+                    // provably always correct, since the opener guard
+                    // `value_start && !raw` means a scope can never be
+                    // pushed while its enclosing scope is in raw mode
+                    // (§ 5.8.5) — literal raw openers never start
+                    // nesting. No `in_key`/`value_start` restoration is
+                    // needed: without quote bytes the opacity mechanism
+                    // cannot occur, and both are only read at `:`/value
+                    // start, always separated from a nested closer by a
+                    // `,` (which re-arms both) or the matching closer.
+                    let kind_matched = match b {
+                        b'}' => nested.last() == Some(&b'{'),
+                        _ => nested.last() == Some(&b'['),
+                    };
+                    if kind_matched {
+                        nested.pop();
+                        raw = false;
                     }
                 }
                 _ => {
@@ -1658,10 +1702,10 @@ pub(crate) fn scan_inline_closer(
     let mut raw = false;
     let mut prev = open;
     // Per open compound: the opener byte plus the enclosing key-position
-    // state. A closer restores that state only when it matches the most
-    // recently opened compound kind, so crossed closers don't corrupt
-    // key tracking.
-    let mut open_stack: Vec<(u8, bool, bool)> = Vec::new();
+    // and raw state. A closer restores that state only when it matches
+    // the most recently opened compound kind, so crossed closers don't
+    // corrupt key tracking (R4-F2).
+    let mut open_stack: Vec<(u8, bool, bool, bool)> = Vec::new();
     while i < bytes.len() {
         if in_key && seg_start {
             i = skip_segment_ws(input, i);
@@ -1723,7 +1767,9 @@ pub(crate) fn scan_inline_closer(
                 // Next pair / item begins: a fresh key position in an
                 // object scope; array scope positions stay value
                 // positions (§ 5.3.3 "Keys only").
-                let scope_object = open_stack.last().map_or(object, |(k, _, _)| *k == b'{');
+                // After the R4-F2 fix the stack top correctly reflects
+                // the ENCLOSING scope even after nested closers.
+                let scope_object = open_stack.last().map_or(object, |(k, _, _, _)| *k == b'{');
                 in_key = scope_object;
                 seg_start = scope_object;
                 raw = false;
@@ -1737,14 +1783,21 @@ pub(crate) fn scan_inline_closer(
                 // After an array's `[` the next position is still a value
                 // position (its first item); after a nested `{` comes a
                 // fresh key position. Save the enclosing key-position
-                // state; an array scope has none (§ 5.3.3 "Keys only").
-                open_stack.push((b, in_key, seg_start));
+                // and raw state (§ 5.8.5, R4-F1); an array scope has no
+                // key context (§ 5.3.3 "Keys only").
+                open_stack.push((b, in_key, seg_start, raw));
                 value_start = b == b'[';
                 in_key = b == b'{';
                 seg_start = b == b'{';
             }
-            b'}' | b']' if !raw || b == close => {
-                // Both closer kinds decrement (see fast path).
+            b'}' | b']'
+                if !raw
+                    || b == close_for_kind(open_stack.last().map_or(open, |(k, _, _, _)| *k)) =>
+            {
+                // Both closer kinds decrement (see fast path). The
+                // per-scope gate (R4-F1, § 5.8.5): raw mode ends only at
+                // the current scope's own closer; any other closer byte
+                // is raw content falling through to `_`.
                 depth -= 1;
                 if depth == 0 {
                     // A closer that returns depth to zero must be the
@@ -1757,12 +1810,19 @@ pub(crate) fn scan_inline_closer(
                     };
                 }
                 // Matching close of a nested compound: restore the
-                // enclosing key-position state only when the closer
-                // matches the most recently opened compound kind.
-                if open_stack.last().is_some_and(|(k, _, _)| *k == b) {
-                    let (_, saved_in_key, saved_seg_start) = open_stack.pop().unwrap();
+                // enclosing key-position and raw state only when the
+                // closer matches the most recently opened compound kind
+                // (compare the stored OPENER against the closer's
+                // matching opener kind, R4-F2 / `find_matching_close`).
+                let kind_matched = match b {
+                    b'}' => open_stack.last().is_some_and(|(k, _, _, _)| *k == b'{'),
+                    _ => open_stack.last().is_some_and(|(k, _, _, _)| *k == b'['),
+                };
+                if kind_matched {
+                    let (_, saved_in_key, saved_seg_start, saved_raw) = open_stack.pop().unwrap();
                     in_key = saved_in_key;
                     seg_start = saved_seg_start;
+                    raw = saved_raw;
                 } else {
                     seg_start = false;
                 }
