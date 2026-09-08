@@ -5,7 +5,7 @@ pub(crate) mod classify;
 mod collecting;
 mod frame;
 pub(crate) mod inline;
-mod insert;
+pub(crate) mod insert;
 mod parse_str;
 mod parser;
 pub(crate) mod validate;
