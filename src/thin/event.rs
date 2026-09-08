@@ -45,10 +45,10 @@ pub(crate) type EventStream<'a> = BumpVec<'a, Event<'a>>;
 
 /// Abstracts where a parser state machine emits events.
 ///
-/// Two real implementations: `BumpVec<Event<'a>>` for the callback-
-/// style public API (full document tokenized into one slab, then
-/// iterated), and `Vec<Event<'a>>` for the streaming deserializer
-/// (small reusable per-line queue, no whole-document buffer).
+/// Two real implementations: `BumpVec<Event<'a>>` for the whole-
+/// document stream (shared by `from_str` and the public `parse_events`),
+/// and `Vec<Event<'a>>` for the parser's per-parse reusable inline
+/// staging buffer (`EventParser::staging`).
 ///
 /// Generifying the parser over this trait keeps a single state-machine
 /// implementation serving both modes. Monomorphisation specialises

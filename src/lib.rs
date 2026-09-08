@@ -131,12 +131,18 @@ pub fn parse_strict(text: &str) -> Result<Value> {
     parser::parse_str_strict(text)
 }
 
-/// Parse a Ktav document from a string and deserialize it into `T`. Uses
-/// the zero-copy event path: the parser tokenizes the document into a
-/// flat `Vec<Event>` (object keys and single-line scalars are borrowed
-/// directly from `s`), and serde walks that vec linearly without ever
-/// materialising a tree. Compound nesting is bracketed by
-/// `BeginObject`/`EndObject` events instead of nested allocations.
+/// Parse a Ktav document from a string and deserialize it into `T`.
+/// Uses the zero-copy event path: the document is tokenized line by
+/// line into a flat `Vec<Event>` — object keys and unmodified scalars
+/// are borrowed directly from `s`; only escape-decoded strings and
+/// canonical numeric forms are allocated, in a temporary arena freed
+/// when this call returns. Serde walks the events linearly without
+/// ever materialising a tree; compound nesting is bracketed by
+/// `BeginObject`/`EndObject` events. Inline compounds (`a: {x: 1}`)
+/// are scanned straight into events — no owned `Value` tree and no
+/// per-compound temporary buffer; the scanner keeps one reusable
+/// staging buffer per parse and one insertion-ordered key table per
+/// inline object scope for duplicate/conflict detection.
 pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
     // Pre-size the bump arena to avoid re-allocations during event parsing.
     // Each Event is 24 bytes; the pre-allocated count is ~text.len()/4.

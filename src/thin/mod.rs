@@ -1,10 +1,14 @@
 //! Zero-copy event-stream parser.
 //!
 //! Tokenize a Ktav document into a linear sequence of [`ParseEvent`]s
-//! delivered to a user callback — no intermediate tree, no per-compound
-//! allocation. Object keys and single-line scalars are borrowed straight
-//! from the input string; the events you receive carry `&'a str` slices
-//! into the original buffer.
+//! delivered to a user callback — no intermediate tree. Object keys
+//! and unmodified scalars are borrowed straight from the input string;
+//! the events you receive carry `&'a str` slices into the original
+//! buffer (only escape-decoded strings and canonical numeric forms are
+//! allocated, in a temporary arena). Inline compounds are scanned
+//! directly into events; the parser's transient state is one reusable
+//! staging buffer plus one insertion-ordered key table per inline
+//! object scope — never a tree, and never a per-compound `Vec`.
 //!
 //! Internally this is the same path that powers [`crate::from_str`]: the
 //! flat-event stream is the hot deserialization route. Exposing it
@@ -140,9 +144,10 @@ impl<'a> ParseEvent<'a> {
 /// document order.
 ///
 /// Events borrow `&str` slices from `input` where possible (object
-/// keys, plain scalars). Multi-line scalars and `+`-stripped typed
-/// numbers are allocated in a temporary bump arena owned by this call;
-/// their slices live as long as the call itself, which is sufficient
+/// keys, plain scalars). Multi-line scalar bodies and canonicalized
+/// scalars (escape decoding, itoa/ryu numeric reformatting) are
+/// allocated in a temporary bump arena owned by this call; their
+/// slices live as long as the call itself, which is sufficient
 /// because the callback only sees them by reference through
 /// `ParseEvent<'_>`.
 ///
