@@ -995,15 +995,54 @@ pub(crate) enum InlineBody {
 // 10. The segment-start skip block runs only when
 //     `TRACK_QUOTES && in_key && seg_start`.
 
-/// Per open compound: the opener byte plus the enclosing key-position,
-/// segment-start and raw state. A closer restores that state only when
-/// it matches the most recently opened compound kind, so crossed
-/// closers don't corrupt key tracking (R4-F2 / R6-F1).
-struct ScopeFrame {
-    kind: u8,
-    saved_in_key: bool,
-    saved_seg_start: bool,
-    saved_raw: bool,
+/// Per open compound: the opener kind plus the enclosing key-position,
+/// segment-start and raw state, packed into ONE byte. The scope stack
+/// pushes/pops one element per nesting level, so the element size is
+/// hot on deeply-nested documents; the former 4-byte struct
+/// (kind + three `bool`s) regressed them measurably against the
+/// pre-unification `Vec<u8>` opener stack.
+///
+/// Bit layout: bit 0 = opener kind (0: `{`-scope, 1: `[`-scope),
+/// bit 1 = saved `in_key`, bit 2 = saved `seg_start`, bit 3 = saved `raw`.
+#[derive(Clone, Copy)]
+struct ScopeFrame(u8);
+
+impl ScopeFrame {
+    /// `kind` is the opener byte, `b'{'` or `b'['`.
+    #[inline]
+    fn pack(kind: u8, saved_in_key: bool, saved_seg_start: bool, saved_raw: bool) -> Self {
+        ScopeFrame(
+            ((kind == b'[') as u8)
+                | ((saved_in_key as u8) << 1)
+                | ((saved_seg_start as u8) << 2)
+                | ((saved_raw as u8) << 3),
+        )
+    }
+
+    /// The stored opener kind, as the opener byte it was packed from.
+    #[inline]
+    fn kind(self) -> u8 {
+        if self.0 & 1 == 0 {
+            b'{'
+        } else {
+            b'['
+        }
+    }
+
+    #[inline]
+    fn saved_in_key(self) -> bool {
+        self.0 & 0b0010 != 0
+    }
+
+    #[inline]
+    fn saved_seg_start(self) -> bool {
+        self.0 & 0b0100 != 0
+    }
+
+    #[inline]
+    fn saved_raw(self) -> bool {
+        self.0 & 0b1000 != 0
+    }
 }
 
 /// Why the shared scanner loop stopped.
@@ -1480,7 +1519,7 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                         // scope starts a key position, an Array
                         // scope stays a value position (§ 5.3.3
                         // "Keys only").
-                        let scope_object = stack.last().map_or(body_object, |f| f.kind == b'{');
+                        let scope_object = stack.last().map_or(body_object, |f| f.kind() == b'{');
                         in_key = scope_object;
                         if C::TRACK_QUOTES {
                             seg_start = scope_object;
@@ -1555,12 +1594,7 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                         if C::USE_STACK {
                             // Save the enclosing key-position and raw
                             // state (§ 5.8.5, R4-F1 / R6-F1).
-                            stack.push(ScopeFrame {
-                                kind: b,
-                                saved_in_key: in_key,
-                                saved_seg_start: seg_start,
-                                saved_raw: raw,
-                            });
+                            stack.push(ScopeFrame::pack(b, in_key, seg_start, raw));
                         }
                         // After an array's `[` the next position is
                         // still a value position (its first item,
@@ -1585,11 +1619,11 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                         // depth change.
                         if C::TRACK_QUOTES {
                             let want = if b == b']' { b'[' } else { b'{' };
-                            if stack.last().is_some_and(|f| f.kind == want) {
+                            if stack.last().is_some_and(|f| f.kind() == want) {
                                 let f = stack.pop().unwrap();
-                                in_key = f.saved_in_key;
+                                in_key = f.saved_in_key();
                                 seg_start = if C::RESTORE_SEG_ON_MATCH {
-                                    f.saved_seg_start
+                                    f.saved_seg_start()
                                 } else {
                                     // The closer itself consumed a
                                     // position, so segment-start
@@ -1627,14 +1661,14 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                         // matching opener, R4-F2), so crossed closers
                         // don't corrupt tracking.
                         let want = if b == b']' { b'[' } else { b'{' };
-                        if stack.last().is_some_and(|f| f.kind == want) {
+                        if stack.last().is_some_and(|f| f.kind() == want) {
                             let f = stack.pop().unwrap();
                             if C::RESTORE_IN_KEY_ON_MATCH {
-                                in_key = f.saved_in_key;
+                                in_key = f.saved_in_key();
                             }
                             if C::TRACK_QUOTES {
                                 seg_start = if C::RESTORE_SEG_ON_MATCH {
-                                    f.saved_seg_start
+                                    f.saved_seg_start()
                                 } else {
                                     // The `}`/`]` itself consumed a
                                     // position, so segment-start
@@ -1645,7 +1679,7 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                                 if C::RESTORE_RAW_ON_MATCH {
                                     // Per-scope raw tracking
                                     // (§ 5.8.5, R4-F1 / R4-F2).
-                                    raw = f.saved_raw;
+                                    raw = f.saved_raw();
                                 }
                             }
                         } else if C::MISMATCH_SEG_FALSE && C::TRACK_QUOTES {
