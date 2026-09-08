@@ -35,8 +35,8 @@ use crate::error::{Error, ErrorKind, Span};
 use crate::parser::classify::{is_float_literal, try_parse_integer};
 use crate::parser::inline::{
     find_matching_close, find_unescaped_colon_inline, malformed_closer_not_at_end,
-    parse_float_value, process_escapes, scan_inline_closer, split_top_level, InlineBody,
-    InlineCloserScan, MAX_INLINE_DEPTH,
+    parse_float_value, process_escapes, scan_inline_closer, scan_inline_closer_with_bounds,
+    split_top_level, InlineBody, InlineBounds, InlineCloserScan, MAX_INLINE_DEPTH,
 };
 use crate::parser::insert::{insert_value, InsertShape, InsertTable, OccupiedShape};
 use crate::whitespace::is_inline_whitespace;
@@ -157,6 +157,9 @@ impl<'a> InsertTable<'a> for InlineMap<'a> {
 /// then `MalformedInlineCompound` for a closer followed by content —
 /// before any event is emitted and before any key/path state is
 /// touched.
+///
+/// That gate scan records the compound's boundary map once
+/// (`InlineBounds`), which is handed down to the scan.
 pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
     body: &'a str,
     kind: InlineBody,
@@ -170,7 +173,8 @@ pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
     } else {
         (b'[', b']')
     };
-    match scan_inline_closer(body, open, close, line_num, span) {
+    let mut bounds_pairs = Vec::new();
+    match scan_inline_closer_with_bounds(body, open, close, line_num, span, &mut bounds_pairs) {
         InlineCloserScan::BadEscape(err) => return Err(err),
         InlineCloserScan::NotFound => {
             return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
@@ -183,14 +187,15 @@ pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
         }
         InlineCloserScan::Found(_) => {}
     }
+    let bounds = InlineBounds::over(body, &bounds_pairs);
     let mut buf: Vec<Event<'a>> = Vec::new();
     match kind {
         InlineBody::Object => {
-            let node = scan_inline_object(body, line_num, span, 0, bump)?;
+            let node = scan_inline_object(body, line_num, span, 0, bump, bounds)?;
             emit_node(&node, bump, &mut buf);
         }
         InlineBody::Array => {
-            scan_inline_array_into(body, line_num, span, 0, bump, &mut buf)?;
+            scan_inline_array_into(body, line_num, span, 0, bump, &mut buf, bounds)?;
         }
     }
     for ev in buf {
@@ -215,6 +220,7 @@ fn scan_inline_object<'a>(
     span: Span,
     depth: usize,
     bump: &'a Bump,
+    bounds: InlineBounds<'_>,
 ) -> Result<Node<'a>, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -233,7 +239,7 @@ fn scan_inline_object<'a>(
         return Ok(Node::Object(InlineMap::default()));
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Object)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Object, bounds)?;
     let mut map = InlineMap::default();
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
@@ -290,7 +296,7 @@ fn scan_inline_object<'a>(
             )?;
             Node::Leaf(Event::Str(cow_to_bump(processed, bump)))
         } else {
-            scan_inline_value(value_body, line_num, span, depth, bump)?
+            scan_inline_value(value_body, line_num, span, depth, bump, bounds)?
         };
 
         insert_value(&mut map, key, node, line_num, span)?;
@@ -312,6 +318,7 @@ fn scan_inline_array_into<'a>(
     depth: usize,
     bump: &'a Bump,
     buf: &mut Vec<Event<'a>>,
+    bounds: InlineBounds<'_>,
 ) -> Result<(), Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -331,7 +338,7 @@ fn scan_inline_array_into<'a>(
         return Ok(());
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Array)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Array, bounds)?;
     buf.push(Event::BeginArray);
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
@@ -359,7 +366,7 @@ fn scan_inline_array_into<'a>(
             continue;
         }
 
-        match scan_inline_value_trimmed(trimmed, line_num, span, depth, bump)? {
+        match scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds)? {
             Node::Leaf(ev) => buf.push(ev),
             Node::Array(events) => buf.extend_from_slice(&events),
             Node::Object(map) => emit_node(&Node::Object(map), bump, buf),
@@ -376,6 +383,7 @@ fn scan_inline_value<'a>(
     span: Span,
     depth: usize,
     bump: &'a Bump,
+    bounds: InlineBounds<'_>,
 ) -> Result<Node<'a>, Error> {
     // Inline view trim: the body is a slice of one § 3.2-pre-split
     // line, so raw LF/CR bytes cannot occur.
@@ -383,19 +391,23 @@ fn scan_inline_value<'a>(
     if trimmed.is_empty() {
         return Ok(Node::Leaf(Event::Str("")));
     }
-    scan_inline_value_trimmed(trimmed, line_num, span, depth, bump)
+    scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds)
 }
 
 /// Port of `parse_inline_value_raw` + `classify_inline_scalar`
 /// (owned, lax mode — the thin path has no strict variant). Note the
-/// nested-compound triage is find-then-scan, exactly as the owned code:
-/// `find_matching_close` first, `scan_inline_closer` only as fallback.
+/// nested-compound triage is memo-then-find-then-scan, exactly as the
+/// owned code: the gate-scan memo hit short-circuits both scans with
+/// the identical verdict; the fallback keeps `BadEscapeSequence`
+/// precedence for non-memo spans (`find_matching_close` first,
+/// `scan_inline_closer` only as fallback).
 fn scan_inline_value_trimmed<'a>(
     trimmed: &'a str,
     line_num: usize,
     span: Span,
     depth: usize,
     bump: &'a Bump,
+    bounds: InlineBounds<'_>,
 ) -> Result<Node<'a>, Error> {
     let first_byte = trimmed.as_bytes()[0];
 
@@ -405,12 +417,16 @@ fn scan_inline_value_trimmed<'a>(
         } else {
             (b'[', b']')
         };
-        let close_idx = match find_matching_close(trimmed, open, close) {
-            Some(close) => Some(close),
-            None => match scan_inline_closer(trimmed, open, close, line_num, span) {
-                InlineCloserScan::Found(idx) => Some(idx),
-                InlineCloserScan::NotFound => None,
-                InlineCloserScan::BadEscape(err) => return Err(err),
+        let close_idx = match bounds.known_closer(trimmed) {
+            // Gate-scan memo: identical to what the dispatch below computes.
+            Some(idx) => Some(idx),
+            None => match find_matching_close(trimmed, open, close) {
+                Some(close) => Some(close),
+                None => match scan_inline_closer(trimmed, open, close, line_num, span) {
+                    InlineCloserScan::Found(idx) => Some(idx),
+                    InlineCloserScan::NotFound => None,
+                    InlineCloserScan::BadEscape(err) => return Err(err),
+                },
             },
         };
         return match close_idx {
@@ -419,14 +435,22 @@ fn scan_inline_value_trimmed<'a>(
                 let inner = &trimmed[1..trimmed.len() - 1];
                 if first_byte == b'[' {
                     let mut events = Vec::new();
-                    scan_inline_array_into(trimmed, line_num, span, depth + 1, bump, &mut events)?;
+                    scan_inline_array_into(
+                        trimmed,
+                        line_num,
+                        span,
+                        depth + 1,
+                        bump,
+                        &mut events,
+                        bounds,
+                    )?;
                     return Ok(Node::Array(events));
                 }
                 // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
                 if inner.trim_matches(is_inline_whitespace).is_empty() {
                     return Ok(Node::Object(InlineMap::default()));
                 }
-                scan_inline_object(trimmed, line_num, span, depth + 1, bump)
+                scan_inline_object(trimmed, line_num, span, depth + 1, bump, bounds)
             }
             // § 6.12: closer found, but content follows it.
             Some(_) => Err(malformed_closer_not_at_end(line_num, span)),

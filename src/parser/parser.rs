@@ -737,7 +737,15 @@ fn diagnose_root_inline(
     span: Span,
     strict: bool,
 ) -> Result<RootResult, Error> {
-    match inline::scan_inline_closer(trimmed, open, close, line_num, span) {
+    let mut bounds_pairs = Vec::new();
+    match inline::scan_inline_closer_with_bounds(
+        trimmed,
+        open,
+        close,
+        line_num,
+        span,
+        &mut bounds_pairs,
+    ) {
         inline::InlineCloserScan::BadEscape(err) => Err(err),
         inline::InlineCloserScan::NotFound => {
             Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
@@ -750,10 +758,12 @@ fn diagnose_root_inline(
             // `{}` / `[]` (empty inner → default value), so no separate
             // empty shortcut is needed.
             if open == b'{' {
-                let value = inline::parse_inline_object(trimmed, line_num, span, strict)?;
+                let bounds = inline::InlineBounds::over(trimmed, &bounds_pairs);
+                let value = inline::parse_inline_object(trimmed, line_num, span, strict, bounds)?;
                 Ok(RootResult::InlineObject(value))
             } else {
-                let value = inline::parse_inline_array(trimmed, line_num, span, strict)?;
+                let bounds = inline::InlineBounds::over(trimmed, &bounds_pairs);
+                let value = inline::parse_inline_array(trimmed, line_num, span, strict, bounds)?;
                 Ok(RootResult::InlineArray(value))
             }
         }

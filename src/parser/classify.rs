@@ -152,7 +152,15 @@ fn dispatch_inline_compound(
     span: Span,
     strict: bool,
 ) -> Result<ValueStart, Error> {
-    match inline::scan_inline_closer(trimmed, open, close, line_num, span) {
+    let mut bounds_pairs = Vec::new();
+    match inline::scan_inline_closer_with_bounds(
+        trimmed,
+        open,
+        close,
+        line_num,
+        span,
+        &mut bounds_pairs,
+    ) {
         inline::InlineCloserScan::BadEscape(err) => Err(err),
         inline::InlineCloserScan::NotFound => {
             Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
@@ -161,10 +169,11 @@ fn dispatch_inline_compound(
             }))
         }
         inline::InlineCloserScan::Found(idx) if idx == trimmed.len() - 1 => {
+            let bounds = inline::InlineBounds::over(trimmed, &bounds_pairs);
             let value = if open == b'{' {
-                inline::parse_inline_object(trimmed, line_num, span, strict)?
+                inline::parse_inline_object(trimmed, line_num, span, strict, bounds)?
             } else {
-                inline::parse_inline_array(trimmed, line_num, span, strict)?
+                inline::parse_inline_array(trimmed, line_num, span, strict, bounds)?
             };
             Ok(ValueStart::InlineValue(value))
         }

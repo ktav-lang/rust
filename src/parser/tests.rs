@@ -1252,6 +1252,7 @@ use super::inline::find_unescaped_colon_inline;
 use super::inline::split_top_level;
 use super::inline::ColonScan;
 use super::inline::InlineBody;
+use super::inline::InlineBounds;
 use super::inline::{key_is_single_segment, scan_unescaped_colon, split_key_path};
 
 #[test]
@@ -1323,17 +1324,37 @@ fn quoted_find_unescaped_colon_inline() {
 fn quoted_split_top_level_object_mode() {
     // Comma inside a quoted KEY does not split.
     assert_eq!(
-        split_top_level("\"a}b\": 1, c: 2", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "\"a}b\": 1, c: 2",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("\"a}b\": 1, c: 2")
+        )
+        .unwrap(),
         vec!["\"a}b\": 1", " c: 2"]
     );
     // Comma inside a quoted VALUE does split ("Keys only"): value
     // quotes are ordinary content, so both commas are split points.
     assert_eq!(
-        split_top_level("a: \"x,y\", b: 2", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "a: \"x,y\", b: 2",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("a: \"x,y\", b: 2")
+        )
+        .unwrap(),
         vec!["a: \"x", "y\"", " b: 2"]
     );
     // Unterminated quoted key segment.
-    match split_top_level("\"a: 1", 1, S, InlineBody::Object) {
+    match split_top_level(
+        "\"a: 1",
+        1,
+        S,
+        InlineBody::Object,
+        InlineBounds::for_input("\"a: 1"),
+    ) {
         Err(crate::Error::Structured(crate::ErrorKind::UnterminatedInlineCompound { .. })) => {}
         other => panic!(
             "expected UnterminatedInlineCompound, got: {:?}",
@@ -1348,7 +1369,14 @@ fn quoted_split_top_level_array_mode_ignores_quotes() {
     // today's behaviour kept exactly, so the comma inside the quotes
     // splits.
     assert_eq!(
-        split_top_level("\"a,b\", c", 1, S, InlineBody::Array).unwrap(),
+        split_top_level(
+            "\"a,b\", c",
+            1,
+            S,
+            InlineBody::Array,
+            InlineBounds::for_input("\"a,b\", c")
+        )
+        .unwrap(),
         vec!["\"a", "b\"", " c"]
     );
 }
@@ -1398,23 +1426,51 @@ fn r3f1_split_top_level_trailing_ws_after_comma_no_phantom_segment() {
     for tail in [" ", "\t", "\u{00a0}"] {
         let body = format!("\"a\": 1,{tail}");
         assert_eq!(
-            split_top_level(&body, 1, S, InlineBody::Object).unwrap(),
+            split_top_level(
+                &body,
+                1,
+                S,
+                InlineBody::Object,
+                InlineBounds::for_input(&body)
+            )
+            .unwrap(),
             vec!["\"a\": 1"]
         );
     }
     // Comma at EOF without whitespace: unchanged — the empty final
     // segment is still emitted and the caller accepts it.
     assert_eq!(
-        split_top_level("\"a\": 1,", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "\"a\": 1,",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("\"a\": 1,")
+        )
+        .unwrap(),
         vec!["\"a\": 1", ""]
     );
     // Quoted key and quoted VALUE before the trailing comma.
     assert_eq!(
-        split_top_level("\"a b\": 1, ", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "\"a b\": 1, ",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("\"a b\": 1, ")
+        )
+        .unwrap(),
         vec!["\"a b\": 1"]
     );
     assert_eq!(
-        split_top_level("a: \"x\", ", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "a: \"x\", ",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("a: \"x\", ")
+        )
+        .unwrap(),
         vec!["a: \"x\""]
     );
 }
@@ -1426,19 +1482,38 @@ fn r3f1_split_top_level_dotted_key_trailing_ws_is_empty_key() {
     // `insert_value` raises for `a.: 1`), not a panic, not success.
     for tail in [" ", "\t"] {
         let body = format!(" \"a\": 1, b.{tail}");
-        match split_top_level(&body, 1, S, InlineBody::Object) {
+        match split_top_level(
+            &body,
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input(&body),
+        ) {
             Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
             other => panic!("expected EmptyKey, got: {:?}", other.err()),
         }
     }
     // Leading-dot form, same shape (quote bytes present: slow path).
-    match split_top_level(" \"a\". ", 1, S, InlineBody::Object) {
+    match split_top_level(
+        " \"a\". ",
+        1,
+        S,
+        InlineBody::Object,
+        InlineBounds::for_input(" \"a\". "),
+    ) {
         Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
         other => panic!("expected EmptyKey, got: {:?}", other.err()),
     }
     // Dot followed by a real segment still works.
     assert_eq!(
-        split_top_level("a. b : 1", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "a. b : 1",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("a. b : 1")
+        )
+        .unwrap(),
         vec!["a. b : 1"]
     );
 }
@@ -1654,7 +1729,14 @@ fn r3f2_split_top_level_array_body_quoted_key_object() {
     // The nested object (with `]` in a quoted key) must be skipped
     // wholesale: the comma inside it never splits, the one after it does.
     assert_eq!(
-        split_top_level("{\"x]y\": 1},2", 1, S, InlineBody::Array).unwrap(),
+        split_top_level(
+            "{\"x]y\": 1},2",
+            1,
+            S,
+            InlineBody::Array,
+            InlineBounds::for_input("{\"x]y\": 1},2")
+        )
+        .unwrap(),
         vec!["{\"x]y\": 1}", "2"]
     );
 }
@@ -1668,7 +1750,14 @@ fn r3f4_split_top_level_midvalue_balanced_brace_splits_at_inner_comma() {
     // the comma inside it is a real top-level separator (§ 5.8.5), and
     // the comma after the mid-scalar `}` also splits (no comma-shielding).
     assert_eq!(
-        split_top_level("a: x{y,z}, b: 2", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "a: x{y,z}, b: 2",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("a: x{y,z}, b: 2")
+        )
+        .unwrap(),
         vec!["a: x{y", "z}", " b: 2"]
     );
 }
@@ -1678,7 +1767,14 @@ fn r3f4_split_top_level_midvalue_brace_quote_aware_slow_path() {
     use super::inline::{split_top_level, InlineBody};
     // R3-F4: same rule on the quote-aware slow path.
     assert_eq!(
-        split_top_level("k: \"v\", a: x{y,z}, b: 2", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "k: \"v\", a: x{y,z}, b: 2",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("k: \"v\", a: x{y,z}, b: 2")
+        )
+        .unwrap(),
         vec!["k: \"v\"", " a: x{y", "z}", " b: 2"]
     );
 }
@@ -1688,7 +1784,14 @@ fn r3f4_split_top_level_array_body_midvalue_brace_splits_at_inner_comma() {
     use super::inline::{split_top_level, InlineBody};
     // R3-F4: array bodies share the fast splitter and the rule.
     assert_eq!(
-        split_top_level("x{y,z}, 2", 1, S, InlineBody::Array).unwrap(),
+        split_top_level(
+            "x{y,z}, 2",
+            1,
+            S,
+            InlineBody::Array,
+            InlineBounds::for_input("x{y,z}, 2")
+        )
+        .unwrap(),
         vec!["x{y", "z}", " 2"]
     );
 }
@@ -1699,11 +1802,25 @@ fn r3f4_split_top_level_genuine_value_start_compounds_guard() {
     // R3-F4 guards: a compound that IS the first code point of a value
     // keeps its structural meaning — no split inside it.
     assert_eq!(
-        split_top_level("{a: 1}, 2", 1, S, InlineBody::Array).unwrap(),
+        split_top_level(
+            "{a: 1}, 2",
+            1,
+            S,
+            InlineBody::Array,
+            InlineBounds::for_input("{a: 1}, 2")
+        )
+        .unwrap(),
         vec!["{a: 1}", " 2"]
     );
     assert_eq!(
-        split_top_level("a: {y: 1}, b: 2", 1, S, InlineBody::Object).unwrap(),
+        split_top_level(
+            "a: {y: 1}, b: 2",
+            1,
+            S,
+            InlineBody::Object,
+            InlineBounds::for_input("a: {y: 1}, b: 2")
+        )
+        .unwrap(),
         vec!["a: {y: 1}", " b: 2"]
     );
 }

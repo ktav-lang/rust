@@ -30,8 +30,9 @@ pub(crate) fn parse_inline_object(
     line_num: usize,
     span: Span,
     strict: bool,
+    bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
-    parse_inline_object_inner(input, line_num, span, 0, strict)
+    parse_inline_object_inner(input, line_num, span, 0, strict, bounds)
 }
 
 /// Parse a balanced inline array body. `input` is the full body
@@ -41,8 +42,9 @@ pub(crate) fn parse_inline_array(
     line_num: usize,
     span: Span,
     strict: bool,
+    bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
-    parse_inline_array_inner(input, line_num, span, 0, strict)
+    parse_inline_array_inner(input, line_num, span, 0, strict, bounds)
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ fn parse_inline_object_inner(
     span: Span,
     depth: usize,
     strict: bool,
+    bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -73,7 +76,7 @@ fn parse_inline_object_inner(
         return Ok(Value::Object(ObjectMap::default()));
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Object)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Object, bounds)?;
 
     let mut map = ObjectMap::default();
     let n = segments.len();
@@ -139,7 +142,7 @@ fn parse_inline_object_inner(
             Value::String(processed.into_owned().into())
         } else {
             // Plain `:` — parse inline value
-            parse_inline_value(value_body, line_num, span, depth, strict)?
+            parse_inline_value(value_body, line_num, span, depth, strict, bounds)?
         };
 
         // Use insert_value for dotted key expansion
@@ -155,6 +158,7 @@ fn parse_inline_array_inner(
     span: Span,
     depth: usize,
     strict: bool,
+    bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -173,7 +177,7 @@ fn parse_inline_array_inner(
         return Ok(Value::Array(Vec::new()));
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Array)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Array, bounds)?;
 
     let mut items: Vec<Value> = Vec::new();
     let n = segments.len();
@@ -204,7 +208,7 @@ fn parse_inline_array_inner(
         }
 
         // Parse inline value (could be nested compound or scalar)
-        let value = parse_inline_value_raw(trimmed, line_num, span, depth, strict)?;
+        let value = parse_inline_value_raw(trimmed, line_num, span, depth, strict, bounds)?;
         items.push(value);
     }
 
@@ -223,6 +227,7 @@ fn parse_inline_value(
     span: Span,
     depth: usize,
     strict: bool,
+    bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
     // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
     let trimmed = body.trim_matches(is_inline_whitespace);
@@ -230,7 +235,7 @@ fn parse_inline_value(
         // Empty value after `:` → empty String
         return Ok(Value::String("".into()));
     }
-    parse_inline_value_raw(trimmed, line_num, span, depth, strict)
+    parse_inline_value_raw(trimmed, line_num, span, depth, strict, bounds)
 }
 
 /// Parse a single inline value that is already trimmed. This handles the
@@ -242,6 +247,7 @@ fn parse_inline_value_raw(
     span: Span,
     depth: usize,
     strict: bool,
+    bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
     let first_byte = trimmed.as_bytes()[0];
 
@@ -252,12 +258,20 @@ fn parse_inline_value_raw(
         // validating escapes. The fallback exists so a
         // `BadEscapeSequence` (§ 6.13) still takes precedence over the
         // unterminated decision when no closer is found at all.
-        let close_idx = match find_matching_close(trimmed, b'{', b'}') {
-            Some(close) => Some(close),
-            None => match scan_inline_closer(trimmed, b'{', b'}', line_num, span) {
-                InlineCloserScan::Found(idx) => Some(idx),
-                InlineCloserScan::NotFound => None,
-                InlineCloserScan::BadEscape(err) => return Err(err),
+        // A gate-scan memo hit (`bounds.known_closer`) short-circuits both
+        // scans with the identical verdict; the fallback keeps the live
+        // find-first dispatch — and with it the `BadEscapeSequence`
+        // precedence — for every non-memo span.
+        let close_idx = match bounds.known_closer(trimmed) {
+            // Gate-scan memo: identical to what the dispatch below computes.
+            Some(idx) => Some(idx),
+            None => match find_matching_close(trimmed, b'{', b'}') {
+                Some(close) => Some(close),
+                None => match scan_inline_closer(trimmed, b'{', b'}', line_num, span) {
+                    InlineCloserScan::Found(idx) => Some(idx),
+                    InlineCloserScan::NotFound => None,
+                    InlineCloserScan::BadEscape(err) => return Err(err),
+                },
             },
         };
         match close_idx {
@@ -270,7 +284,14 @@ fn parse_inline_value_raw(
                     return Ok(Value::Object(ObjectMap::default()));
                 }
                 // Nested inline object
-                return parse_inline_object_inner(trimmed, line_num, span, depth + 1, strict);
+                return parse_inline_object_inner(
+                    trimmed,
+                    line_num,
+                    span,
+                    depth + 1,
+                    strict,
+                    bounds,
+                );
             }
             // § 6.12: closer found, but content follows it.
             Some(_) => return Err(malformed_closer_not_at_end(line_num, span)),
@@ -288,12 +309,16 @@ fn parse_inline_value_raw(
         // Check for balanced closing `]` (see the `{` branch for the
         // escape-precedence fallback).
         // § 6.11/§ 6.12 tri-state (see the `{` branch).
-        let close_idx = match find_matching_close(trimmed, b'[', b']') {
-            Some(close) => Some(close),
-            None => match scan_inline_closer(trimmed, b'[', b']', line_num, span) {
-                InlineCloserScan::Found(idx) => Some(idx),
-                InlineCloserScan::NotFound => None,
-                InlineCloserScan::BadEscape(err) => return Err(err),
+        let close_idx = match bounds.known_closer(trimmed) {
+            // Gate-scan memo: identical to what the dispatch below computes.
+            Some(idx) => Some(idx),
+            None => match find_matching_close(trimmed, b'[', b']') {
+                Some(close) => Some(close),
+                None => match scan_inline_closer(trimmed, b'[', b']', line_num, span) {
+                    InlineCloserScan::Found(idx) => Some(idx),
+                    InlineCloserScan::NotFound => None,
+                    InlineCloserScan::BadEscape(err) => return Err(err),
+                },
             },
         };
         match close_idx {
@@ -305,7 +330,14 @@ fn parse_inline_value_raw(
                     return Ok(Value::Array(Vec::new()));
                 }
                 // Nested inline array
-                return parse_inline_array_inner(trimmed, line_num, span, depth + 1, strict);
+                return parse_inline_array_inner(
+                    trimmed,
+                    line_num,
+                    span,
+                    depth + 1,
+                    strict,
+                    bounds,
+                );
             }
             // § 6.12: closer found, but content follows it.
             Some(_) => return Err(malformed_closer_not_at_end(line_num, span)),
@@ -968,6 +1000,88 @@ pub(crate) enum InlineBody {
     Array,
 }
 
+/// Precomputed (opener, closer) byte offsets of every nested compound
+/// span inside one top-level inline body, relative to the body's first
+/// byte, sorted by opener. Produced by the § 5.2 gate scan
+/// ([`scan_inline_closer_with_bounds`]); consumed as a pure memo by
+/// split's opener jump and the per-value tri-state dispatch.
+///
+/// Purity invariant: a recorded pair `(o, c)` exists iff
+/// [`scan_inline_closer`] over the same span returns `Found(c - o)`.
+/// Two properties make this hold:
+///
+/// 1. ENTRY STATE. The recording walk and the standalone scan are the
+///    same machine, and at the span's opener their states agree: same
+///    seeds, and the opener arm re-derives in_key/seg_start/value_start/
+///    prev identically — EXCEPT a quote-free (ScanFast) walk entering a
+///    `[`-span can carry `in_key = true` residue (quirk 2 leaves
+///    `in_key` untouched where the standalone seed is `false`), which
+///    diverges the walks inside the span. Such spans are flagged impure
+///    at push and never recorded.
+/// 2. STOP BYTE. The standalone scan's counter is the walk's shared
+///    `depth` offset by the value captured at the opener, so it returns
+///    to zero exactly where global `depth` returns to `entry - 1`. That
+///    byte is the standalone's stop, and the top frame is always the
+///    span in question there (frames opened above die at strictly
+///    higher depths). A kind-matched closer at that byte is what the
+///    pop records; a crossed closer there is where the standalone
+///    stops with `NotFound`, so the frame is marked dead and never
+///    records, however far the walk continues past it — a later
+///    kind-matched pop cannot satisfy `depth == entry - 1` (its depth
+///    is strictly below), which is the second gate on recording.
+///
+/// No `unsafe`: every pointer use is an `as usize`
+/// comparison/subtraction on slices of the same allocation — every
+/// slice passed to [`InlineBounds::known_closer`] descends from the
+/// body the bounds were built over, so the subtraction stays within
+/// one allocation.
+#[derive(Clone, Copy)]
+pub(crate) struct InlineBounds<'a> {
+    origin: usize, // address of the top body's first byte (coordinate origin)
+    pairs: &'a [(usize, usize)],
+}
+
+impl<'a> InlineBounds<'a> {
+    /// Empty bounds whose coordinate origin is `input` itself (gate
+    /// scans and find: they never consult, and `input_off` becomes 0).
+    pub(crate) fn for_input(input: &str) -> Self {
+        InlineBounds {
+            origin: input.as_ptr() as usize,
+            pairs: &[],
+        }
+    }
+
+    /// Bounds over `top`, offsets relative to `top`'s first byte.
+    pub(crate) fn over<'b>(top: &str, pairs: &'b [(usize, usize)]) -> InlineBounds<'b> {
+        InlineBounds {
+            origin: top.as_ptr() as usize,
+            pairs,
+        }
+    }
+
+    /// If `s`'s first byte opens a recorded span whose closer lies
+    /// within `s`, the closer's offset relative to `s`. `Some` here is
+    /// byte-for-byte what the find-first dispatch's
+    /// `find_matching_close` would return (identical machines; a
+    /// recorded span provably contains no bad escape, the only
+    /// find/scan divergence). `None` — no record, or the recorded
+    /// closer falls beyond this body — means "not a memo for this
+    /// slice": the caller MUST run the live dispatch.
+    pub(crate) fn known_closer(&self, s: &str) -> Option<usize> {
+        let off = s.as_ptr() as usize - self.origin;
+        let idx = self.pairs.binary_search_by_key(&off, |p| p.0).ok()?;
+        let rel = self.pairs[idx].1 - off;
+        (rel < s.len()).then_some(rel)
+    }
+
+    /// Closer absolute offset of a recorded span whose opener sits at
+    /// absolute offset `abs`, for split's opener jump.
+    fn opener_close_at(&self, abs: usize) -> Option<usize> {
+        let idx = self.pairs.binary_search_by_key(&abs, |p| p.0).ok()?;
+        Some(self.pairs[idx].1)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared single-loop inline scanner
 // ---------------------------------------------------------------------------
@@ -1148,6 +1262,12 @@ trait ScanCfg {
     /// the slow configs: a nested closer clears `value_start`; the
     /// fast configs deliberately leave it untouched (quirk 1).
     const CLEAR_VS_ON_NESTED_CLOSE: bool;
+    /// scan configs only: record every nested (opener, closer) pair
+    /// into `pairs_out` as the walk pops each scope. Pure side output —
+    /// changes no decision. Recording is only PURE for spans whose
+    /// entry state equals the standalone scan's seed (see
+    /// [`InlineBounds`]), which is why only the gate scans record.
+    const RECORD_BOUNDS: bool;
 }
 
 /// `find_matching_close`, quote-free fast path: byte-for-byte the
@@ -1174,6 +1294,7 @@ impl ScanCfg for FindFast {
     const RESTORE_RAW_ON_MATCH: bool = false;
     const MISMATCH_SEG_FALSE: bool = false;
     const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+    const RECORD_BOUNDS: bool = false;
 }
 
 /// `find_matching_close`, slow path (quote bytes present): the
@@ -1202,6 +1323,7 @@ impl ScanCfg for FindQ {
     const RESTORE_RAW_ON_MATCH: bool = true;
     const MISMATCH_SEG_FALSE: bool = true;
     const CLEAR_VS_ON_NESTED_CLOSE: bool = true;
+    const RECORD_BOUNDS: bool = false;
 }
 
 /// `scan_inline_closer`, quote-free fast path. `value_start` marks an
@@ -1229,6 +1351,7 @@ impl ScanCfg for ScanFast {
     const RESTORE_RAW_ON_MATCH: bool = false;
     const MISMATCH_SEG_FALSE: bool = false;
     const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+    const RECORD_BOUNDS: bool = true;
 }
 
 /// `scan_inline_closer`, slow path (quote bytes present): the
@@ -1256,6 +1379,7 @@ impl ScanCfg for ScanQ {
     const RESTORE_RAW_ON_MATCH: bool = true;
     const MISMATCH_SEG_FALSE: bool = true;
     const CLEAR_VS_ON_NESTED_CLOSE: bool = true;
+    const RECORD_BOUNDS: bool = true;
 }
 
 /// `split_top_level`, quote-free fast path (also serving object bodies
@@ -1281,6 +1405,7 @@ impl ScanCfg for SplitFast {
     const RESTORE_RAW_ON_MATCH: bool = false;
     const MISMATCH_SEG_FALSE: bool = false;
     const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+    const RECORD_BOUNDS: bool = false;
 }
 
 /// `split_top_level`, object body with quote bytes: quoted KEYS are
@@ -1305,6 +1430,7 @@ impl ScanCfg for SplitQ {
     const RESTORE_RAW_ON_MATCH: bool = false;
     const MISMATCH_SEG_FALSE: bool = false;
     const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+    const RECORD_BOUNDS: bool = false;
 }
 
 /// The shared byte-at-a-time scanner. All hot state lives in fields
@@ -1313,7 +1439,7 @@ impl ScanCfg for SplitQ {
 /// locals; a field-per-iteration machine measured +15–20% slower on
 /// deeply-nested quote-free documents) and writes back once after the
 /// loop.
-struct Scanner<'a, C: ScanCfg> {
+struct Scanner<'a, 'b, C: ScanCfg> {
     input: &'a str,
     bytes: &'a [u8],
     open: u8,
@@ -1331,10 +1457,14 @@ struct Scanner<'a, C: ScanCfg> {
     stack: Vec<ScopeFrame>,
     segments: Vec<&'a str>,
     seg_at: usize,
+    input_off: usize, // offset of input[0] in bounds coordinates
+    bounds: InlineBounds<'b>,
+    open_at: Vec<(usize, bool, i32)>, // parallels `stack`: (opener offset, pure, entry depth)
+    pairs_out: Vec<(usize, usize)>, // recorded (opener, closer) pairs
     _cfg: std::marker::PhantomData<C>,
 }
 
-impl<'a, C: ScanCfg> Scanner<'a, C> {
+impl<'a, 'b, C: ScanCfg> Scanner<'a, 'b, C> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         input: &'a str,
@@ -1343,6 +1473,7 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
         body_object: bool,
         line_num: usize,
         span: Span,
+        bounds: InlineBounds<'b>,
     ) -> Self {
         Self {
             input,
@@ -1362,6 +1493,10 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
             stack: Vec::new(),
             segments: Vec::new(),
             seg_at: 0,
+            input_off: input.as_ptr() as usize - bounds.origin,
+            bounds,
+            open_at: Vec::new(),
+            pairs_out: Vec::new(),
             _cfg: std::marker::PhantomData,
         }
     }
@@ -1383,6 +1518,8 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
         let mut seg_at = self.seg_at;
         let mut stack = std::mem::take(&mut self.stack);
         let mut segments = std::mem::take(&mut self.segments);
+        let mut open_at = std::mem::take(&mut self.open_at);
+        let mut pairs_out = std::mem::take(&mut self.pairs_out);
 
         let stop = loop {
             if i >= len {
@@ -1555,6 +1692,33 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                         } else {
                             (b'[', b']')
                         };
+                        // Consult the gate scan's boundary map first: a
+                        // hit is a pure memo of the sub-scan below (see
+                        // [`InlineBounds`]), so the jump target and the
+                        // state writes are identical; a miss re-runs the
+                        // live sub-scan. Only split configs consult
+                        // (OPENER_JUMP): find-config walks never read
+                        // the map, and find_matching_close itself is
+                        // unchanged — a memo hit can therefore never
+                        // mask a BadEscapeSequence the live find
+                        // dispatch would raise, because
+                        // known_closer/consult hits only ever return
+                        // spans the validating scan walked without any
+                        // bad escape.
+                        if let Some(end_abs) = self.bounds.opener_close_at(self.input_off + i) {
+                            let end = end_abs - self.input_off; // closer index within `input`
+                            if end < len {
+                                // Skip over the entire nested compound
+                                // (same writes as the Found branch
+                                // below).
+                                i = end + 1;
+                                value_start = false;
+                                if C::TRACK_QUOTES {
+                                    seg_start = false;
+                                }
+                                continue;
+                            }
+                        }
                         if let InlineCloserScan::Found(pos) =
                             scan_inline_closer(&input[i..], o, c, self.line_num, self.span)
                         {
@@ -1583,6 +1747,17 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                             // Save the enclosing key-position and raw
                             // state (§ 5.8.5, R4-F1 / R6-F1).
                             stack.push(ScopeFrame::pack(b, in_key, seg_start, raw));
+                            if C::RECORD_BOUNDS {
+                                // Entry state of this span vs the
+                                // standalone scan's seed: provably
+                                // equal for `{`-spans and whenever
+                                // quote tracking re-derives in_key
+                                // (TRACK_QUOTES); a quote-free
+                                // `[`-span is pure only when in_key is
+                                // already the array seed `false`
+                                // (quirk 2 leaves it untouched).
+                                open_at.push((i, C::TRACK_QUOTES || b == b'{' || !in_key, depth));
+                            }
                         }
                         // After an array's `[` the next position is
                         // still a value position (its first item,
@@ -1649,8 +1824,38 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                         // matching opener, R4-F2), so crossed closers
                         // don't corrupt tracking.
                         let want = if b == b']' { b'[' } else { b'{' };
+                        if C::RECORD_BOUNDS {
+                            // The span's standalone scan stops at the FIRST
+                            // closer that returns its own counter to zero —
+                            // global `depth` back to `entry - 1`. That byte is
+                            // now, and the top frame is the span in question
+                            // (everything opened above it died at strictly
+                            // higher depths). Kind match: the pop below records
+                            // a pure pair. Crossed: the standalone said
+                            // `NotFound` HERE, so the frame must never record,
+                            // no matter how far the walk continues past it.
+                            match open_at.last_mut() {
+                                Some(top) if depth == top.2 - 1 => {
+                                    if !stack.last().is_some_and(|f| f.kind() == want) {
+                                        top.1 = false;
+                                    }
+                                }
+                                // Defense in depth: the walk somehow passed
+                                // the stop byte without stopping — treat the
+                                // span as dead.
+                                Some(top) if depth < top.2 - 1 => top.1 = false,
+                                _ => {}
+                            }
+                        }
                         if stack.last().is_some_and(|f| f.kind() == want) {
                             let f = stack.pop().unwrap();
+                            if C::RECORD_BOUNDS {
+                                let (open, pure, entry) =
+                                    open_at.pop().expect("open_at parallels the scope stack");
+                                if pure && depth == entry - 1 {
+                                    pairs_out.push((open, i));
+                                }
+                            }
                             if C::RESTORE_IN_KEY_ON_MATCH {
                                 in_key = f.saved_in_key();
                             }
@@ -1716,6 +1921,8 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
         self.seg_at = seg_at;
         self.stack = stack;
         self.segments = segments;
+        self.open_at = open_at;
+        self.pairs_out = pairs_out;
         stop
     }
 }
@@ -1740,24 +1947,24 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
 /// splits into two pairs — while quotes in value positions are
 /// ordinary content (`a: "x,y", b: 2` splits inside the quotes). An
 /// unterminated quoted key segment raises `UnterminatedInlineCompound`.
-// (`input: &str` instead of `<'a>(input: &'a str)`) — type-identical,
-// no call-site changes.
-pub(crate) fn split_top_level(
-    input: &str,
+pub(crate) fn split_top_level<'a>(
+    input: &'a str,
     line_num: usize,
     span: Span,
     body: InlineBody,
-) -> Result<Vec<&str>, Error> {
+    bounds: InlineBounds<'_>,
+) -> Result<Vec<&'a str>, Error> {
     let bytes = input.as_bytes();
     if body == InlineBody::Array || !has_quote_bytes(bytes) {
-        return Ok(split_top_level_fast(input, line_num, span, body));
+        return Ok(split_top_level_fast(input, line_num, span, body, bounds));
     }
 
     // Slow path (object body with quote bytes): track key/value and
     // segment-start state so quoted KEYS are comma-opaque.
     let object = body == InlineBody::Object;
     let (open, close) = if object { (b'{', b'}') } else { (b'[', b']') };
-    let mut sc: Scanner<'_, SplitQ> = Scanner::new(input, open, close, object, line_num, span);
+    let mut sc: Scanner<'_, '_, SplitQ> =
+        Scanner::new(input, open, close, object, line_num, span, bounds);
     sc.in_key = object;
     sc.seg_start = object;
     sc.value_start = !object;
@@ -1816,10 +2023,17 @@ pub(crate) fn split_top_level(
 /// In an object body a value starts only after `:`; in an array body
 /// the body start and every position after `,` are value positions
 /// (§ 5.3.3 "Keys only").
-fn split_top_level_fast(input: &str, line_num: usize, span: Span, body: InlineBody) -> Vec<&str> {
+fn split_top_level_fast<'a>(
+    input: &'a str,
+    line_num: usize,
+    span: Span,
+    body: InlineBody,
+    bounds: InlineBounds<'_>,
+) -> Vec<&'a str> {
     let object = body == InlineBody::Object;
     let (open, close) = if object { (b'{', b'}') } else { (b'[', b']') };
-    let mut sc: Scanner<'_, SplitFast> = Scanner::new(input, open, close, object, line_num, span);
+    let mut sc: Scanner<'_, '_, SplitFast> =
+        Scanner::new(input, open, close, object, line_num, span, bounds);
     sc.in_key = object;
     sc.seg_start = object;
     sc.value_start = !object;
@@ -1887,7 +2101,15 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
 }
 
 fn run_find<C: ScanCfg>(input: &str, open: u8, close: u8, object: bool) -> Option<usize> {
-    let mut sc: Scanner<'_, C> = Scanner::new(input, open, close, object, 0, Span::EMPTY);
+    let mut sc: Scanner<'_, '_, C> = Scanner::new(
+        input,
+        open,
+        close,
+        object,
+        0,
+        Span::EMPTY,
+        InlineBounds::for_input(input),
+    );
     // Same seed state as `run_scan` (R7-F1): find is the identical
     // machine minus escape validation, so `Some(idx)` here is exactly
     // `scan_inline_closer`'s `Found(idx)` whenever no bad escape
@@ -2048,21 +2270,48 @@ pub(crate) fn scan_inline_closer(
     }
     // R3-F2: the gate is "any quote byte anywhere" — quote tracking
     // itself is per nested Object scope in the machine, not per outer
-    // opener.
+    // opener. Recording is discarded; use
+    // [`scan_inline_closer_with_bounds`] to keep it.
     if !has_quote_bytes(bytes) {
         // Fast path: no quote tracking. `value_start` marks an
         // unconsumed value position (body start in arrays — including
         // the position right after the array's `[`, which is its first
         // item — and after `:`/`,` otherwise); per § 5.8.5 a `{`/`[`
         // only nests there.
-        run_scan::<ScanFast>(input, open, close, object, line_num, span)
+        run_scan::<ScanFast>(input, open, close, object, line_num, span, &mut Vec::new())
     } else {
         // Slow path (quote bytes present): the per-level key-position
         // machine plus the same value-position / raw-marker tracking.
         // Object bodies start at their first key segment; array bodies
         // start at their first item — a value position with no key
         // context (§ 5.3.3 "Keys only").
-        run_scan::<ScanQ>(input, open, close, object, line_num, span)
+        run_scan::<ScanQ>(input, open, close, object, line_num, span, &mut Vec::new())
+    }
+}
+
+/// [`scan_inline_closer`] plus the boundary recording: on `Found`,
+/// `bounds_out` receives every nested compound span's (opener, closer)
+/// byte offset relative to `input`'s first byte, sorted by opener — a
+/// pure memo of the scans the callers would otherwise re-run (see
+/// [`InlineBounds`] for the purity invariant). On every non-Found
+/// outcome `bounds_out` is left empty.
+pub(crate) fn scan_inline_closer_with_bounds(
+    input: &str,
+    open: u8,
+    close: u8,
+    line_num: usize,
+    span: Span,
+    bounds_out: &mut Vec<(usize, usize)>,
+) -> InlineCloserScan {
+    let bytes = input.as_bytes();
+    let object = open == b'{';
+    if bytes.is_empty() || bytes[0] != open {
+        return InlineCloserScan::NotFound;
+    }
+    if !has_quote_bytes(bytes) {
+        run_scan::<ScanFast>(input, open, close, object, line_num, span, bounds_out)
+    } else {
+        run_scan::<ScanQ>(input, open, close, object, line_num, span, bounds_out)
     }
 }
 
@@ -2073,19 +2322,37 @@ fn run_scan<C: ScanCfg>(
     object: bool,
     line_num: usize,
     span: Span,
+    bounds_out: &mut Vec<(usize, usize)>,
 ) -> InlineCloserScan {
-    let mut sc: Scanner<'_, C> = Scanner::new(input, open, close, object, line_num, span);
+    let mut sc: Scanner<'_, '_, C> = Scanner::new(
+        input,
+        open,
+        close,
+        object,
+        line_num,
+        span,
+        InlineBounds::for_input(input),
+    );
     sc.i = 1;
     sc.depth = 1;
     sc.in_key = object;
     sc.seg_start = object;
     sc.value_start = !object;
-    match sc.run() {
+    sc.pairs_out = std::mem::take(bounds_out);
+    let stop = sc.run();
+    let mut pairs = std::mem::take(&mut sc.pairs_out);
+    match stop {
         // § 5.2's matching-closer rule: a closer that returns depth to
         // zero must be the body's own closer kind (a crossed one, e.g.
         // `[{a: 1]`, is not a matching closer).
         ScanStop::Closer { idx, byte } => {
             if byte == close {
+                // Recorded in pop order (= closer order): sort by opener
+                // once for the consumers' binary searches. Keys are
+                // unique — one span per opener byte — so unstable is
+                // fine.
+                pairs.sort_unstable_by_key(|p| p.0);
+                *bounds_out = pairs;
                 InlineCloserScan::Found(idx)
             } else {
                 InlineCloserScan::NotFound
