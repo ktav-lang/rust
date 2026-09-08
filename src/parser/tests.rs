@@ -1859,3 +1859,148 @@ fn r3f4_scan_inline_closer_genuine_compounds_guard() {
         InlineCloserScan::Found(10)
     ));
 }
+
+// R8 regression: the InlineBounds memo must be a PURE memo — every
+// recorded (opener, closer) pair must be exactly what the live
+// dispatches compute over the same span. The recording walk once
+// popped a frame at a later kind-matched closer even though a crossed
+// closer inside the span had already returned the span's own depth to
+// zero (the byte where the standalone scan stops with `NotFound`), so
+// the memo said `Found` where the live scan said `NotFound` and split
+// segmented differently (observable: different
+// MalformedInlineCompound detail payloads, fuzz2-confirmed). This test
+// cross-checks every recorded pair against BOTH live dispatches over
+// exactly the shapes that fired, plus an exhaustive sweep of short
+// structural bodies.
+#[test]
+fn memo_bounds_are_a_pure_memo_of_the_live_dispatches() {
+    use super::inline::{
+        find_matching_close, scan_inline_closer, scan_inline_closer_with_bounds, InlineCloserScan,
+    };
+
+    // Shapes that fired during the audit / differential fuzz (the four
+    // MEMO_MISMATCH audit slices, embedded in a value position so the
+    // gate walk actually records spans around them, and the four
+    // fuzz2-diverging documents).
+    let hostile = [
+        "{a: {]}{, ,x{x,}",
+        "{a: {[][x]}]}n\"}",
+        "{a: {x   ]}, 2}",
+        "{a: {]a{ :x}}",
+        "{a: [a],{:[,:,}]}",
+        "{a: [ a:,:[],{:[}, ]}",
+        "{a: [],{[:[,}]}",
+        "{a: [],[:[},a[{ {,a ]}",
+    ];
+
+    let check = |body: &str| {
+        let bytes = body.as_bytes();
+        let (open, close) = if bytes[0] == b'[' {
+            (b'[', b']')
+        } else {
+            (b'{', b'}')
+        };
+        let mut pairs = Vec::new();
+        let verdict = scan_inline_closer_with_bounds(body, open, close, 0, S, &mut pairs);
+        // Recording only happens on a Found gate; nothing to check otherwise.
+        if !matches!(verdict, InlineCloserScan::Found(_)) {
+            assert!(
+                pairs.is_empty(),
+                "bounds recorded on a non-Found gate: {body:?} {pairs:?}"
+            );
+            return;
+        }
+        for &(o, c) in &pairs {
+            let ob = bytes[o];
+            let (so, sc) = if ob == b'[' {
+                (b'[', b']')
+            } else {
+                (b'{', b'}')
+            };
+            let span = &body[o..];
+            // The memo must agree with BOTH live dispatches over the span.
+            assert!(
+                matches!(
+                    scan_inline_closer(span, so, sc, 0, S),
+                    InlineCloserScan::Found(f) if f == c - o
+                ),
+                "scan disagrees with the memo at {o}..{c} in {body:?}"
+            );
+            assert_eq!(
+                find_matching_close(span, so, sc),
+                Some(c - o),
+                "find disagrees with the memo at {o}..{c} in {body:?}"
+            );
+        }
+    };
+
+    for b in hostile {
+        check(b);
+    }
+
+    // Exhaustive sweep over short structural bodies (depth, crossed
+    // closers, mid-scalar openers, raw markers, top-level commas).
+    let alpha: &[u8] = b"{[]}a:,";
+    let mut buf = [0u8; 5];
+    for len in 1..=5usize {
+        let total = alpha.len().pow(len as u32);
+        for mut idx in 0..total {
+            for d in (0..len).rev() {
+                buf[d] = alpha[idx % alpha.len()];
+                idx /= alpha.len();
+            }
+            let body = std::str::from_utf8(&buf[..len]).unwrap();
+            // Only bodies the gate scan accepts as inline compounds build a map.
+            if body.starts_with('{') || body.starts_with('[') {
+                check(body);
+            }
+        }
+    }
+}
+
+// R8 regression pin: the four fuzz2-diverging documents must keep the
+// pre-R8 segmentation (ground truth probed from main @ 4477ae2). The
+// memo bug changed only the `detail` payload (which segment the
+// diagnostic quoted), so the pins cover the payload exactly.
+#[test]
+fn crossed_closer_fuzz_inputs_keep_pre_r8_diagnostics() {
+    let cases = [
+        (
+            "k: {a: [a],{:[,:,}]}",
+            "inline object pair missing ':' separator in '{:['",
+        ),
+        (
+            "k: {a: [ a:,:[],{:[}, ]}",
+            "inline object pair missing ':' separator in '{:[}'",
+        ),
+        (
+            "k: {a: [],{[:[,}]}",
+            "inline object pair missing ':' separator in '{[:['",
+        ),
+        (
+            "k: {a: [],[:[},a[{ {,a ]}",
+            "inline object pair missing ':' separator in '[:[}'",
+        ),
+    ];
+    for (input, detail) in cases {
+        let err = crate::parse(input).expect_err(input);
+        match &err {
+            crate::Error::Structured(crate::ErrorKind::MalformedInlineCompound {
+                detail: got,
+                span,
+                ..
+            }) => {
+                assert_eq!(got, detail, "input {input:?}");
+                assert_eq!(span.start as usize, 0, "input {input:?}");
+                assert_eq!(span.end as usize, input.len(), "input {input:?}");
+            }
+            other => panic!("input {input:?}: unexpected {other:?}"),
+        }
+        // Same category via the strict and event entry points.
+        assert!(crate::parse_strict(input).is_err(), "input {input:?}");
+        assert!(
+            crate::parse_events(input, |_| {}).is_err(),
+            "input {input:?}"
+        );
+    }
+}

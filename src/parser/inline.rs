@@ -1460,7 +1460,7 @@ struct Scanner<'a, 'b, C: ScanCfg> {
     input_off: usize, // offset of input[0] in bounds coordinates
     bounds: InlineBounds<'b>,
     open_at: Vec<(usize, bool, i32)>, // parallels `stack`: (opener offset, pure, entry depth)
-    pairs_out: Vec<(usize, usize)>, // recorded (opener, closer) pairs
+    pairs_out: Vec<(usize, usize)>,   // recorded (opener, closer) pairs
     _cfg: std::marker::PhantomData<C>,
 }
 
