@@ -417,17 +417,6 @@ fn scan_inline_array_into<'a>(
             ));
         }
 
-        if let Some(rest) = trimmed.strip_prefix("::") {
-            // Inline view trim: rest is raw source chars from a § 3.2-
-            // pre-split line (`\n` escapes are two raw chars, not a raw
-            // LF byte), so LF/CR cannot occur.
-            let processed =
-                process_escapes(rest.trim_matches(is_inline_whitespace), line_num, span)?;
-            buf.push(Event::Str(cow_to_bump(processed, bump)));
-            *transfers += 1;
-            continue;
-        }
-
         // Nested array item: same memo-then-find-then-scan closer
         // triage as `scan_inline_value_trimmed`, and only once the
         // closer is known to END the item does the recursion run —

@@ -155,30 +155,33 @@ fn lone_colon_value_and_scalar_tail() {
 }
 
 #[test]
-fn raw_marker_controls() {
-    // 7. `::` raw marker at the first byte of an array item — the scan
-    //    must keep `value_start` armed across the FIRST `:` so the
-    //    second one forms the marker (already worked — must keep working)
+fn double_colon_item_is_plain_scalar() {
+    // 7. `::` at the first byte of an array item is NOT a raw marker:
+    //    an item position derives only `<inline-value>` (§ 4,
+    //    <inline-item-list>), and any first byte other than `{`/`[`
+    //    makes the value an `<inline-scalar>` (§ 4 notes). The raw `::`
+    //    branch exists only at an inline-PAIR position (§ 4 notes;
+    //    § 5.8.5). The scalar `:: x` dispatches to String (§ 5.2).
     let src = "[:: x]\n";
     assert_eq!(
         parse(src).unwrap(),
-        arr(&[Value::String("x".into())]),
-        "standalone raw marker failed for {src:?}"
+        arr(&[Value::String(":: x".into())]),
+        "standalone double-colon item failed for {src:?}"
     );
 
     // 8. same-kind nesting
     let src = "[[:: x]]\n";
     assert_eq!(
         parse(src).unwrap(),
-        arr(&[arr(&[Value::String("x".into())])]),
-        "nested raw marker failed for {src:?}"
+        arr(&[arr(&[Value::String(":: x".into())])]),
+        "nested double-colon item failed for {src:?}"
     );
 
-    // 9. raw marker in a nested array value
+    // 9. double-colon item in a nested array value
     let src = "{a: [:: x]}\n";
     assert_eq!(
         parse(src).unwrap(),
-        obj(&[("a", arr(&[Value::String("x".into())]))]),
-        "raw marker in nested array failed for {src:?}"
+        obj(&[("a", arr(&[Value::String(":: x".into())]))]),
+        "double-colon item in nested array failed for {src:?}"
     );
 }

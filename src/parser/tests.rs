@@ -503,9 +503,10 @@ fn parse_inline_midvalue_brace_is_literal() {
 }
 
 /// Regression tests for the § 5.2 rules 6–9 closer scan
-/// (`scan_inline_closer`): nested compounds at value positions, raw
-/// `::` items in arrays, and quote-path (slow-path) bodies must all
-/// find their matching closer instead of tripping over literal braces.
+/// (`scan_inline_closer`): nested compounds at value positions,
+/// `::`-prefixed scalar items in arrays, and quote-path (slow-path)
+/// bodies must all find their matching closer instead of tripping over
+/// literal braces.
 #[test]
 fn parse_inline_closer_scan_value_positions_and_raw_items() {
     // Array whose first item is an object (value position after `[`).
@@ -530,10 +531,11 @@ fn parse_inline_closer_scan_value_positions_and_raw_items() {
         Some(&Value::Integer("2".into()))
     );
 
-    // Raw `::` item in an array body: a leading `{` is content (§ 5.8.5),
-    // but the scalar terminates at the FIRST unescaped closer (R5-F3) —
-    // the `}` burns the array's depth budget, so the array has no
-    // matching closer. (Pre-fix this swallowed the `}` into the scalar.)
+    // A `::`-prefixed item is a plain <inline-scalar> (§ 4: an item
+    // position derives only <inline-value>; the raw `::` branch exists
+    // only at inline-PAIR positions). The scalar `:: {abc` terminates at
+    // the FIRST unescaped closer (R5-F3) — that `}` mismatches the `[`
+    // opener, so the array has no matching closer.
     match crate::parse("x: [:: {abc}]") {
         Err(crate::Error::Structured(crate::error::ErrorKind::UnterminatedInlineCompound {
             ..
@@ -547,10 +549,11 @@ fn parse_inline_closer_scan_value_positions_and_raw_items() {
         other => panic!("expected UnterminatedInlineCompound, got {other:?}"),
     }
     // Escaping the closers keeps the braces in the scalar (§ 3.7); the
-    // unescaped `]` closes the array.
+    // `::` prefix stays literal content, so the scalar is `:: {abc}` →
+    // String (§ 5.2), and the unescaped `]` closes the array.
     let v = crate::parse("x: [:: \\{abc\\}]").unwrap();
     let arr = v.as_object().unwrap().get("x").unwrap().as_array().unwrap();
-    assert_eq!(arr[0], Value::String("{abc}".into()));
+    assert_eq!(arr[0], Value::String(":: {abc}".into()));
 
     // Slow path (quote bytes present): array-of-object value after a
     // quoted key/value pair.

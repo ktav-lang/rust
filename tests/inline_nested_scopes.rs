@@ -99,14 +99,19 @@ fn nested_raw_object_in_array() {
 }
 
 #[test]
-fn nested_raw_array_in_object() {
-    // 2.
+fn nested_double_colon_scalar_array_in_object() {
+    // 2. The array item `:: x` is NOT a raw marker — an item position
+    //    derives only `<inline-value>` (§ 4, <inline-item-list>), so the
+    //    item is the <inline-scalar> `:: x` → String (§ 5.2). The raw
+    //    `::` branch is scoped to inline-PAIR positions (§ 4 notes;
+    //    § 5.8.5: "The raw `::` branch of an inline pair is not an
+    //    inline value").
     let src = r"{a: [:: x]}
 ";
     assert_eq!(
         parse(src).unwrap(),
-        obj(&[("a", arr(&[Value::String("x".into())]))]),
-        "raw scalar in nested array failed for {src:?}"
+        obj(&[("a", arr(&[Value::String(":: x".into())]))]),
+        "double-colon scalar in nested array failed for {src:?}"
     );
 
     // 4. quoted key forces the slow path
@@ -114,20 +119,20 @@ fn nested_raw_array_in_object() {
 "#;
     assert_eq!(
         parse(src).unwrap(),
-        obj(&[("a", arr(&[Value::String("x".into())]))]),
-        "quoted-key raw scalar in nested array failed for {src:?}"
+        obj(&[("a", arr(&[Value::String(":: x".into())]))]),
+        "quoted-key double-colon scalar in nested array failed for {src:?}"
     );
 
-    // 6. sibling pair after the raw-containing compound closes
+    // 6. sibling pair after the compound closes
     let src = r"{a: [:: x], b: 2}
 ";
     assert_eq!(
         parse(src).unwrap(),
         obj(&[
-            ("a", arr(&[Value::String("x".into())])),
+            ("a", arr(&[Value::String(":: x".into())])),
             ("b", Value::Integer("2".into())),
         ]),
-        "sibling pair after nested raw compound failed for {src:?}"
+        "sibling pair after nested compound failed for {src:?}"
     );
 }
 
@@ -264,13 +269,15 @@ fn raw_terminated_by_comma_mid_nesting() {
 
 #[test]
 fn raw_same_kind_nesting_and_deeper() {
-    // 10. same-kind nesting (passes today; must keep passing)
+    // 10. same-kind nesting: the inner item `:: x` is a plain
+    //     <inline-scalar> → String (§ 4: an item derives only
+    //     <inline-value>; a first byte of `:` is "any other first byte")
     let src = r"[[:: x]]
 ";
     assert_eq!(
         parse(src).unwrap(),
-        arr(&[arr(&[Value::String("x".into())])]),
-        "same-kind raw nesting failed for {src:?}"
+        arr(&[arr(&[Value::String(":: x".into())])]),
+        "same-kind double-colon nesting failed for {src:?}"
     );
 
     // 11. deeper nesting

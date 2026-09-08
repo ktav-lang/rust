@@ -197,16 +197,6 @@ fn parse_inline_array_inner(
             ));
         }
 
-        // Check for raw marker `::` at the start of an array item
-        if let Some(rest) = trimmed.strip_prefix("::") {
-            // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line;
-            // `\n` escapes are two raw chars, not a raw LF byte).
-            let processed =
-                process_escapes(rest.trim_matches(is_inline_whitespace), line_num, span)?;
-            items.push(Value::String(processed.into_owned().into()));
-            continue;
-        }
-
         // Parse inline value (could be nested compound or scalar)
         let value = parse_inline_value_raw(trimmed, line_num, span, depth, strict, bounds)?;
         items.push(value);
