@@ -117,8 +117,8 @@ pub(super) fn classify_value_start(
         if let Some(val) = parse_float_value(trimmed) {
             let mut buf = ryu::Buffer::new();
             let canonical = buf.format(val);
-            let rendered = crate::render::canonical::canonical_float(canonical);
             if strict {
+                let rendered = crate::render::canonical::canonical_float(canonical);
                 if rendered != trimmed {
                     return Err(lossy_scalar(trimmed, &rendered, line_num, trimmed_span));
                 }
