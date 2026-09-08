@@ -52,7 +52,7 @@ use crate::parser::inline::{
 };
 use crate::parser::leading_bom_len;
 use crate::parser::validate::{check_key, KeyValidity};
-use crate::whitespace::{is_inline_whitespace, is_ktav_whitespace};
+use crate::whitespace::{inline_whitespace_ascii, is_inline_whitespace, is_ktav_whitespace};
 
 use super::event::{Event, EventSink, EventStream};
 use super::inline_emit::{fast_plain_decimal_i64, scan_inline_events};
@@ -1801,10 +1801,17 @@ fn common_leading_whitespace_len(lines: &[&str]) -> usize {
     len
 }
 
+/// Leading run of § 3.3 whitespace at the start of `s`, as bytes —
+/// twin of `parser/collecting.rs::leading_whitespace_bytes`; keep the
+/// two in sync. Byte-level inline view (`inline_whitespace_ascii`:
+/// SP, TAB, VT, FF) per § 5.6's "whitespace code points (§ 3.3)";
+/// LF/CR cannot occur (§ 3.2 pre-split lines). Byte-level limitation:
+/// the run ends at the first non-ASCII byte, so multi-byte § 3.3
+/// members do not yet participate in the dedent.
 fn leading_whitespace_bytes(s: &str) -> &[u8] {
     let bytes = s.as_bytes();
     let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+    while i < bytes.len() && inline_whitespace_ascii(bytes[i]) {
         i += 1;
     }
     &bytes[..i]

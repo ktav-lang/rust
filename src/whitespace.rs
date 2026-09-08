@@ -5,15 +5,20 @@
 //! (`char::is_whitespace()`), even one that currently matches the list
 //! exactly — the list is exhaustive, no more and no fewer, and must stay
 //! stable across toolchain and Unicode-version bumps. Every
-//! character-level whitespace classification in this crate routes
-//! through this module (R7-P3 sweep). Two byte-level exceptions remain,
-//! both the multiline-dedent helper `leading_whitespace_bytes`
-//! (src/parser/collecting.rs, src/thin/event_parser.rs): they scan
-//! leading bytes with `u8::is_ascii_whitespace`, which excludes VT
-//! (U+000B) and therefore does NOT implement the § 3.3 list — left for
-//! separate behavioral review rather than silently converted, since
-//! widening it to the § 3.3 class would change `common_len` on input
-//! containing VT. A new copy of the list must never be introduced.
+//! character-level and byte-level whitespace classification in this
+//! crate routes through this module (R7-P3 sweep). This includes the
+//! multiline-dedent leading-run scans `leading_whitespace_bytes`
+//! (src/parser/collecting.rs, src/thin/event_parser.rs), which use the
+//! byte view [`inline_whitespace_ascii`]: § 5.6 measures the stripped
+//! form's common leading whitespace "in whitespace code points (§ 3.3)"
+//! and § 3.3 admits no separate, narrower "structural" whitespace
+//! concept, so a leading VT (U+000B) participates in the dedent like
+//! space or TAB (deliberate behavioral change). Known deviation,
+//! documented not sanctioned: those scans classify bytes, so the
+//! multi-byte § 3.3 members (U+0085, U+00A0, U+1680, U+2000–U+200A,
+//! U+2028, U+2029, U+202F, U+205F, U+3000) do not yet participate in
+//! the leading run — a code-point-level scan is the open follow-up.
+//! A new copy of the list must never be introduced.
 //!
 //! Views:
 //! - [`is_ktav_whitespace`] — the full § 3.3 set, all 25 code points.
