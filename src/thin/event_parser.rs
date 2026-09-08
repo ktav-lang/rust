@@ -52,7 +52,7 @@ use crate::parser::inline::{
 };
 use crate::parser::leading_bom_len;
 use crate::parser::validate::{check_key, KeyValidity};
-use crate::whitespace::is_ktav_whitespace;
+use crate::whitespace::{is_inline_whitespace, is_ktav_whitespace};
 
 use super::event::{Event, EventSink, EventStream};
 use super::inline_emit::{fast_plain_decimal_i64, scan_inline_events};
@@ -470,7 +470,8 @@ impl<'a> EventParser<'a> {
         events: &mut S,
     ) -> Result<()> {
         if let Some(ref mut c) = self.collecting {
-            let trimmed = raw.trim();
+            // Pre-split line, exact trim parity (mirror parser.rs).
+            let trimmed = raw.trim_matches(is_ktav_whitespace);
             let term = match c.mode {
                 MultilineMode::Stripped => ")",
                 MultilineMode::Verbatim => "))",
@@ -632,7 +633,8 @@ impl<'a> EventParser<'a> {
             }
         };
 
-        let key = trimmed[..colon].trim_end();
+        // Pre-split line, exact trim parity (mirror parser.rs).
+        let key = trimmed[..colon].trim_end_matches(is_ktav_whitespace);
         let key_start = trimmed_span.start;
         let key_end = key_start + key.len() as u32;
         if key.is_empty() {
@@ -649,11 +651,19 @@ impl<'a> EventParser<'a> {
         match classify_separator(after_colon) {
             Separator::Raw(rest) => {
                 require_sep_end(rest, line_num, after_colon_off + 1, trimmed_span)?;
-                self.emit_keyed_scalar(key, Event::Str(rest.trim()), line_num, key_span, events)
+                self.emit_keyed_scalar(
+                    key,
+                    // Pre-split line, exact trim parity (mirror parser.rs).
+                    Event::Str(rest.trim_matches(is_ktav_whitespace)),
+                    line_num,
+                    key_span,
+                    events,
+                )
             }
             Separator::Plain => {
                 require_sep_end(after_colon, line_num, after_colon_off, trimmed_span)?;
-                let body = after_colon.trim_start();
+                // Pre-split line, exact trim parity (mirror parser.rs).
+                let body = after_colon.trim_start_matches(is_ktav_whitespace);
                 match classify(body, self.bump)? {
                     ValueStart::Scalar(s) => {
                         self.emit_keyed_scalar(key, Event::Str(s), line_num, key_span, events)
@@ -880,7 +890,9 @@ impl<'a> EventParser<'a> {
         // Under 0.5.0: only `::` raw marker for arrays. No `:i`/`:f`.
         if let Some(rest) = trimmed.strip_prefix("::") {
             require_sep_end(rest, line_num, line_start + 2, trimmed_span)?;
-            events.push(Event::Str(rest.trim_start()));
+            // `rest` is a within-line slice after `::` on a pre-split
+            // line — LF/CR cannot occur (mirror parser.rs site).
+            events.push(Event::Str(rest.trim_start_matches(is_ktav_whitespace)));
             return Ok(());
         }
 
@@ -998,7 +1010,10 @@ impl<'a> EventParser<'a> {
         debug_assert!(raw_segments.len() >= 2);
         let mut decoded_segments: Vec<&'a str> = Vec::with_capacity(raw_segments.len());
         for seg in &raw_segments {
-            let trimmed = seg.trim();
+            // `seg` is a `split_key_path` key segment; the twin main engine
+            // (parser/insert.rs key-path walk) trims these with the INLINE
+            // view — § 3.2 pre-splits lines, so segments are LF/CR-free.
+            let trimmed = seg.trim_matches(is_inline_whitespace);
             // Empty segment → EmptyKey (`a..b`, leading/trailing `.`;
             // spec 0.7 § 6.5 names `a..b` explicitly as EmptyKey).
             match check_key(trimmed) {
@@ -1619,14 +1634,24 @@ fn classify<'a>(trimmed: &'a str, bump: &'a Bump) -> Result<ValueStart<'a>> {
     // BadEscape / Unterminated / Malformed / closed there). Empty
     // compounds shortcut first.
     if trimmed.starts_with('{') {
-        if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
+        if trimmed.ends_with('}')
+            // Empty inline compound (mirror parser/classify.rs).
+            && trimmed[1..trimmed.len() - 1]
+                .trim_matches(is_ktav_whitespace)
+                .is_empty()
+        {
             return Ok(ValueStart::EmptyObject);
         }
         return Ok(ValueStart::InlineCompound(InlineBody::Object));
     }
 
     if trimmed.starts_with('[') {
-        if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
+        if trimmed.ends_with(']')
+            // Empty inline compound (mirror parser/classify.rs).
+            && trimmed[1..trimmed.len() - 1]
+                .trim_matches(is_ktav_whitespace)
+                .is_empty()
+        {
             return Ok(ValueStart::EmptyArray);
         }
         return Ok(ValueStart::InlineCompound(InlineBody::Array));
@@ -1715,10 +1740,12 @@ fn finalize_multiline<'a>(c: Collecting<'a>, bump: &'a Bump) -> &'a str {
         }
         MultilineMode::Stripped if c.lines.len() == 1 => {
             let only = c.lines[0];
-            if only.trim().is_empty() {
+            // Multiline stripped finalize (mirror parser/collecting.rs).
+            if only.trim_matches(is_ktav_whitespace).is_empty() {
                 ""
             } else {
-                only.trim_start().trim_end()
+                only.trim_start_matches(is_ktav_whitespace)
+                    .trim_end_matches(is_ktav_whitespace)
             }
         }
         MultilineMode::Stripped => {
@@ -1738,19 +1765,23 @@ fn dedent(lines: &[&str]) -> String {
         if i > 0 {
             out.push('\n');
         }
-        if l.trim().is_empty() {
+        // Multiline dedent (mirror parser/collecting.rs).
+        if l.trim_matches(is_ktav_whitespace).is_empty() {
             // blank line
         } else if common_len > 0 && l.len() >= common_len {
-            out.push_str(l[common_len..].trim_end());
+            out.push_str(l[common_len..].trim_end_matches(is_ktav_whitespace));
         } else {
-            out.push_str(l.trim_end());
+            out.push_str(l.trim_end_matches(is_ktav_whitespace));
         }
     }
     out
 }
 
 fn common_leading_whitespace_len(lines: &[&str]) -> usize {
-    let mut iter = lines.iter().filter(|l| !l.trim().is_empty());
+    // Multiline dedent (mirror parser/collecting.rs).
+    let mut iter = lines
+        .iter()
+        .filter(|l| !l.trim_matches(is_ktav_whitespace).is_empty());
     let first = match iter.next() {
         Some(l) => leading_whitespace_bytes(l),
         None => return 0,
