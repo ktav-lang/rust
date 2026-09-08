@@ -4,9 +4,16 @@
 //! forbids delegating to a host-language Unicode-whitespace primitive
 //! (`char::is_whitespace()`), even one that currently matches the list
 //! exactly — the list is exhaustive, no more and no fewer, and must stay
-//! stable across toolchain and Unicode-version bumps. Every whitespace
-//! classification in this crate goes through this module; a new copy of
-//! the list must never be introduced.
+//! stable across toolchain and Unicode-version bumps. Every
+//! character-level whitespace classification in this crate routes
+//! through this module (R7-P3 sweep). Two byte-level exceptions remain,
+//! both the multiline-dedent helper `leading_whitespace_bytes`
+//! (src/parser/collecting.rs, src/thin/event_parser.rs): they scan
+//! leading bytes with `u8::is_ascii_whitespace`, which excludes VT
+//! (U+000B) and therefore does NOT implement the § 3.3 list — left for
+//! separate behavioral review rather than silently converted, since
+//! widening it to the § 3.3 class would change `common_len` on input
+//! containing VT. A new copy of the list must never be introduced.
 //!
 //! Views:
 //! - [`is_ktav_whitespace`] — the full § 3.3 set, all 25 code points.

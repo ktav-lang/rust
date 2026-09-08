@@ -54,7 +54,7 @@ impl<'a> Collecting<'a> {
                 // the common leading whitespace is just that line's leading
                 // whitespace, so the line is trimmed on both edges — trim_start
                 // then trim_end, each via `is_ktav_whitespace` (spec 0.7 § 5.6) —
-                // not just `line.trim_start()`.
+                // not the leading edge alone.
                 if self.lines.len() == 1 {
                     let only = self.lines[0];
                     // LF/CR cannot occur (§ 3.2 pre-split lines, see
