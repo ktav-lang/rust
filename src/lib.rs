@@ -97,6 +97,14 @@ pub mod ser;
 pub mod thin;
 pub mod value;
 
+#[cfg(test)]
+mod arena_probe;
+
+// Lets the test-only probe #[path]-include benches/fixtures.rs, which is
+// written against the external `ktav` prelude (integration-test style).
+#[cfg(test)]
+extern crate self as ktav;
+
 mod whitespace;
 
 pub use error::{CompoundKind, ConflictKind, Error, ErrorKind, ReasonCode, Result, Span};
