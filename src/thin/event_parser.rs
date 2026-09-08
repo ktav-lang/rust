@@ -188,6 +188,13 @@ pub(crate) struct EventParser<'a> {
     /// buffer per parse, cleared and reused per compound — no per-compound
     /// heap allocation.
     staging: Vec<Event<'a>>,
+    /// Reusable object-node stack for the single-pass
+    /// `register_inline_child_paths` walk (review R7-F3): holds the
+    /// `NodeId` of each currently-open nested inline object, mirrored
+    /// to the staged event bracket depth. One buffer per parse, taken,
+    /// cleared and restored per compound — no per-compound heap
+    /// allocation.
+    path_node_stack: Vec<NodeId>,
     /// Shared parse-wide arena of key-path node SHAPES: slot 0 is a
     /// sentinel
     /// detached root serving the implicit root frame; every other slot
@@ -246,6 +253,7 @@ impl<'a> EventParser<'a> {
             root_is_explicit_compound: false,
             reopens: 0,
             staging: Vec::new(),
+            path_node_stack: Vec::new(),
             nodes: {
                 let mut nodes = BumpVec::with_capacity_in(16, bump);
                 // Sentinel detached root: `frame_root` of the implicit
@@ -1283,15 +1291,29 @@ impl<'a> EventParser<'a> {
     /// Register the INTERNAL key paths of an inline compound value
     /// (`a: {x: 1}` — events staged by the direct inline scanner)
     /// into the shared node arena, under `base_node` (the node just
-    /// registered for the compound itself). Recurses into nested
-    /// objects; arrays are leaves — nothing inside a bracketed array is
-    /// registered (§ 5.3.2 / § 6.3).
+    /// registered for the compound itself). Single pass (review
+    /// R7-F3): a stack of currently-open object `NodeId`s descends
+    /// nested objects as their Begin events pass, and a bracket-array
+    /// depth excludes array interiors — arrays are leaves, nothing
+    /// inside a bracketed array is registered (§ 5.3.2 / § 6.3).
+    ///
+    /// Every staged event is examined exactly once — expected `O(E)`
+    /// over the compound's `E` staged events plus key hashing in
+    /// `register_value_path` — where the previous walk re-scanned each
+    /// nested object's whole event range per ancestor
+    /// (`matching_bracket` + recursion), `Theta(D^2)` for a chain of
+    /// `D` dotted-expansion levels.
     ///
     /// Registration is provably collision-free: the inline events were
     /// already validated internally by the shared `insert_value`
     /// tables during the direct scan (each path appears exactly once), and `base_node`
     /// was just inserted absent. Errors are still propagated with `?`
     /// defensively rather than panicking.
+    ///
+    /// The walk visits `(parent, key)` registration calls in the same
+    /// pre-order — event order — as the replaced recursive walk, so
+    /// every conflict diagnostic (`ErrorKind` / line / span / payload)
+    /// is unchanged.
     fn register_inline_child_paths(
         &mut self,
         base_node: NodeId,
@@ -1302,42 +1324,71 @@ impl<'a> EventParser<'a> {
         debug_assert!(matches!(events.first(), Some(Event::BeginObject)));
         debug_assert!(matches!(events.last(), Some(Event::EndObject)));
         let inner = &events[1..events.len() - 1];
+        let mut node_stack = std::mem::take(&mut self.path_node_stack);
+        node_stack.clear();
+        node_stack.push(base_node);
+        let result = self.register_inline_child_walk(inner, &mut node_stack, line_num, key_span);
+        self.path_node_stack = node_stack;
+        result
+    }
+
+    /// The [`EventParser::register_inline_child_paths`] walk proper,
+    /// split out so the reusable `path_node_stack` buffer is restored
+    /// even when a registration conflict errors out mid-walk.
+    fn register_inline_child_walk(
+        &mut self,
+        inner: &[Event<'a>],
+        node_stack: &mut Vec<NodeId>,
+        line_num: usize,
+        key_span: Span,
+    ) -> Result<()> {
+        // Bracketed-array interiors are leaves in the path model:
+        // `array_depth > 0` suppresses registration and node
+        // push/pop until the matching closer (§ 5.3.2 / § 6.3).
+        let mut array_depth: usize = 0;
         let mut i = 0;
         while i < inner.len() {
             self.dbg_reg_scans += 1;
-            let k = match &inner[i] {
-                Event::Key(k) => *k,
+            if array_depth > 0 {
+                match inner[i] {
+                    Event::BeginArray => array_depth += 1,
+                    Event::EndArray => array_depth -= 1,
+                    _ => {}
+                }
+                i += 1;
+                continue;
+            }
+            match inner[i] {
+                Event::Key(k) => {
+                    // Each Key is immediately followed by exactly one
+                    // value event or a bracketed compound — guaranteed
+                    // by the direct inline scanner.
+                    self.dbg_reg_scans += 1;
+                    let value_ev = &inner[i + 1];
+                    let shape = path_shape_of(value_ev);
+                    let parent = match node_stack.last() {
+                        Some(&p) => p,
+                        None => unreachable!("object node stack underflow"),
+                    };
+                    let child_node =
+                        self.register_value_path(parent, k, shape, k, line_num, key_span)?;
+                    if matches!(value_ev, Event::BeginObject) {
+                        node_stack.push(child_node);
+                    } else if matches!(value_ev, Event::BeginArray) {
+                        array_depth = 1;
+                    }
+                    i += 2;
+                }
+                Event::EndObject => {
+                    debug_assert!(node_stack.len() > 1, "unbalanced object node stack");
+                    node_stack.pop();
+                    i += 1;
+                }
                 other => unreachable!("pair position must be Key, got {other:?}"),
-            };
-            // Each Key is immediately followed by exactly one value
-            // event or a bracketed compound — guaranteed by
-            // the direct inline scanner.
-            let value_ev = &inner[i + 1];
-            self.dbg_reg_scans += 1;
-            let shape = path_shape_of(value_ev);
-            let child_node =
-                self.register_value_path(base_node, k, shape, k, line_num, key_span)?;
-            match value_ev {
-                Event::BeginObject => {
-                    let (j, scanned) = matching_bracket(inner, i + 1, b'o');
-                    self.dbg_reg_scans += scanned;
-                    self.register_inline_child_paths(
-                        child_node,
-                        &inner[i + 1..=j],
-                        line_num,
-                        key_span,
-                    )?;
-                    i = j + 1;
-                }
-                Event::BeginArray => {
-                    // Arrays are leaves — skip their interior.
-                    let (j, scanned) = matching_bracket(inner, i + 1, b'a');
-                    self.dbg_reg_scans += scanned;
-                    i = j + 1;
-                }
-                _ => i += 2,
             }
         }
+        debug_assert_eq!(node_stack.len(), 1, "unbalanced object node stack");
+        debug_assert_eq!(array_depth, 0, "unterminated inline array");
         Ok(())
     }
 
@@ -1546,35 +1597,6 @@ fn path_shape_of(ev: &Event<'_>) -> PathShape {
     match ev {
         Event::BeginObject => PathShape::Object,
         other => PathShape::Leaf(event_label(other)),
-    }
-}
-
-/// Index of the bracket event in `events` matching the opener at
-/// `open_idx`. `kind` is `b'o'` for object brackets, `b'a'` for array
-/// brackets — used by `register_inline_child_paths` to skip leaf-array
-/// interiors and recurse into nested objects. Returns the matching
-/// index plus the number of events examined, so callers can account
-/// the scan cost.
-fn matching_bracket(events: &[Event<'_>], open_idx: usize, kind: u8) -> (usize, usize) {
-    let (open, close) = if kind == b'o' {
-        (Event::BeginObject, Event::EndObject)
-    } else {
-        (Event::BeginArray, Event::EndArray)
-    };
-    let mut depth = 0usize;
-    let mut j = open_idx;
-    loop {
-        match events[j] {
-            ref ev if *ev == open => depth += 1,
-            ref ev if *ev == close => {
-                depth -= 1;
-                if depth == 0 {
-                    return (j, j - open_idx + 1);
-                }
-            }
-            _ => {}
-        }
-        j += 1;
     }
 }
 
@@ -1830,25 +1852,52 @@ mod counter_tests {
     /// chain of D nested objects, so the staged event list is
     /// `3D + 2` events and registration must descend D levels.
     ///
-    /// This documents the PRE-FIX cost (review round 7, finding
-    /// R7-F3): each nested object's events are scanned by
-    /// `matching_bracket` and then re-scanned by the recursion, so the
-    /// walk examines, derived from the code paths (not fitted),
-    /// `(3D² + 9D + 4) / 2` events — 44 / 134 / 458 / 1,682 at
-    /// D = 4 / 8 / 16 / 32 — `Theta(D^2)` views over a `Theta(D)`
-    /// input. The next change replaces the walk with a single pass.
+    /// EXACT single-pass counts, derived from the code paths (not
+    /// fitted): every staged event is examined EXACTLY once — a Key's
+    /// read is its loop iteration, its value's read the peek, an
+    /// EndObject its own iteration, and BeginObject values are peeks —
+    /// so reads == inner.len() == 3D + 2.
+    ///
+    /// PRE-FIX (measured with this same counter, commit 5371db7), the
+    /// walk re-scanned each nested object's full event range per
+    /// ancestor via `matching_bracket` + recursion: 44 / 134 / 458 /
+    /// 1,682 event views at D = 4 / 8 / 16 / 32 — ratios 3.05 / 3.42 /
+    /// 3.67 trending the quadratic 4x, on a `Theta(D)` input with a
+    /// linear number of index nodes. `MAX_INLINE_DEPTH` does not bound
+    /// it: the physical inline compound is ONE; the extra levels come
+    /// from dotted-key expansion, not recursive bracket parsing. The
+    /// single pass removes the re-scan entirely: scans(2D) ≈ 2·scans(D).
     #[test]
-    fn inline_child_registration_scans_are_quadratic_pre_fix() {
+    fn inline_child_registration_scans_are_linear() {
         for d in [4usize, 8, 16, 32] {
             let key = format!("{}x", "a.".repeat(d));
             let doc = format!("root: {{{key}: 1}}");
-            let expected = (3 * d * d + 9 * d + 4) / 2;
             assert_eq!(
                 registration_scans(&doc),
-                expected,
+                3 * d + 2,
                 "registration event views at D={d}"
             );
         }
+    }
+
+    /// The round-7 representative parses with UNCHANGED semantics:
+    /// D dotted prefixes expand to a chain of D nested objects under
+    /// the compound's key (§ 5.3.2), and inline children stay visible
+    /// to later dotted re-entry.
+    #[test]
+    fn dotted_inline_compound_expansion_is_unchanged() {
+        let doc = "root: {a.a.a.a.x: 1}";
+        let v: serde_json::Value = crate::from_str(doc).unwrap();
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"root":{"a":{"a":{"a":{"a":{"x":1}}}}}}"#
+        );
+        // Dotted re-entry into an inline child merges (§ 5.3.2) ...
+        let v: serde_json::Value = crate::from_str("a: {x: 1}\na.y: 2").unwrap();
+        assert_eq!(serde_json::to_string(&v).unwrap(), r#"{"a":{"x":1,"y":2}}"#);
+        // ... and a full-path duplicate stays a DuplicateKey.
+        let err = crate::from_str::<serde_json::Value>("a: {x: 1}\na.x: 2").unwrap_err();
+        assert!(err.to_string().contains("duplicate key"), "{err}");
     }
 
     /// Deep chain `a: { ... a: { x: 1 } ... }` of depth D.
