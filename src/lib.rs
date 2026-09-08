@@ -145,12 +145,17 @@ pub fn parse_strict(text: &str) -> Result<Value> {
 /// are borrowed directly from `s`; only escape-decoded strings and
 /// canonical numeric forms are allocated, in a temporary arena freed
 /// when this call returns. Serde walks the events linearly without
-/// ever materialising a tree; compound nesting is bracketed by
+/// ever materialising an owned tree; compound nesting is bracketed by
 /// `BeginObject`/`EndObject` events. Inline compounds (`a: {x: 1}`)
-/// are scanned straight into events — no owned `Value` tree and no
-/// per-compound temporary buffer; the scanner keeps one reusable
-/// staging buffer per parse and one insertion-ordered key table per
-/// inline object scope for duplicate/conflict detection.
+/// are scanned through a borrowed intermediate `Node` tree that is
+/// fully materialized before its first event is emitted: one
+/// growable `Vec<Node>` per array compound, one insertion-ordered
+/// key table (`IndexMap`) per object scope for duplicate/conflict
+/// detection and dotted-key merge, and — for a compound that is a
+/// key's value — the parser's reusable per-parse staging buffer,
+/// which holds the finished events until they are appended to the
+/// stream. No owned `Value` is built, and a compound that fails
+/// validation emits no events.
 pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
     // Pre-size the bump arena to avoid re-allocations during event parsing.
     // Each Event is 24 bytes; the pre-allocated count is ~text.len()/4.

@@ -1,16 +1,28 @@
 //! Direct inline-compound scanner for the thin event path.
 //!
-//! Scans a closed inline compound (`{ … }` / `[ … ]`) straight into a
-//! sequence of [`Event`]s — no owned `Value` tree, no string copies:
-//! unmodified scalars and keys are borrowed from the source line, and
-//! only genuine decoding or normalization allocates in the arena
-//! (escape-decoded strings, canonical integer/float forms via
-//! itoa/ryu). Dotted keys inside the compound are expanded with the
-//! SAME shared § 6.3 outcome tables the owned parser uses
-//! (`parser::insert`), so duplicate/conflict diagnostics are
-//! byte-identical. Emission order matches the owned path's
-//! `Value`-tree walk exactly: insertion order per object, with dotted
-//! keys merged into shared sub-objects.
+//! Scans a closed inline compound (`{ … }` / `[ … ]`) into a sequence
+//! of [`Event`]s through a borrowed intermediate `Node` tree — no
+//! owned `Value`, no string copies: unmodified scalars and keys are
+//! borrowed from the source line, and only genuine decoding or
+//! normalization allocates in the arena (escape-decoded strings,
+//! canonical integer/float forms via itoa/ryu).
+//!
+//! Transient state per compound: the `Node` tree itself —
+//! `Node::Leaf(Event)` for scalars, `Node::Array(Vec<Node>)` with one
+//! growable heap `Vec` per array compound (nested compounds recurse,
+//! so `[[1], [2]]` holds three arrays and three `Vec`s) — plus one
+//! insertion-ordered key table (`InlineMap`, an `IndexMap`) per
+//! object scope, which duplicate/conflict detection and dotted-key
+//! merge require, plus the `Vec<&str>` of top-level segments from
+//! `split_top_level`. `scan_inline_events` materializes the whole
+//! tree first and only then walks it (`emit_node`), so a compound
+//! that fails validation pushes no events into its sink.
+//!
+//! Dotted keys inside the compound are expanded with the SAME shared
+//! § 6.3 outcome tables the owned parser uses (`parser::insert`), so
+//! duplicate/conflict diagnostics are byte-identical. Emission order
+//! matches the owned path's `Value`-tree walk exactly: insertion
+//! order per object, with dotted keys merged into shared sub-objects.
 
 use std::borrow::Cow;
 

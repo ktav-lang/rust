@@ -1,14 +1,26 @@
 //! Zero-copy event-stream parser.
 //!
 //! Tokenize a Ktav document into a linear sequence of [`ParseEvent`]s
-//! delivered to a user callback — no intermediate tree. Object keys
-//! and unmodified scalars are borrowed straight from the input string;
-//! the events you receive carry `&'a str` slices into the original
-//! buffer (only escape-decoded strings and canonical numeric forms are
-//! allocated, in a temporary arena). Inline compounds are scanned
-//! directly into events; the parser's transient state is one reusable
-//! staging buffer plus one insertion-ordered key table per inline
-//! object scope — never a tree, and never a per-compound `Vec`.
+//! delivered to a user callback. Object keys and unmodified scalars
+//! are borrowed straight from the input string; the events you receive
+//! carry `&'a str` slices into the original buffer (only
+//! escape-decoded strings and canonical numeric forms are allocated,
+//! in a temporary arena).
+//!
+//! Transient state differs by compound shape. The line-oriented state
+//! machine writes multi-line compounds straight into the flat event
+//! list; its transient state is one scope frame per open bracket plus
+//! the parse-wide dotted-key path table. Inline compounds (`a: {x:
+//! 1}`) are different: the scanner materializes a borrowed
+//! intermediate `Node` tree (`inline_emit`) before any event is
+//! published — a `Node::Array` owns one growable `Vec<Node>` per
+//! array compound, a `Node::Object` owns one insertion-ordered key
+//! table (`IndexMap`) per object scope, which duplicate/conflict
+//! detection and dotted-key merge (§ 6.3) require — and only after
+//! the whole compound validates are its events appended, through the
+//! parser's reusable per-parse staging buffer when the compound is a
+//! key's value. No owned `Value` is built, and events are never
+//! published from a half-scanned compound.
 //!
 //! Internally this is the same path that powers [`crate::from_str`]: the
 //! flat-event stream is the hot deserialization route. Exposing it
