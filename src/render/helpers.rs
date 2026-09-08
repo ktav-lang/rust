@@ -255,7 +255,10 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
     let mut unindented_line = false;
     let mut trailing_ws_line = false;
     for line in s.split('\n') {
-        let trimmed = line.trim();
+        // Callers reject CR bytes (§ 5.9.7) before reaching here and
+        // this loop re-splits on LF, so each `line` is terminator-free:
+        // use the INLINE whitespace view.
+        let trimmed = line.trim_matches(is_inline_whitespace);
         match trimmed {
             ")" => sole_single = true,
             "))" => sole_double = true,
@@ -266,12 +269,12 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
         }
         if trimmed.is_empty() {
             ws_only_line = true;
-        } else if line.starts_with(|c: char| c.is_whitespace()) {
+        } else if line.starts_with(is_inline_whitespace) {
             indented_line = true;
         } else {
             unindented_line = true;
         }
-        if line.trim_end().len() != line.len() {
+        if line.trim_end_matches(is_inline_whitespace).len() != line.len() {
             trailing_ws_line = true;
         }
     }
@@ -351,7 +354,9 @@ pub(crate) fn needs_raw_marker(s: &str) -> bool {
     // the first byte directly and skip `trim_start`'s whole-string scan.
     match s.as_bytes().first() {
         None => false,
-        Some(&b' ') | Some(&b'\t') => needs_raw_marker_slow(s.trim_start()),
+        Some(&b' ') | Some(&b'\t') => {
+            needs_raw_marker_slow(s.trim_start_matches(is_inline_whitespace))
+        }
         Some(&b'{') | Some(&b'[') => true,
         Some(_) => needs_raw_marker_content(s),
     }

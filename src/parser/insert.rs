@@ -13,6 +13,7 @@ use indexmap::map::Entry;
 
 use crate::error::{ConflictKind, Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
+use crate::whitespace::is_inline_whitespace;
 
 use super::inline::{decode_key_segment, key_is_single_segment, split_key_path};
 use super::validate::{check_key, KeyValidity};
@@ -138,7 +139,10 @@ pub(crate) fn insert_value<'k, T: InsertTable<'k>>(
     // of inserts. A single `entry()` call collapses the old
     // `contains_key` + `insert` into one hash lookup.
     if key_is_single_segment(path) {
-        let trimmed_key = path.trim();
+        // § 3.2 pre-splits source lines on LF/CR/CRLF, so a raw key
+        // segment can never contain a line terminator — use the INLINE
+        // whitespace view.
+        let trimmed_key = path.trim_matches(is_inline_whitespace);
         if trimmed_key.is_empty() {
             return Err(Error::Structured(ErrorKind::EmptyKey {
                 line: line_num as u32,
@@ -205,7 +209,10 @@ fn insert_dotted<'k, T: InsertTable<'k>>(
     debug_assert!(n >= 2);
     for (idx, seg) in segments.iter().enumerate() {
         // § 4: trim each segment of leading/trailing whitespace.
-        let trimmed = seg.trim();
+        // § 3.2 pre-splits source lines on LF/CR/CRLF, so a raw key
+        // segment can never contain a line terminator — use the INLINE
+        // whitespace view.
+        let trimmed = seg.trim_matches(is_inline_whitespace);
         if trimmed.is_empty() {
             return Err(Error::Structured(ErrorKind::EmptyKey {
                 line: line_num as u32,
