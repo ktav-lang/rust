@@ -68,7 +68,8 @@ fn parse_inline_object_inner(
     debug_assert!(input.starts_with('{') && input.ends_with('}'));
     let inner = &input[1..input.len() - 1];
 
-    if inner.trim().is_empty() {
+    // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+    if inner.trim_matches(is_inline_whitespace).is_empty() {
         return Ok(Value::Object(ObjectMap::default()));
     }
 
@@ -77,7 +78,8 @@ fn parse_inline_object_inner(
     let mut map = ObjectMap::default();
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
-        let trimmed = seg.trim();
+        // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+        let trimmed = seg.trim_matches(is_inline_whitespace);
         if trimmed.is_empty() {
             // Trailing comma (last segment empty) is OK
             if i == n - 1 {
@@ -115,7 +117,8 @@ fn parse_inline_object_inner(
         };
 
         // Trim the key (each segment individually per section 4)
-        let key = raw_key.trim();
+        // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+        let key = raw_key.trim_matches(is_inline_whitespace);
         if key.is_empty() {
             return Err(Error::Structured(ErrorKind::EmptyKey {
                 line: line_num as u32,
@@ -126,7 +129,13 @@ fn parse_inline_object_inner(
         // Process value
         let value = if is_raw {
             // Raw `::` — value is a String after escape processing + trim
-            let processed = process_escapes(value_body.trim(), line_num, span)?;
+            // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line;
+            // `\n` escapes are two raw chars, not a raw LF byte).
+            let processed = process_escapes(
+                value_body.trim_matches(is_inline_whitespace),
+                line_num,
+                span,
+            )?;
             Value::String(processed.into_owned().into())
         } else {
             // Plain `:` — parse inline value
@@ -159,7 +168,8 @@ fn parse_inline_array_inner(
     debug_assert!(input.starts_with('[') && input.ends_with(']'));
     let inner = &input[1..input.len() - 1];
 
-    if inner.trim().is_empty() {
+    // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+    if inner.trim_matches(is_inline_whitespace).is_empty() {
         return Ok(Value::Array(Vec::new()));
     }
 
@@ -168,7 +178,8 @@ fn parse_inline_array_inner(
     let mut items: Vec<Value> = Vec::new();
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
-        let trimmed = seg.trim();
+        // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+        let trimmed = seg.trim_matches(is_inline_whitespace);
         if trimmed.is_empty() {
             // Trailing comma (last segment empty) is OK
             if i == n - 1 {
@@ -184,7 +195,10 @@ fn parse_inline_array_inner(
 
         // Check for raw marker `::` at the start of an array item
         if let Some(rest) = trimmed.strip_prefix("::") {
-            let processed = process_escapes(rest.trim(), line_num, span)?;
+            // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line;
+            // `\n` escapes are two raw chars, not a raw LF byte).
+            let processed =
+                process_escapes(rest.trim_matches(is_inline_whitespace), line_num, span)?;
             items.push(Value::String(processed.into_owned().into()));
             continue;
         }
@@ -210,7 +224,8 @@ fn parse_inline_value(
     depth: usize,
     strict: bool,
 ) -> Result<Value, Error> {
-    let trimmed = body.trim();
+    // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+    let trimmed = body.trim_matches(is_inline_whitespace);
     if trimmed.is_empty() {
         // Empty value after `:` → empty String
         return Ok(Value::String("".into()));
@@ -250,7 +265,8 @@ fn parse_inline_value_raw(
             Some(idx) if idx == trimmed.len() - 1 => {
                 // Empty object?
                 let inner = &trimmed[1..trimmed.len() - 1];
-                if inner.trim().is_empty() {
+                // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+                if inner.trim_matches(is_inline_whitespace).is_empty() {
                     return Ok(Value::Object(ObjectMap::default()));
                 }
                 // Nested inline object
@@ -284,7 +300,8 @@ fn parse_inline_value_raw(
             // § 6.11: the matching closer is the last byte.
             Some(idx) if idx == trimmed.len() - 1 => {
                 let inner = &trimmed[1..trimmed.len() - 1];
-                if inner.trim().is_empty() {
+                // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+                if inner.trim_matches(is_inline_whitespace).is_empty() {
                     return Ok(Value::Array(Vec::new()));
                 }
                 // Nested inline array
@@ -1756,7 +1773,12 @@ pub(crate) fn split_top_level(
             // The skip may consume every byte that remains: after a
             // trailing comma (or a dotted-key `.`) only whitespace can
             // follow (R3-F1). Two possible outcomes:
-            if input[sc.seg_at..].trim().is_empty() {
+            // Inline view trim: LF/CR cannot occur — this scanner works
+            // within one § 3.2-pre-split line.
+            if input[sc.seg_at..]
+                .trim_matches(is_inline_whitespace)
+                .is_empty()
+            {
                 // Only whitespace after the last comma: a valid
                 // trailing comma — emit no final segment (the
                 // callers treat an empty last segment identically).
