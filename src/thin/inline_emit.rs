@@ -39,6 +39,7 @@ use crate::parser::inline::{
     InlineCloserScan, MAX_INLINE_DEPTH,
 };
 use crate::parser::insert::{insert_value, InsertShape, InsertTable, OccupiedShape};
+use crate::whitespace::is_inline_whitespace;
 
 use super::event::{Event, EventSink};
 
@@ -225,7 +226,10 @@ fn scan_inline_object<'a>(
 
     debug_assert!(input.starts_with('{') && input.ends_with('}'));
     let inner = &input[1..input.len() - 1];
-    if inner.trim().is_empty() {
+    // Inline scan: trim with the crate-internal § 3.3 INLINE view —
+    // segments are carved from one § 3.2-pre-split line, so raw LF/CR
+    // bytes cannot occur here.
+    if inner.trim_matches(is_inline_whitespace).is_empty() {
         return Ok(Node::Object(InlineMap::default()));
     }
 
@@ -233,7 +237,8 @@ fn scan_inline_object<'a>(
     let mut map = InlineMap::default();
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
-        let trimmed = seg.trim();
+        // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+        let trimmed = seg.trim_matches(is_inline_whitespace);
         if trimmed.is_empty() {
             // Trailing comma (last segment empty) is OK
             if i == n - 1 {
@@ -265,7 +270,8 @@ fn scan_inline_object<'a>(
             None => (false, after_colon),
         };
 
-        let key = raw_key.trim();
+        // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+        let key = raw_key.trim_matches(is_inline_whitespace);
         if key.is_empty() {
             return Err(Error::Structured(ErrorKind::EmptyKey {
                 line: line_num as u32,
@@ -274,7 +280,14 @@ fn scan_inline_object<'a>(
         }
 
         let node = if is_raw {
-            let processed = process_escapes(value_body.trim(), line_num, span)?;
+            // Inline view trim: value_body holds raw source chars from a
+            // § 3.2-pre-split line (escape sequences like `\n` are two
+            // raw chars, not a raw LF byte), so LF/CR cannot occur.
+            let processed = process_escapes(
+                value_body.trim_matches(is_inline_whitespace),
+                line_num,
+                span,
+            )?;
             Node::Leaf(Event::Str(cow_to_bump(processed, bump)))
         } else {
             scan_inline_value(value_body, line_num, span, depth, bump)?
@@ -310,7 +323,9 @@ fn scan_inline_array_into<'a>(
 
     debug_assert!(input.starts_with('[') && input.ends_with(']'));
     let inner = &input[1..input.len() - 1];
-    if inner.trim().is_empty() {
+    // Inline scan: LF/CR cannot occur here — the input is carved from
+    // one § 3.2-pre-split line.
+    if inner.trim_matches(is_inline_whitespace).is_empty() {
         buf.push(Event::BeginArray);
         buf.push(Event::EndArray);
         return Ok(());
@@ -320,7 +335,8 @@ fn scan_inline_array_into<'a>(
     buf.push(Event::BeginArray);
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
-        let trimmed = seg.trim();
+        // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+        let trimmed = seg.trim_matches(is_inline_whitespace);
         if trimmed.is_empty() {
             // Trailing comma (last segment empty) is OK
             if i == n - 1 {
@@ -334,7 +350,11 @@ fn scan_inline_array_into<'a>(
         }
 
         if let Some(rest) = trimmed.strip_prefix("::") {
-            let processed = process_escapes(rest.trim(), line_num, span)?;
+            // Inline view trim: rest is raw source chars from a § 3.2-
+            // pre-split line (`\n` escapes are two raw chars, not a raw
+            // LF byte), so LF/CR cannot occur.
+            let processed =
+                process_escapes(rest.trim_matches(is_inline_whitespace), line_num, span)?;
             buf.push(Event::Str(cow_to_bump(processed, bump)));
             continue;
         }
@@ -357,7 +377,9 @@ fn scan_inline_value<'a>(
     depth: usize,
     bump: &'a Bump,
 ) -> Result<Node<'a>, Error> {
-    let trimmed = body.trim();
+    // Inline view trim: the body is a slice of one § 3.2-pre-split
+    // line, so raw LF/CR bytes cannot occur.
+    let trimmed = body.trim_matches(is_inline_whitespace);
     if trimmed.is_empty() {
         return Ok(Node::Leaf(Event::Str("")));
     }
@@ -400,7 +422,8 @@ fn scan_inline_value_trimmed<'a>(
                     scan_inline_array_into(trimmed, line_num, span, depth + 1, bump, &mut events)?;
                     return Ok(Node::Array(events));
                 }
-                if inner.trim().is_empty() {
+                // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
+                if inner.trim_matches(is_inline_whitespace).is_empty() {
                     return Ok(Node::Object(InlineMap::default()));
                 }
                 scan_inline_object(trimmed, line_num, span, depth + 1, bump)
