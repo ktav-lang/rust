@@ -132,10 +132,8 @@ fn counted<F: FnMut()>(iters: usize, mut f: F) -> AllocStats {
 /// Multi-line float-heavy document: plain `key: <float>` lines (no `: [...]`
 /// inline compounds), so every value reaches `classify_value_start`.
 /// Three magnitudes per record, mirroring `a3_measure`'s `float_heavy`:
-/// - decimal region (0.01 <= |v| < 1e7): canonical_float returns the ryu
-///   form via `s.to_string()` — one String allocation on the lax path;
-/// - >= 1e7: canonical_float takes the scientific path (format! +
-///   normalise) — several allocations on the lax path;
+/// - decimal region (0.01 <= |v| < 1e7): canonical_float returns the ryu form via `s.to_string()` — one String allocation on the lax path;
+/// - >= 1e7: canonical_float takes the scientific path (format! + normalise) — several allocations on the lax path;
 /// - < 1e-2: same scientific path.
 fn float_multiline_mixed() -> String {
     let records = 1_100;
