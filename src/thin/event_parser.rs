@@ -218,6 +218,15 @@ pub(crate) struct EventParser<'a> {
     pub(crate) dbg_index_probes: usize,
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) dbg_entry_compares: usize,
+
+    /// Regression control for review round 7 finding R7-F3: total
+    /// number of staged `Event`s EXAMINED by
+    /// `register_inline_child_paths` — the inline-compound child-path
+    /// registration walk (loop positions, Key value peeks, and every
+    /// `matching_bracket` scan). Unlike the index counters above, this
+    /// measures the registration phase's own event re-scans.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) dbg_reg_scans: usize,
 }
 
 impl<'a> EventParser<'a> {
@@ -249,6 +258,7 @@ impl<'a> EventParser<'a> {
             dbg_node_allocs: 0,
             dbg_index_probes: 0,
             dbg_entry_compares: 0,
+            dbg_reg_scans: 0,
         };
         // The sentinel push above counts as a node allocation, so the
         // counter reflects the exact arena size.
@@ -1294,6 +1304,7 @@ impl<'a> EventParser<'a> {
         let inner = &events[1..events.len() - 1];
         let mut i = 0;
         while i < inner.len() {
+            self.dbg_reg_scans += 1;
             let k = match &inner[i] {
                 Event::Key(k) => *k,
                 other => unreachable!("pair position must be Key, got {other:?}"),
@@ -1302,12 +1313,14 @@ impl<'a> EventParser<'a> {
             // event or a bracketed compound — guaranteed by
             // the direct inline scanner.
             let value_ev = &inner[i + 1];
+            self.dbg_reg_scans += 1;
             let shape = path_shape_of(value_ev);
             let child_node =
                 self.register_value_path(base_node, k, shape, k, line_num, key_span)?;
             match value_ev {
                 Event::BeginObject => {
-                    let j = matching_bracket(inner, i + 1, b'o');
+                    let (j, scanned) = matching_bracket(inner, i + 1, b'o');
+                    self.dbg_reg_scans += scanned;
                     self.register_inline_child_paths(
                         child_node,
                         &inner[i + 1..=j],
@@ -1318,7 +1331,8 @@ impl<'a> EventParser<'a> {
                 }
                 Event::BeginArray => {
                     // Arrays are leaves — skip their interior.
-                    let j = matching_bracket(inner, i + 1, b'a');
+                    let (j, scanned) = matching_bracket(inner, i + 1, b'a');
+                    self.dbg_reg_scans += scanned;
                     i = j + 1;
                 }
                 _ => i += 2,
@@ -1538,8 +1552,10 @@ fn path_shape_of(ev: &Event<'_>) -> PathShape {
 /// Index of the bracket event in `events` matching the opener at
 /// `open_idx`. `kind` is `b'o'` for object brackets, `b'a'` for array
 /// brackets — used by `register_inline_child_paths` to skip leaf-array
-/// interiors and recurse into nested objects.
-fn matching_bracket(events: &[Event<'_>], open_idx: usize, kind: u8) -> usize {
+/// interiors and recurse into nested objects. Returns the matching
+/// index plus the number of events examined, so callers can account
+/// the scan cost.
+fn matching_bracket(events: &[Event<'_>], open_idx: usize, kind: u8) -> (usize, usize) {
     let (open, close) = if kind == b'o' {
         (Event::BeginObject, Event::EndObject)
     } else {
@@ -1553,7 +1569,7 @@ fn matching_bracket(events: &[Event<'_>], open_idx: usize, kind: u8) -> usize {
             ref ev if *ev == close => {
                 depth -= 1;
                 if depth == 0 {
-                    return j;
+                    return (j, j - open_idx + 1);
                 }
             }
             _ => {}
@@ -1777,6 +1793,62 @@ mod counter_tests {
         }
         p.finish(bytes.len() as u32, &mut events).unwrap();
         (p.dbg_node_allocs, p.dbg_index_probes, p.dbg_entry_compares)
+    }
+
+    /// Runs a full LF-only parse and returns the exact registration-
+    /// phase event-view counter (`dbg_reg_scans`): every staged Event
+    /// the inline-child registration walk examined. Test docs are
+    /// LF-only, so only the `memchr(b'\r', ..).is_none()` branch is
+    /// needed (same as `parse_counters` above).
+    fn registration_scans(doc: &str) -> usize {
+        let bump = Bump::new();
+        let mut p = EventParser::new(&bump);
+        let mut events: EventStream<'_> = BumpVec::with_capacity_in(64, &bump);
+        let bytes = doc.as_bytes();
+        let mut line_num: usize = 0;
+        let mut line_start: usize = 0;
+        while line_start <= bytes.len() {
+            let end = memchr(b'\n', &bytes[line_start..])
+                .map(|p| line_start + p)
+                .unwrap_or(bytes.len());
+            let line: &str = &doc[line_start..end];
+            line_num += 1;
+            p.handle_line(line, line_num, line_start as u32, &mut events)
+                .unwrap();
+            if end == bytes.len() {
+                break;
+            }
+            line_start = end + 1;
+        }
+        p.finish(bytes.len() as u32, &mut events).unwrap();
+        p.dbg_reg_scans
+    }
+
+    /// Keyed inline compound with a D-segment dotted key:
+    /// `root: {a.a. … .a.x: 1}`. The inline scanner's shared
+    /// `insert_value`/`descend` tables expand the dotted key into a
+    /// chain of D nested objects, so the staged event list is
+    /// `3D + 2` events and registration must descend D levels.
+    ///
+    /// This documents the PRE-FIX cost (review round 7, finding
+    /// R7-F3): each nested object's events are scanned by
+    /// `matching_bracket` and then re-scanned by the recursion, so the
+    /// walk examines, derived from the code paths (not fitted),
+    /// `(3D² + 9D + 4) / 2` events — 44 / 134 / 458 / 1,682 at
+    /// D = 4 / 8 / 16 / 32 — `Theta(D^2)` views over a `Theta(D)`
+    /// input. The next change replaces the walk with a single pass.
+    #[test]
+    fn inline_child_registration_scans_are_quadratic_pre_fix() {
+        for d in [4usize, 8, 16, 32] {
+            let key = format!("{}x", "a.".repeat(d));
+            let doc = format!("root: {{{key}: 1}}");
+            let expected = (3 * d * d + 9 * d + 4) / 2;
+            assert_eq!(
+                registration_scans(&doc),
+                expected,
+                "registration event views at D={d}"
+            );
+        }
     }
 
     /// Deep chain `a: { ... a: { x: 1 } ... }` of depth D.
