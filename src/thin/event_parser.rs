@@ -1758,7 +1758,7 @@ fn finalize_multiline<'a>(c: Collecting<'a>, bump: &'a Bump) -> &'a str {
 }
 
 fn dedent(lines: &[&str]) -> String {
-    let common_len = common_leading_whitespace_prefix_len(lines);
+    let common_len = common_leading_whitespace_prefix_len(lines.iter().copied());
 
     // Multiline dedent capacity (mirror parser/collecting.rs): the
     // common prefix is removed only from non-blank lines, so it is

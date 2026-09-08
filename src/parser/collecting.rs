@@ -81,7 +81,7 @@ impl<'a> Collecting<'a> {
 // ---------------------------------------------------------------------------
 
 fn dedent(lines: &[&str]) -> String {
-    let common_len = common_leading_whitespace_prefix_len(lines);
+    let common_len = common_leading_whitespace_prefix_len(lines.iter().copied());
 
     // The common prefix is removed only from non-blank lines, so it is
     // subtracted per line. This must stay a per-line subtraction, never

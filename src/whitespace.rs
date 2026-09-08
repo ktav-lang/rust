@@ -94,12 +94,18 @@ pub(crate) fn inline_whitespace_ascii(b: u8) -> bool {
 /// Byte length of the longest leading-whitespace (§ 3.3) prefix shared
 /// code-point-for-code-point (§ 5.6) by every NON-BLANK line of
 /// `lines`; blank lines (only § 3.3 whitespace) do not participate.
-/// The result is the byte length of one code-point sequence that is a
-/// prefix of each such line's own leading run, so it always lands on a
-/// char boundary within every non-blank line. Does not allocate.
-pub(crate) fn common_leading_whitespace_prefix_len(lines: &[&str]) -> usize {
+/// `lines` is any iterator of line slices: the two parsers pass their
+/// collected `&[&str]` via `.iter().copied()`, the writer passes
+/// `str::split('\n')` directly, so no caller ever materialises an
+/// intermediate vector of lines. The result is the byte length of one
+/// code-point sequence that is a prefix of each such line's own
+/// leading run, so it always lands on a char boundary within every
+/// non-blank line. Does not allocate.
+pub(crate) fn common_leading_whitespace_prefix_len<'a>(
+    lines: impl IntoIterator<Item = &'a str>,
+) -> usize {
     let mut iter = lines
-        .iter()
+        .into_iter()
         .filter(|l| !l.trim_matches(is_ktav_whitespace).is_empty());
     let first = match iter.next() {
         Some(l) => leading_whitespace_run(l),
@@ -287,7 +293,7 @@ mod tests {
             .collect();
         assert_eq!(lines.len(), 65_536);
 
-        let common_len = common_leading_whitespace_prefix_len(&lines);
+        let common_len = common_leading_whitespace_prefix_len(lines.iter().copied());
         assert_eq!(common_len, 65_536);
 
         // The old formula's product, evaluated with checked u32 math —

@@ -252,6 +252,12 @@ pub(crate) enum MultilineForm {
 /// line, U+2000 against U+2001) share no common prefix at all (§ 5.6)
 /// and stay lossless in stripped form.
 ///
+/// The § 5.6 common-prefix scan runs only when the cheap checks above
+/// leave the form undecided; on the common paths (verbatim, or the
+/// pretty writers' unconditionally-safe stripped) the function returns
+/// before it. The scan iterates `s.split('\n')` directly — no
+/// intermediate `Vec` of lines.
+///
 /// `prefer_stripped` keeps the pretty renderers' historical choice
 /// (indented stripped output when it is unconditionally safe); the
 /// canonical writer passes `false` and prefers verbatim (§ 5.9.7).
@@ -261,8 +267,7 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
     let mut ws_only_line = false;
     let mut indented_line = false;
     let mut trailing_ws_line = false;
-    let lines: Vec<&str> = s.split('\n').collect();
-    for line in &lines {
+    for line in s.split('\n') {
         // Callers reject CR bytes (§ 5.9.7) before reaching here and
         // this loop re-splits on LF, so each `line` is terminator-free:
         // use the INLINE whitespace view.
@@ -286,49 +291,58 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
     }
 
     let stripped_safe = !sole_single && !ws_only_line && !indented_line && !trailing_ws_line;
-    // § 5.6: the parser removes from every non-blank line the longest
-    // leading § 3.3 whitespace prefix that is identical
-    // code-point-for-code-point across every non-blank line's own
-    // leading run; blank lines do not participate. Stripped bodies are
-    // emitted at indent 0, so the emission is lossless exactly when
-    // that common prefix is EMPTY. Same scan as the parsers' dedent
-    // (src/parser/collecting.rs, src/thin/event_parser.rs): one notion
-    // of "common prefix", no second § 3.3 list.
-    let has_common_indent = common_leading_whitespace_prefix_len(&lines) != 0;
-    let stripped_lossless =
-        !sole_single && !ws_only_line && !has_common_indent && !trailing_ws_line;
     let verbatim_ok = !sole_double;
 
     if prefer_stripped && stripped_safe {
         Ok(MultilineForm::Stripped)
     } else if verbatim_ok {
         Ok(MultilineForm::Verbatim)
-    } else if stripped_lossless {
-        Ok(MultilineForm::Stripped)
     } else {
-        // § 5.9.7 / § 5.9.0: verbatim is blocked (a segment trims to
-        // `))`) and stripped cannot hold the body losslessly. The
-        // remaining blockers map onto the three named collision codes:
-        // - a segment trimming to `)`        → BothFormsRequired
-        // - any line with trailing whitespace → TrailingWhitespaceCollision
-        // - otherwise the residual rejection is exactly § 5.9.7's
-        //   condition: every non-blank segment shares at least one
-        //   leading whitespace code point in the same position. With
-        //   `sole_single` and `trailing_ws_line` both false, a
-        //   whitespace-only line is impossible (it would have set
-        //   `trailing_ws_line` — its every byte is trailing
-        //   whitespace), so `stripped_lossless` can only have failed
-        //   via `has_common_indent`: the shared prefix § 5.6's dedent
-        //   would strip from the content on re-parse.
-        //                                     → LeadingWhitespaceCollision
-        let code = if sole_single {
-            ReasonCode::BothFormsRequired
-        } else if trailing_ws_line {
-            ReasonCode::TrailingWhitespaceCollision
+        // Only this fallback — reached when the cheap collision checks
+        // above left both forms undecided — needs the § 5.6 scan, so it
+        // is the one place it runs: the common cases (verbatim, or the
+        // pretty writers' unconditionally-safe stripped) return before
+        // it. The scan walks `s.split('\n')` directly; no intermediate
+        // vector of lines is materialised anywhere in this function.
+        //
+        // § 5.6: the parser removes from every non-blank line the longest
+        // leading § 3.3 whitespace prefix that is identical
+        // code-point-for-code-point across every non-blank line's own
+        // leading run; blank lines do not participate. Stripped bodies are
+        // emitted at indent 0, so the emission is lossless exactly when
+        // that common prefix is EMPTY. Same scan as the parsers' dedent
+        // (src/parser/collecting.rs, src/thin/event_parser.rs): one notion
+        // of "common prefix", no second § 3.3 list.
+        let has_common_indent = common_leading_whitespace_prefix_len(s.split('\n')) != 0;
+        let stripped_lossless =
+            !sole_single && !ws_only_line && !has_common_indent && !trailing_ws_line;
+        if stripped_lossless {
+            Ok(MultilineForm::Stripped)
         } else {
-            ReasonCode::LeadingWhitespaceCollision
-        };
-        Err(Error::Unrepresentable(code))
+            // § 5.9.7 / § 5.9.0: verbatim is blocked (a segment trims to
+            // `))`) and stripped cannot hold the body losslessly. The
+            // remaining blockers map onto the three named collision codes:
+            // - a segment trimming to `)`        → BothFormsRequired
+            // - any line with trailing whitespace → TrailingWhitespaceCollision
+            // - otherwise the residual rejection is exactly § 5.9.7's
+            //   condition: every non-blank segment shares at least one
+            //   leading whitespace code point in the same position. With
+            //   `sole_single` and `trailing_ws_line` both false, a
+            //   whitespace-only line is impossible (it would have set
+            //   `trailing_ws_line` — its every byte is trailing
+            //   whitespace), so `stripped_lossless` can only have failed
+            //   via `has_common_indent`: the shared prefix § 5.6's dedent
+            //   would strip from the content on re-parse.
+            //                                     → LeadingWhitespaceCollision
+            let code = if sole_single {
+                ReasonCode::BothFormsRequired
+            } else if trailing_ws_line {
+                ReasonCode::TrailingWhitespaceCollision
+            } else {
+                ReasonCode::LeadingWhitespaceCollision
+            };
+            Err(Error::Unrepresentable(code))
+        }
     }
 }
 
