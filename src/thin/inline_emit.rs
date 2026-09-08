@@ -34,7 +34,7 @@ use rustc_hash::FxBuildHasher;
 use crate::error::{Error, ErrorKind, Span};
 use crate::parser::classify::{is_float_literal, try_parse_integer};
 use crate::parser::inline::{
-    find_matching_close, find_unescaped_colon_inline, malformed_closer_not_at_end,
+    find_matching_close, find_unescaped_colon_inline, has_quote_bytes, malformed_closer_not_at_end,
     parse_float_value, process_escapes, scan_inline_closer, scan_inline_closer_with_bounds,
     split_top_level, InlineBody, InlineBounds, InlineCloserScan, MAX_INLINE_DEPTH,
 };
@@ -225,11 +225,17 @@ pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
         InlineCloserScan::Found(_) => {}
     }
     let bounds = InlineBounds::over(body, &bounds_pairs);
+    // R10-F1: quote presence is computed ONCE over the root body and
+    // threaded down — every nested slice is a substring of this body,
+    // so a quote byte at the root implies one in every descendant
+    // (false positives are harmless: the fast and quote-aware machines
+    // are byte-identical on quote-free slices, R8-F2).
+    let has_quotes = has_quote_bytes(body.as_bytes());
     let mut buf: Vec<Event<'a>> = Vec::new();
     let mut transfers: u64 = 0;
     match kind {
         InlineBody::Object => {
-            let node = scan_inline_object(body, line_num, span, 0, bump, bounds)?;
+            let node = scan_inline_object(body, line_num, span, 0, bump, bounds, has_quotes)?;
             emit_node(&node, bump, &mut buf, &mut transfers);
         }
         InlineBody::Array => {
@@ -241,6 +247,7 @@ pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
                 bump,
                 &mut buf,
                 bounds,
+                has_quotes,
                 &mut transfers,
             )?;
         }
@@ -263,6 +270,10 @@ fn malformed(line_num: usize, span: Span, detail: &str) -> Error {
 
 /// Port of `parse_inline_object_inner` (owned) — same segment rules,
 /// same error strings, same § 6.3 tables via the shared `insert_value`.
+///
+/// `has_quotes` (R10-F1) is the root body's quote presence threaded
+/// from [`scan_inline_events`]; computing it per level would re-scan
+/// every descendant subtree once per nesting level.
 fn scan_inline_object<'a>(
     input: &'a str,
     line_num: usize,
@@ -270,6 +281,7 @@ fn scan_inline_object<'a>(
     depth: usize,
     bump: &'a Bump,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Node<'a>, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -288,7 +300,14 @@ fn scan_inline_object<'a>(
         return Ok(Node::Object(InlineMap::default()));
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Object, bounds)?;
+    let segments = split_top_level(
+        inner,
+        line_num,
+        span,
+        InlineBody::Object,
+        bounds,
+        has_quotes,
+    )?;
     let mut map = InlineMap::default();
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
@@ -345,7 +364,7 @@ fn scan_inline_object<'a>(
             )?;
             Node::Leaf(Event::Str(cow_to_bump(processed, bump)))
         } else {
-            scan_inline_value(value_body, line_num, span, depth, bump, bounds)?
+            scan_inline_value(value_body, line_num, span, depth, bump, bounds, has_quotes)?
         };
 
         insert_value(&mut map, key, node, line_num, span)?;
@@ -377,6 +396,7 @@ fn scan_inline_array_into<'a>(
     bump: &'a Bump,
     buf: &mut Vec<Event<'a>>,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
     transfers: &mut u64,
 ) -> Result<(), Error> {
     if depth >= MAX_INLINE_DEPTH {
@@ -398,7 +418,7 @@ fn scan_inline_array_into<'a>(
         return Ok(());
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Array, bounds)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Array, bounds, has_quotes)?;
     buf.push(Event::BeginArray);
     *transfers += 1;
     let n = segments.len();
@@ -434,6 +454,7 @@ fn scan_inline_array_into<'a>(
                         bump,
                         buf,
                         bounds,
+                        has_quotes,
                         transfers,
                     )?;
                 }
@@ -450,7 +471,7 @@ fn scan_inline_array_into<'a>(
             continue;
         }
 
-        match scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds)? {
+        match scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds, has_quotes)? {
             Node::Leaf(ev) => {
                 buf.push(ev);
                 *transfers += 1;
@@ -477,6 +498,7 @@ fn scan_inline_value<'a>(
     depth: usize,
     bump: &'a Bump,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Node<'a>, Error> {
     // Inline view trim: the body is a slice of one § 3.2-pre-split
     // line, so raw LF/CR bytes cannot occur.
@@ -484,7 +506,7 @@ fn scan_inline_value<'a>(
     if trimmed.is_empty() {
         return Ok(Node::Leaf(Event::Str("")));
     }
-    scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds)
+    scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds, has_quotes)
 }
 
 /// The § 5.2 rules-6–9 closer triage for a compound-starting value,
@@ -532,6 +554,7 @@ fn scan_inline_value_trimmed<'a>(
     depth: usize,
     bump: &'a Bump,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Node<'a>, Error> {
     let first_byte = trimmed.as_bytes()[0];
 
@@ -563,6 +586,7 @@ fn scan_inline_value_trimmed<'a>(
                         bump,
                         &mut events,
                         bounds,
+                        has_quotes,
                         &mut block_transfers,
                     )?;
                     record_event_transfers(block_transfers);
@@ -572,7 +596,7 @@ fn scan_inline_value_trimmed<'a>(
                 if inner.trim_matches(is_inline_whitespace).is_empty() {
                     return Ok(Node::Object(InlineMap::default()));
                 }
-                scan_inline_object(trimmed, line_num, span, depth + 1, bump, bounds)
+                scan_inline_object(trimmed, line_num, span, depth + 1, bump, bounds, has_quotes)
             }
             // § 6.12: closer found, but content follows it.
             Some(_) => Err(malformed_closer_not_at_end(line_num, span)),

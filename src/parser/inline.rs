@@ -32,7 +32,13 @@ pub(crate) fn parse_inline_object(
     strict: bool,
     bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
-    parse_inline_object_inner(input, line_num, span, 0, strict, bounds)
+    // R10-F1: quote presence is computed ONCE over the root body and
+    // threaded down — every nested slice is a substring of this body,
+    // so a quote byte at the root implies one in every descendant
+    // (false positives are harmless: the fast and quote-aware machines
+    // are byte-identical on quote-free slices, R8-F2).
+    let has_quotes = has_quote_bytes(input.as_bytes());
+    parse_inline_object_inner(input, line_num, span, 0, strict, bounds, has_quotes)
 }
 
 /// Parse a balanced inline array body. `input` is the full body
@@ -44,7 +50,10 @@ pub(crate) fn parse_inline_array(
     strict: bool,
     bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
-    parse_inline_array_inner(input, line_num, span, 0, strict, bounds)
+    // R10-F1: quote presence computed once at the root (see
+    // `parse_inline_object`).
+    let has_quotes = has_quote_bytes(input.as_bytes());
+    parse_inline_array_inner(input, line_num, span, 0, strict, bounds, has_quotes)
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +67,7 @@ fn parse_inline_object_inner(
     depth: usize,
     strict: bool,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Value, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -76,7 +86,14 @@ fn parse_inline_object_inner(
         return Ok(Value::Object(ObjectMap::default()));
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Object, bounds)?;
+    let segments = split_top_level(
+        inner,
+        line_num,
+        span,
+        InlineBody::Object,
+        bounds,
+        has_quotes,
+    )?;
 
     let mut map = ObjectMap::default();
     let n = segments.len();
@@ -142,7 +159,9 @@ fn parse_inline_object_inner(
             Value::String(processed.into_owned().into())
         } else {
             // Plain `:` — parse inline value
-            parse_inline_value(value_body, line_num, span, depth, strict, bounds)?
+            parse_inline_value(
+                value_body, line_num, span, depth, strict, bounds, has_quotes,
+            )?
         };
 
         // Use insert_value for dotted key expansion
@@ -159,6 +178,7 @@ fn parse_inline_array_inner(
     depth: usize,
     strict: bool,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Value, Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -177,7 +197,7 @@ fn parse_inline_array_inner(
         return Ok(Value::Array(Vec::new()));
     }
 
-    let segments = split_top_level(inner, line_num, span, InlineBody::Array, bounds)?;
+    let segments = split_top_level(inner, line_num, span, InlineBody::Array, bounds, has_quotes)?;
 
     let mut items: Vec<Value> = Vec::new();
     let n = segments.len();
@@ -198,7 +218,8 @@ fn parse_inline_array_inner(
         }
 
         // Parse inline value (could be nested compound or scalar)
-        let value = parse_inline_value_raw(trimmed, line_num, span, depth, strict, bounds)?;
+        let value =
+            parse_inline_value_raw(trimmed, line_num, span, depth, strict, bounds, has_quotes)?;
         items.push(value);
     }
 
@@ -218,6 +239,7 @@ fn parse_inline_value(
     depth: usize,
     strict: bool,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Value, Error> {
     // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
     let trimmed = body.trim_matches(is_inline_whitespace);
@@ -225,7 +247,7 @@ fn parse_inline_value(
         // Empty value after `:` → empty String
         return Ok(Value::String("".into()));
     }
-    parse_inline_value_raw(trimmed, line_num, span, depth, strict, bounds)
+    parse_inline_value_raw(trimmed, line_num, span, depth, strict, bounds, has_quotes)
 }
 
 /// Parse a single inline value that is already trimmed. This handles the
@@ -238,6 +260,7 @@ fn parse_inline_value_raw(
     depth: usize,
     strict: bool,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Value, Error> {
     let first_byte = trimmed.as_bytes()[0];
 
@@ -281,6 +304,7 @@ fn parse_inline_value_raw(
                     depth + 1,
                     strict,
                     bounds,
+                    has_quotes,
                 );
             }
             // § 6.12: closer found, but content follows it.
@@ -327,6 +351,7 @@ fn parse_inline_value_raw(
                     depth + 1,
                     strict,
                     bounds,
+                    has_quotes,
                 );
             }
             // § 6.12: closer found, but content follows it.
@@ -647,7 +672,15 @@ fn is_quote_byte(b: u8) -> bool {
 /// True iff `bytes` contains any quote byte. Cheap early-out for the
 /// scanners: without a quote byte, quoted-segment tracking cannot
 /// change the outcome, so callers keep their SIMD fast paths.
-fn has_quote_bytes(bytes: &[u8]) -> bool {
+///
+/// R10-F1: one call hands a slice of up to `bytes.len()` bytes to each
+/// of the three `contains` passes, so the true byte-view count of one
+/// call is between 1x and 3x the length recorded by
+/// [`ix_probe::record_quote_prescan`]; comparisons across parser
+/// versions hold because the factor is the same.
+pub(crate) fn has_quote_bytes(bytes: &[u8]) -> bool {
+    #[cfg(test)]
+    ix_probe::record_quote_prescan(bytes.len());
     bytes.contains(&b'"') || bytes.contains(&b'\'') || bytes.contains(&b'`')
 }
 
@@ -701,15 +734,111 @@ fn inline_whitespace_at(s: &str, i: usize) -> Option<usize> {
 /// start of the text, or immediately after an unescaped `.` (plus
 /// line-bounded whitespace, since `<raw-segment> ::= (ws) <segment>
 /// (ws)`).
+///
+/// R10-F1: candidate-driven instead of a full quote-prescan plus a
+/// byte-at-a-time walk over the WHOLE pair text. The escape-aware fast
+/// scan (`find_unescaped_colon_fast`, memchr) proposes the first
+/// unescaped `:` candidate; only that candidate's KEY PREFIX
+/// (`s[..cand]`, never the value) is checked for quote-opacity. A
+/// candidate whose prefix ends outside every quoted segment is the
+/// separator; a candidate inside a closed-or-open quoted span resumes
+/// after the span's closer (never at a segment start); a span that
+/// never closes is `UnterminatedQuote`. The full quote-aware walk
+/// ([`scan_unescaped_colon_slow`]) remains only for the corner where
+/// no unescaped candidate exists at all but quote bytes are present —
+/// the `Absent` vs `UnterminatedQuote` distinction there does not
+/// depend on finding a colon. Escape-awareness is carried by the fast
+/// scan itself (`\` consumes the next byte); the prefix walk mirrors
+/// the slow machine byte for byte over its range.
 pub(crate) fn scan_unescaped_colon(s: &str) -> ColonScan {
     let bytes = s.as_bytes();
-    if !has_quote_bytes(bytes) {
-        // No quote bytes: segment tracking cannot change the outcome.
-        return match find_unescaped_colon_fast(s) {
-            Some(p) => ColonScan::Found(p),
-            None => ColonScan::Absent,
-        };
+    let mut from = 0usize;
+    while let Some(rel) = find_unescaped_colon_fast(&s[from..]) {
+        let cand = from + rel;
+        match key_prefix_quote_state(s, from, cand) {
+            KeyPrefixQuote::Opaque => return ColonScan::Found(cand),
+            KeyPrefixQuote::OpenSegment { resume } => from = resume,
+            KeyPrefixQuote::Unterminated => return ColonScan::UnterminatedQuote,
+        }
     }
+    // No further escape-aware colon candidate anywhere. Without quote
+    // bytes nothing can be unterminated; with them the slow walk
+    // decides Absent vs UnterminatedQuote (it cannot return `Found`:
+    // the fast scan just proved no unescaped `:` exists).
+    if has_quote_bytes(bytes) {
+        return scan_unescaped_colon_slow(s);
+    }
+    ColonScan::Absent
+}
+
+/// Quote-state of `s[from..cand]` at the candidate offset `cand`
+/// (R10-F1): is a `<quoted-segment>` open there, did one open at a
+/// segment-start position and never close, or is the candidate outside
+/// every segment? Walks ONLY the key prefix `[from, cand)` — the
+/// value's own quotes and colons are irrelevant to where the key ends.
+/// `from` is either 0 (segment start, the whole text's beginning) or
+/// one past a quoted span's closer (NOT a segment start) — the same
+/// resume state [`scan_unescaped_colon_slow`] carries.
+enum KeyPrefixQuote {
+    /// No quoted segment is open at the candidate offset.
+    Opaque,
+    /// A quoted segment is open at the candidate; `resume` is one past
+    /// its closing quote.
+    OpenSegment { resume: usize },
+    /// A segment-start quote whose span never closes: the candidate is
+    /// inside it (§ 5.3.3 "Unterminated quoted segments").
+    Unterminated,
+}
+
+fn key_prefix_quote_state(s: &str, from: usize, cand: usize) -> KeyPrefixQuote {
+    let bytes = s.as_bytes();
+    // No quote byte in the prefix: no segment can open (openings need a
+    // quote byte at a segment start) and none can be unterminated.
+    if !has_quote_bytes(&bytes[from..cand]) {
+        return KeyPrefixQuote::Opaque;
+    }
+    let mut i = from;
+    let mut seg_start = from == 0;
+    while i < cand {
+        if seg_start {
+            i = skip_segment_ws(s, i);
+            if i < cand && is_quote_byte(bytes[i]) {
+                return match quoted_span_end(bytes, i) {
+                    // The colon is inside this span iff the span reaches
+                    // past it (the closer cannot sit ON `cand` — that
+                    // byte is `:`). A span closing before the candidate
+                    // just resumes the walk after its closer.
+                    Some(end) if end > cand => KeyPrefixQuote::OpenSegment { resume: end + 1 },
+                    Some(end) => {
+                        i = end + 1;
+                        seg_start = false;
+                        continue;
+                    }
+                    None => KeyPrefixQuote::Unterminated,
+                };
+            }
+            seg_start = false;
+        }
+        match bytes[i] {
+            b'\\' => i += 2, // escape lead: consume the escaped byte too (a lone trailing `\` overshoots the prefix, which the loop guard makes safe — the colon at `cand` is unescaped, so this cannot hide it)
+            b'.' => {
+                seg_start = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    KeyPrefixQuote::Opaque
+}
+
+/// The pre-R10-F1 full quote-aware walk (spec 0.7 § 4 + § 5.3.3), kept
+/// for `scan_unescaped_colon`'s no-candidate corner: byte-at-a-time
+/// segment tracking over the WHOLE text. Precondition: the caller has
+/// established that no unescaped `:` candidate exists
+/// ([`find_unescaped_colon_fast`] over the whole text returned `None`),
+/// so this can only return `Absent` or `UnterminatedQuote`.
+fn scan_unescaped_colon_slow(s: &str) -> ColonScan {
+    let bytes = s.as_bytes();
     let mut i = 0;
     let mut seg_start = true; // position 0 is a segment start
     while i < bytes.len() {
@@ -1160,6 +1289,9 @@ pub(crate) mod ix_probe {
         body_bytes: u64,
         pairs_total: u64,
         pairs_max: u64,
+        hq_calls: u64,
+        hq_bytes: u64,
+        hq_max: u64,
     }
 
     thread_local! {
@@ -1242,6 +1374,18 @@ pub(crate) mod ix_probe {
         });
     }
 
+    /// R10-F1: one quote-presence prescan (`has_quote_bytes`): `len` is
+    /// the slice length handed to the check (up to three `contains`
+    /// passes each). These are the PREscans — the repeated full-subtree
+    /// quote checks this module's lookup counters do not see.
+    pub(crate) fn record_quote_prescan(len: usize) {
+        with_state(|s| {
+            s.hq_calls += 1;
+            s.hq_bytes += len as u64;
+            s.hq_max = s.hq_max.max(len as u64);
+        });
+    }
+
     #[derive(Default, Clone, Copy)]
     pub(crate) struct Snapshot {
         pub kc_calls: u64,
@@ -1259,6 +1403,9 @@ pub(crate) mod ix_probe {
         pub body_bytes: u64,
         pub pairs_total: u64,
         pub pairs_max: u64,
+        pub hq_calls: u64,
+        pub hq_bytes: u64,
+        pub hq_max: u64,
     }
 
     pub(crate) fn snapshot() -> Snapshot {
@@ -1280,6 +1427,9 @@ pub(crate) mod ix_probe {
                 body_bytes: s.body_bytes,
                 pairs_total: s.pairs_total,
                 pairs_max: s.pairs_max,
+                hq_calls: s.hq_calls,
+                hq_bytes: s.hq_bytes,
+                hq_max: s.hq_max,
             }
         })
     }
@@ -2149,15 +2299,25 @@ impl<'a, 'b, C: ScanCfg> Scanner<'a, 'b, C> {
 /// splits into two pairs — while quotes in value positions are
 /// ordinary content (`a: "x,y", b: 2` splits inside the quotes). An
 /// unterminated quoted key segment raises `UnterminatedInlineCompound`.
+///
+/// `has_quotes` (R10-F1) is the ROOT body's quote presence threaded
+/// down from the parse entry — computing it here would re-scan every
+/// descendant subtree once per nesting level (`O(N·D)`).
 pub(crate) fn split_top_level<'a>(
     input: &'a str,
     line_num: usize,
     span: Span,
     body: InlineBody,
     bounds: InlineBounds<'_>,
+    has_quotes: bool,
 ) -> Result<Vec<&'a str>, Error> {
-    let bytes = input.as_bytes();
-    if body == InlineBody::Array || !has_quote_bytes(bytes) {
+    // R10-F1: `has_quotes` is threaded from the parse entry, where it
+    // was computed once over the ROOT body. Every slice split here
+    // descends from that body, so root-level presence implies presence
+    // here; the converse is allowed (a quote-free level may take the
+    // quote-aware machine — byte-identical on quote-free slices,
+    // R8-F2). No per-level `has_quote_bytes` re-scan remains.
+    if body == InlineBody::Array || !has_quotes {
         return Ok(split_top_level_fast(input, line_num, span, body, bounds));
     }
 

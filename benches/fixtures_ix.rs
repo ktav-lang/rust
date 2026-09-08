@@ -160,3 +160,17 @@ pub fn many_inline_trees(lines: usize) -> String {
 pub fn deep_chain(depth: usize) -> String {
     format!("k: {}1{}", "{a: ".repeat(depth), "}".repeat(depth))
 }
+
+/// R10-F1 prescan family: `k: {a: {a: … <leaf> …}}` — `depth` nested
+/// inline Objects around one quote-free `leaf_bytes`-byte scalar leaf
+/// (`a`-`z` repeating). At a fixed leaf length the family isolates
+/// depth (D); at a fixed depth it isolates the leaf length (M). The
+/// quote-presence prescans the R10-F1 fix removed saw every leaf byte
+/// at every level here; the ix_probe `hq_*` counters pin the cost.
+pub fn deep_chain_leaf(depth: usize, leaf_bytes: usize) -> String {
+    let mut leaf = String::with_capacity(leaf_bytes);
+    for i in 0..leaf_bytes {
+        leaf.push((b'a' + (i % 26) as u8) as char);
+    }
+    format!("k: {}{}{}", "{a: ".repeat(depth), leaf, "}".repeat(depth))
+}

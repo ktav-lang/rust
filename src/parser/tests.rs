@@ -1252,6 +1252,7 @@ fn parse_quoted_keys() {
 
 use super::inline::find_matching_close;
 use super::inline::find_unescaped_colon_inline;
+use super::inline::has_quote_bytes;
 use super::inline::split_top_level;
 use super::inline::ColonScan;
 use super::inline::InlineBody;
@@ -1295,6 +1296,75 @@ fn quoted_colon_scan_absent_and_escapes() {
 }
 
 #[test]
+fn r10f1_colon_scan_value_side_quotes_are_not_key_quotes() {
+    // R10-F1: the separator search checks quote-opacity only over the
+    // KEY PREFIX up to the candidate colon — the value's own quotes,
+    // dots and colons must never turn the pair's own separator into
+    // segment content or an unterminated key.
+    assert_eq!(scan_unescaped_colon("a: \"b:c\""), ColonScan::Found(1));
+    // A value quote that never closes is still VALUE content: Found,
+    // not UnterminatedQuote.
+    assert_eq!(
+        scan_unescaped_colon("a: \"unterminated"),
+        ColonScan::Found(1)
+    );
+    // The positive-control shape: a dot-armed segment start and an
+    // unterminated quote INSIDE the value, with a colon after both.
+    assert_eq!(
+        scan_unescaped_colon("a: b.\"unterm: 2\""),
+        ColonScan::Found(1)
+    );
+    assert_eq!(
+        scan_unescaped_colon("a: b.c.\"x:y\".d"),
+        ColonScan::Found(1)
+    );
+    // Truly UNterminated value-side quote after a dot (no closer): the
+    // pair separator is still the first colon. This literal is in the
+    // golden-corpus input set on purpose: under the pre-fix scope bug
+    // (opacity checked over the whole pair) it would flip to
+    // UnterminatedQuote, so the corpus distinguishes the value-side
+    // sub-class too.
+    assert_eq!(
+        scan_unescaped_colon("a: b.\"unterm: 2"),
+        ColonScan::Found(1)
+    );
+    // A non-segment-start quote in the prefix is ordinary key content:
+    // the colon AFTER it is still found (and `a: b"c: d` shows the pair
+    // separator is the FIRST unescaped colon — value quotes cannot move
+    // it).
+    assert_eq!(scan_unescaped_colon("ab\"c:d: 1"), ColonScan::Found(4));
+    assert_eq!(scan_unescaped_colon("a: b\"c: d"), ColonScan::Found(1));
+    // Multi-segment keys with quoted middles: candidates inside a span
+    // resume after its closer, and the NEXT candidate is the separator.
+    assert_eq!(scan_unescaped_colon("a.\"x:y\".b: 1"), ColonScan::Found(9));
+    assert_eq!(scan_unescaped_colon("\"a\".\"b\": 1"), ColonScan::Found(7));
+    // Escaped quote in the key prefix never opens a segment.
+    assert_eq!(scan_unescaped_colon("a\\\"b: 1"), ColonScan::Found(4));
+    // Prefix ending mid segment-start whitespace still finds the colon.
+    assert_eq!(scan_unescaped_colon("a .  \"b\": 1"), ColonScan::Found(8));
+}
+
+#[test]
+fn r10f1_colon_scan_no_candidate_corners() {
+    // No unescaped colon candidate anywhere: the slow walk still
+    // distinguishes Absent from UnterminatedQuote (§ 5.3.3 keeps
+    // precedence over MissingSeparator even with no colon at all).
+    assert_eq!(scan_unescaped_colon("a b"), ColonScan::Absent);
+    assert_eq!(scan_unescaped_colon("a\\:b"), ColonScan::Absent);
+    assert_eq!(
+        scan_unescaped_colon("\"unterm"),
+        ColonScan::UnterminatedQuote
+    );
+    assert_eq!(
+        scan_unescaped_colon("a.\"unterm"),
+        ColonScan::UnterminatedQuote
+    );
+    // A closed quoted key with no colon after it: Absent, not
+    // UnterminatedQuote.
+    assert_eq!(scan_unescaped_colon("\"a\" b"), ColonScan::Absent);
+}
+
+#[test]
 fn quoted_split_key_path_keeps_quotes_in_slices() {
     assert_eq!(split_key_path("a.\"b.c\".d"), vec!["a", "\"b.c\"", "d"]);
     assert_eq!(split_key_path("\"a\".\"b\""), vec!["\"a\"", "\"b\""]);
@@ -1332,7 +1402,8 @@ fn quoted_split_top_level_object_mode() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("\"a}b\": 1, c: 2")
+            InlineBounds::for_input("\"a}b\": 1, c: 2"),
+            has_quote_bytes("\"a}b\": 1, c: 2".as_bytes())
         )
         .unwrap(),
         vec!["\"a}b\": 1", " c: 2"]
@@ -1345,7 +1416,8 @@ fn quoted_split_top_level_object_mode() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("a: \"x,y\", b: 2")
+            InlineBounds::for_input("a: \"x,y\", b: 2"),
+            has_quote_bytes("a: \"x,y\", b: 2".as_bytes())
         )
         .unwrap(),
         vec!["a: \"x", "y\"", " b: 2"]
@@ -1357,6 +1429,7 @@ fn quoted_split_top_level_object_mode() {
         S,
         InlineBody::Object,
         InlineBounds::for_input("\"a: 1"),
+        has_quote_bytes("\"a: 1".as_bytes()),
     ) {
         Err(crate::Error::Structured(crate::ErrorKind::UnterminatedInlineCompound { .. })) => {}
         other => panic!(
@@ -1377,7 +1450,8 @@ fn quoted_split_top_level_array_mode_ignores_quotes() {
             1,
             S,
             InlineBody::Array,
-            InlineBounds::for_input("\"a,b\", c")
+            InlineBounds::for_input("\"a,b\", c"),
+            has_quote_bytes("\"a,b\", c".as_bytes())
         )
         .unwrap(),
         vec!["\"a", "b\"", " c"]
@@ -1434,7 +1508,8 @@ fn r3f1_split_top_level_trailing_ws_after_comma_no_phantom_segment() {
                 1,
                 S,
                 InlineBody::Object,
-                InlineBounds::for_input(&body)
+                InlineBounds::for_input(&body),
+                has_quote_bytes(body.as_bytes()),
             )
             .unwrap(),
             vec!["\"a\": 1"]
@@ -1448,7 +1523,8 @@ fn r3f1_split_top_level_trailing_ws_after_comma_no_phantom_segment() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("\"a\": 1,")
+            InlineBounds::for_input("\"a\": 1,"),
+            has_quote_bytes("\"a\": 1,".as_bytes())
         )
         .unwrap(),
         vec!["\"a\": 1", ""]
@@ -1460,7 +1536,8 @@ fn r3f1_split_top_level_trailing_ws_after_comma_no_phantom_segment() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("\"a b\": 1, ")
+            InlineBounds::for_input("\"a b\": 1, "),
+            has_quote_bytes("\"a b\": 1, ".as_bytes())
         )
         .unwrap(),
         vec!["\"a b\": 1"]
@@ -1471,7 +1548,8 @@ fn r3f1_split_top_level_trailing_ws_after_comma_no_phantom_segment() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("a: \"x\", ")
+            InlineBounds::for_input("a: \"x\", "),
+            has_quote_bytes("a: \"x\", ".as_bytes())
         )
         .unwrap(),
         vec!["a: \"x\""]
@@ -1491,6 +1569,7 @@ fn r3f1_split_top_level_dotted_key_trailing_ws_is_empty_key() {
             S,
             InlineBody::Object,
             InlineBounds::for_input(&body),
+            has_quote_bytes(body.as_bytes()),
         ) {
             Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
             other => panic!("expected EmptyKey, got: {:?}", other.err()),
@@ -1503,6 +1582,7 @@ fn r3f1_split_top_level_dotted_key_trailing_ws_is_empty_key() {
         S,
         InlineBody::Object,
         InlineBounds::for_input(" \"a\". "),
+        has_quote_bytes(" \"a\". ".as_bytes()),
     ) {
         Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
         other => panic!("expected EmptyKey, got: {:?}", other.err()),
@@ -1514,7 +1594,8 @@ fn r3f1_split_top_level_dotted_key_trailing_ws_is_empty_key() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("a. b : 1")
+            InlineBounds::for_input("a. b : 1"),
+            has_quote_bytes("a. b : 1".as_bytes())
         )
         .unwrap(),
         vec!["a. b : 1"]
@@ -1737,7 +1818,8 @@ fn r3f2_split_top_level_array_body_quoted_key_object() {
             1,
             S,
             InlineBody::Array,
-            InlineBounds::for_input("{\"x]y\": 1},2")
+            InlineBounds::for_input("{\"x]y\": 1},2"),
+            has_quote_bytes("{\"x]y\": 1},2".as_bytes())
         )
         .unwrap(),
         vec!["{\"x]y\": 1}", "2"]
@@ -1758,7 +1840,8 @@ fn r3f4_split_top_level_midvalue_balanced_brace_splits_at_inner_comma() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("a: x{y,z}, b: 2")
+            InlineBounds::for_input("a: x{y,z}, b: 2"),
+            has_quote_bytes("a: x{y,z}, b: 2".as_bytes())
         )
         .unwrap(),
         vec!["a: x{y", "z}", " b: 2"]
@@ -1775,7 +1858,8 @@ fn r3f4_split_top_level_midvalue_brace_quote_aware_slow_path() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("k: \"v\", a: x{y,z}, b: 2")
+            InlineBounds::for_input("k: \"v\", a: x{y,z}, b: 2"),
+            has_quote_bytes("k: \"v\", a: x{y,z}, b: 2".as_bytes())
         )
         .unwrap(),
         vec!["k: \"v\"", " a: x{y", "z}", " b: 2"]
@@ -1792,7 +1876,8 @@ fn r3f4_split_top_level_array_body_midvalue_brace_splits_at_inner_comma() {
             1,
             S,
             InlineBody::Array,
-            InlineBounds::for_input("x{y,z}, 2")
+            InlineBounds::for_input("x{y,z}, 2"),
+            has_quote_bytes("x{y,z}, 2".as_bytes())
         )
         .unwrap(),
         vec!["x{y", "z}", " 2"]
@@ -1810,7 +1895,8 @@ fn r3f4_split_top_level_genuine_value_start_compounds_guard() {
             1,
             S,
             InlineBody::Array,
-            InlineBounds::for_input("{a: 1}, 2")
+            InlineBounds::for_input("{a: 1}, 2"),
+            has_quote_bytes("{a: 1}, 2".as_bytes())
         )
         .unwrap(),
         vec!["{a: 1}", " 2"]
@@ -1821,7 +1907,8 @@ fn r3f4_split_top_level_genuine_value_start_compounds_guard() {
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input("a: {y: 1}, b: 2")
+            InlineBounds::for_input("a: {y: 1}, b: 2"),
+            has_quote_bytes("a: {y: 1}, b: 2".as_bytes())
         )
         .unwrap(),
         vec!["a: {y: 1}", " b: 2"]
@@ -2721,6 +2808,166 @@ fn ix_probe_r8f6_memo_lookup_ab() {
                     e.as_nanos() as u64
                 );
             }
+        }
+    }
+}
+
+// --- R10-F1: quote-presence prescan cost (deterministic counters) ----------
+
+#[test]
+fn r10f1_deep_chain_leaf_shapes_are_valid() {
+    use crate::Value;
+
+    // The D x M family must have exactly the requested spine depth and
+    // leaf length — a shape drift would silently weaken the counter
+    // pins below.
+    for (depth, leaf_bytes) in [(1usize, 8usize), (4, 64), (32, 512), (100, 16)] {
+        let doc = ix_fixtures::deep_chain_leaf(depth, leaf_bytes);
+        let mut v = crate::parse(&doc).expect("family document must parse");
+        let mut levels = 0usize;
+        while let Some(obj) = v.as_object() {
+            let key = if levels == 0 { "k" } else { "a" };
+            v = obj
+                .get(key)
+                .unwrap_or_else(|| panic!("spine key {key} missing at level {levels}"))
+                .clone();
+            levels += 1;
+        }
+        assert_eq!(levels, depth + 1, "spine depth at depth={depth}");
+        match &v {
+            Value::String(s) => assert_eq!(s.len(), leaf_bytes, "leaf at depth={depth}"),
+            other => panic!("leaf must be a String, got {other:?}"),
+        }
+    }
+    assert!(ix_fixtures::deep_chain_leaf(64, 4096).len() > 4096 + 64 * 5);
+}
+
+#[test]
+fn r10f1_root_quotes_threaded_over_quotefree_descendants() {
+    use crate::Value;
+
+    // The root body carries the quote flag, so quote-free descendant
+    // levels run the quote-aware machines; their segmentation must be
+    // exactly what the quote-free machines produce (R8-F2
+    // byte-identity): the quoted key stays ONE key (its comma is
+    // opaque, its dot is content), and the quote-free descendants
+    // split normally.
+    let doc = "{\"a,b\": {c: {d: 1, e: 2}}, g: [1, [2, 3]]}";
+    let v = crate::parse(doc).expect("threaded doc must parse");
+    let root = v.as_object().unwrap();
+    let quoted = root.get("a,b").expect("quoted key must survive whole");
+    let quoted = quoted.as_object().expect("quoted key maps to object");
+    let c = quoted.get("c").unwrap().as_object().unwrap();
+    assert_eq!(c.get("d"), Some(&Value::Integer("1".into())));
+    assert_eq!(c.get("e"), Some(&Value::Integer("2".into())));
+    let g = root.get("g").unwrap().as_array().unwrap();
+    assert_eq!(g[0], Value::Integer("1".into()));
+    assert_eq!(g[1].as_array().unwrap()[0], Value::Integer("2".into()));
+
+    // All three engines accept the same document.
+    crate::parse_strict(doc).expect("strict must accept");
+    crate::from_str::<serde_json::Value>(doc).expect("serde must accept");
+    let mut events = 0usize;
+    crate::parse_events(doc, |_| {
+        events += 1;
+    })
+    .expect("events must accept");
+    assert!(events > 0);
+}
+
+#[test]
+fn r10f1_quote_prescan_cost_no_depth_multiplier() {
+    // Fixed leaf M=512, varying depth D. Before R10-F1 the two prescan
+    // sites (`split_top_level`'s dispatch and the separator scan) saw
+    // the whole M-byte leaf at EVERY level, ~2*M*D recorded bytes; the
+    // threaded root flag leaves a constant number of root-body scans
+    // plus per-level key-prefix work.
+    let m = 512usize;
+    let measure = |depth: usize| {
+        let doc = ix_fixtures::deep_chain_leaf(depth, m);
+        super::inline::ix_probe::reset();
+        let v = crate::parse(&doc).expect("family document must parse");
+        assert!(v.as_object().is_some());
+        super::inline::ix_probe::snapshot().hq_bytes
+    };
+    let d1 = measure(1);
+    let d32 = measure(32);
+    assert!(d1 >= m as u64, "root-body prescan must happen: d1={d1}");
+    assert!(
+        d32 < 2 * d1 + 32 * 64,
+        "prescan bytes must not multiply by depth: d1={d1} d32={d32}"
+    );
+    assert!(d32 < 8 * m as u64, "absolute bound: d32={d32} m={m}");
+}
+
+#[test]
+fn r10f1_quote_prescan_cost_linear_in_leaf() {
+    // Fixed depth D=8, varying leaf M. The total prescan volume must
+    // stay a small constant factor of M (the pre-fix code recorded
+    // ~2*M*8 bytes here) and grow roughly linearly in M.
+    let measure = |m: usize| {
+        let doc = ix_fixtures::deep_chain_leaf(8, m);
+        super::inline::ix_probe::reset();
+        let _ = crate::parse(&doc).expect("family document must parse");
+        super::inline::ix_probe::snapshot().hq_bytes
+    };
+    let small = measure(512);
+    let large = measure(8192);
+    assert!(small >= 512, "root prescan must happen: {small}");
+    assert!(small < 8 * 512, "small bound: {small}");
+    assert!(
+        large >= 8192,
+        "prescan must still scale with the leaf: {large}"
+    );
+    assert!(large < 8 * 8192, "large bound: {large}");
+    let ratio = large as f64 / small as f64;
+    assert!(
+        ratio > 8.0 && ratio < 32.0,
+        "growth must be ~linear in M: ratio={ratio}"
+    );
+}
+
+/// Deterministic companion to the two scaling pins: prints the
+/// quote-prescan counters over the whole D x M family for both parse
+/// paths, so a future round can re-derive the before/after table with
+/// `cargo test --lib ix_probe_r10f1_quote_prescan_counters -- --nocapture`.
+#[test]
+fn ix_probe_r10f1_quote_prescan_counters() {
+    let shapes = [
+        (1usize, 512usize),
+        (4, 512),
+        (8, 512),
+        (32, 512),
+        (64, 512),
+        (8, 8192),
+        (8, 65536),
+    ];
+    for (depth, leaf) in shapes {
+        let doc = ix_fixtures::deep_chain_leaf(depth, leaf);
+        for (path, run) in [
+            (
+                "P",
+                Box::new(|doc: &str| {
+                    let _ = crate::parse(doc);
+                }) as Box<dyn Fn(&str)>,
+            ),
+            (
+                "E",
+                Box::new(|doc: &str| {
+                    let _ = crate::parse_events(doc, |_| {});
+                }) as Box<dyn Fn(&str)>,
+            ),
+        ] {
+            super::inline::ix_probe::reset();
+            run(&doc);
+            let s = super::inline::ix_probe::snapshot();
+            println!(
+                "HQ\tdeep_chain_leaf\t{path}\tdepth={depth}\tleaf={leaf}\tdoc_bytes={}\thq_calls={}\thq_bytes={}\thq_max={}",
+                doc.len(),
+                s.hq_calls,
+                s.hq_bytes,
+                s.hq_max
+            );
         }
     }
 }
