@@ -12,12 +12,16 @@
 //! list; its transient state is one scope frame per open bracket plus
 //! the parse-wide dotted-key path table. Inline compounds (`a: {x:
 //! 1}`) are staged before publication: the scanner appends their
-//! events to a flat per-compound `Vec<Event>` scratch (array items in
-//! source order — arrays need no staging of their own), keeps one
+//! events to a flat per-compound `Vec<Event>` scratch (array items —
+//! nested arrays included — land there in source order, each exactly
+//! once), keeps one
 //! insertion-ordered key table (`IndexMap`) per object scope for
 //! duplicate/conflict detection and dotted-key merge (§ 6.3), and
 //! stages one flat event block per array that is directly an object
-//! member's value. Only after the whole compound validates are its
+//! member's value (the only array staging there is: dotted re-entry,
+//! § 5.3.2, can add merge-pairs to an already-seen key, so member
+//! values are emitted from the object's final walk, never at arrival
+//! time). Only after the whole compound validates are its
 //! events appended — through the parser's reusable per-parse staging
 //! buffer when the compound is a key's value. No owned `Value` is
 //! built, and events are never published from a half-scanned

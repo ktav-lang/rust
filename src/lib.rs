@@ -148,8 +148,11 @@ pub fn parse_strict(text: &str) -> Result<Value> {
 /// ever materialising an owned tree; compound nesting is bracketed by
 /// `BeginObject`/`EndObject` events. Inline compounds (`a: {x: 1}`)
 /// are staged, not streamed: the scanner appends their events to a
-/// flat per-compound `Vec<Event>` scratch (array items in source
-/// order — arrays need no staging of their own), keeps one
+/// flat per-compound `Vec<Event>` scratch (array items — nested
+/// arrays included — land there in source order, each exactly once;
+/// only arrays that are directly an object member's value are staged
+/// as one bracketed block until the object's insertion order is
+/// final), keeps one
 /// insertion-ordered key table (`IndexMap`) per object scope for
 /// duplicate/conflict detection and dotted-key merge, and copies the
 /// finished events into the stream only after the compound validates

@@ -43,6 +43,43 @@ use crate::whitespace::is_inline_whitespace;
 
 use super::event::{Event, EventSink};
 
+// Deterministic instrument for the shared-buffer property: counts
+// every `Event` value the scanner moves into a scratch buffer or
+// sink, plus the block copies between buffers that nested-array
+// staging used to make quadratic (3 + 5 + … + (2D−1) = D² − 1 extra
+// copies for a chain of D nested arrays). A parse that lands every
+// event in the shared compound scratch exactly once counts each
+// event twice — once into the scratch, once into the sink.
+// Accumulated in test builds only; in non-test builds
+// `record_event_transfers` is a no-op and the counters optimize
+// away.
+#[cfg(test)]
+thread_local! {
+    static EVENT_TRANSFERS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Add `n` moved/copied events to this thread's total (test builds only).
+#[cfg(test)]
+fn record_event_transfers(n: u64) {
+    EVENT_TRANSFERS.with(|total| total.set(total.get() + n));
+}
+
+/// Read and reset this thread's moved/copied-event total.
+#[cfg(test)]
+pub(crate) fn take_event_transfers() -> u64 {
+    EVENT_TRANSFERS.with(|total| {
+        let n = total.get();
+        total.set(0);
+        n
+    })
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn record_event_transfers(n: u64) {
+    let _ = n;
+}
+
 /// Same plain-decimal fast path as `parser::classify`'s (identical
 /// code): a canonical ASCII decimal integer borrows the source slice,
 /// skipping itoa + arena allocation.
@@ -189,18 +226,30 @@ pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
     }
     let bounds = InlineBounds::over(body, &bounds_pairs);
     let mut buf: Vec<Event<'a>> = Vec::new();
+    let mut transfers: u64 = 0;
     match kind {
         InlineBody::Object => {
             let node = scan_inline_object(body, line_num, span, 0, bump, bounds)?;
-            emit_node(&node, bump, &mut buf);
+            emit_node(&node, bump, &mut buf, &mut transfers);
         }
         InlineBody::Array => {
-            scan_inline_array_into(body, line_num, span, 0, bump, &mut buf, bounds)?;
+            scan_inline_array_into(
+                body,
+                line_num,
+                span,
+                0,
+                bump,
+                &mut buf,
+                bounds,
+                &mut transfers,
+            )?;
         }
     }
+    let sink_moves = buf.len() as u64;
     for ev in buf {
         EventSink::push(out, ev);
     }
+    record_event_transfers(transfers + sink_moves);
     Ok(())
 }
 
@@ -307,10 +356,19 @@ fn scan_inline_object<'a>(
 
 /// Port of `parse_inline_array_inner` (owned). Appends the array's
 /// complete event block — `BeginArray`, each item's events in source
-/// order (nested arrays recurse into the same buffer, nested objects
-/// emit their finished key-table walk), `EndArray` — to `buf`.
-/// Nothing is written to the parser's sink here; the caller copies
-/// `buf` only after the whole compound validates.
+/// order, `EndArray` — to `buf`. Nested arrays run the SAME § 5.2
+/// rules-6–9 closer triage as `scan_inline_value_trimmed`, then
+/// recurse into this same `buf`: no per-item block is built and no
+/// block is copied back into the parent, so each event of a nested
+/// chain is moved exactly once into the buffer. Nested objects cannot
+/// take that shortcut — their event sequence only exists once the
+/// object's key table is final (insertion order, § 6.3 merge) — so
+/// they come back as a finished key-table walk. Nothing is written to
+/// the parser's sink here; the caller copies `buf` only after the
+/// whole compound validates. `transfers` counts every `Event` value
+/// moved into a scratch buffer or copied between buffers (the
+/// deterministic instrument behind the `tests` module).
+#[allow(clippy::too_many_arguments)]
 fn scan_inline_array_into<'a>(
     input: &'a str,
     line_num: usize,
@@ -319,6 +377,7 @@ fn scan_inline_array_into<'a>(
     bump: &'a Bump,
     buf: &mut Vec<Event<'a>>,
     bounds: InlineBounds<'_>,
+    transfers: &mut u64,
 ) -> Result<(), Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
@@ -333,6 +392,7 @@ fn scan_inline_array_into<'a>(
     // Inline scan: LF/CR cannot occur here — the input is carved from
     // one § 3.2-pre-split line.
     if inner.trim_matches(is_inline_whitespace).is_empty() {
+        *transfers += 2;
         buf.push(Event::BeginArray);
         buf.push(Event::EndArray);
         return Ok(());
@@ -340,6 +400,7 @@ fn scan_inline_array_into<'a>(
 
     let segments = split_top_level(inner, line_num, span, InlineBody::Array, bounds)?;
     buf.push(Event::BeginArray);
+    *transfers += 1;
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
         // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
@@ -363,16 +424,59 @@ fn scan_inline_array_into<'a>(
             let processed =
                 process_escapes(rest.trim_matches(is_inline_whitespace), line_num, span)?;
             buf.push(Event::Str(cow_to_bump(processed, bump)));
+            *transfers += 1;
+            continue;
+        }
+
+        // Nested array item: same memo-then-find-then-scan closer
+        // triage as `scan_inline_value_trimmed`, and only once the
+        // closer is known to END the item does the recursion run —
+        // straight into THIS buffer, so the child never materializes
+        // a block for the parent to copy.
+        if trimmed.starts_with('[') {
+            match find_inline_compound_close(trimmed, b'[', b']', line_num, span, bounds)? {
+                // § 6.11: the matching closer is the last byte.
+                Some(idx) if idx == trimmed.len() - 1 => {
+                    scan_inline_array_into(
+                        trimmed,
+                        line_num,
+                        span,
+                        depth + 1,
+                        bump,
+                        buf,
+                        bounds,
+                        transfers,
+                    )?;
+                }
+                // § 6.12: closer found, but content follows it.
+                Some(_) => return Err(malformed_closer_not_at_end(line_num, span)),
+                // § 6.11: no closer at all.
+                None => {
+                    return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
+                        line: line_num as u32,
+                        span,
+                    }));
+                }
+            }
             continue;
         }
 
         match scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds)? {
-            Node::Leaf(ev) => buf.push(ev),
-            Node::Array(events) => buf.extend_from_slice(&events),
-            Node::Object(map) => emit_node(&Node::Object(map), bump, buf),
+            Node::Leaf(ev) => {
+                buf.push(ev);
+                *transfers += 1;
+            }
+            // Unreachable since nested-array items recurse above;
+            // kept for exhaustiveness.
+            Node::Array(events) => {
+                *transfers += events.len() as u64;
+                buf.extend_from_slice(&events);
+            }
+            Node::Object(map) => emit_node(&Node::Object(map), bump, buf, transfers),
         }
     }
     buf.push(Event::EndArray);
+    *transfers += 1;
     Ok(())
 }
 
@@ -394,9 +498,40 @@ fn scan_inline_value<'a>(
     scan_inline_value_trimmed(trimmed, line_num, span, depth, bump, bounds)
 }
 
+/// The § 5.2 rules-6–9 closer triage for a compound-starting value,
+/// shared verbatim by `scan_inline_value_trimmed` and the nested-array
+/// path in `scan_inline_array_into`: the gate-scan memo
+/// (`known_closer`) first, then `find_matching_close`, then
+/// `scan_inline_closer` as the fallback that keeps
+/// `BadEscapeSequence` precedence for non-memo spans. `Ok(Some(idx))`
+/// is the closer's offset in `trimmed` (§ 6.11 wants
+/// `idx == trimmed.len() - 1`), `Ok(None)` — no closer at all,
+/// `Err` — a bad escape found on the way.
+fn find_inline_compound_close(
+    trimmed: &str,
+    open: u8,
+    close: u8,
+    line_num: usize,
+    span: Span,
+    bounds: InlineBounds<'_>,
+) -> Result<Option<usize>, Error> {
+    match bounds.known_closer(trimmed) {
+        Some(idx) => Ok(Some(idx)),
+        None => match find_matching_close(trimmed, open, close) {
+            Some(close) => Ok(Some(close)),
+            None => match scan_inline_closer(trimmed, open, close, line_num, span) {
+                InlineCloserScan::Found(idx) => Ok(Some(idx)),
+                InlineCloserScan::NotFound => Ok(None),
+                InlineCloserScan::BadEscape(err) => Err(err),
+            },
+        },
+    }
+}
+
 /// Port of `parse_inline_value_raw` + `classify_inline_scalar`
 /// (owned, lax mode — the thin path has no strict variant). Note the
-/// nested-compound triage is memo-then-find-then-scan, exactly as the
+/// nested-compound triage (`find_inline_compound_close`) is
+/// memo-then-find-then-scan, exactly as the
 /// owned code: the gate-scan memo hit short-circuits both scans with
 /// the identical verdict; the fallback keeps `BadEscapeSequence`
 /// precedence for non-memo spans (`find_matching_close` first,
@@ -417,24 +552,20 @@ fn scan_inline_value_trimmed<'a>(
         } else {
             (b'[', b']')
         };
-        let close_idx = match bounds.known_closer(trimmed) {
-            // Gate-scan memo: identical to what the dispatch below computes.
-            Some(idx) => Some(idx),
-            None => match find_matching_close(trimmed, open, close) {
-                Some(close) => Some(close),
-                None => match scan_inline_closer(trimmed, open, close, line_num, span) {
-                    InlineCloserScan::Found(idx) => Some(idx),
-                    InlineCloserScan::NotFound => None,
-                    InlineCloserScan::BadEscape(err) => return Err(err),
-                },
-            },
-        };
-        return match close_idx {
+        return match find_inline_compound_close(trimmed, open, close, line_num, span, bounds)? {
             // § 6.11: the matching closer is the last byte.
             Some(idx) if idx == trimmed.len() - 1 => {
                 let inner = &trimmed[1..trimmed.len() - 1];
                 if first_byte == b'[' {
+                    // An array here is an OBJECT member's value: it is
+                    // staged as one flat block (`Node::Array`) until the
+                    // enclosing object's insertion order is final. That
+                    // staging stays — § 5.3.2 dotted re-entry can add
+                    // merge-pairs to an already-seen key, so member
+                    // values are emitted from the object's final walk,
+                    // never at arrival time.
                     let mut events = Vec::new();
+                    let mut block_transfers = 0u64;
                     scan_inline_array_into(
                         trimmed,
                         line_num,
@@ -443,7 +574,9 @@ fn scan_inline_value_trimmed<'a>(
                         bump,
                         &mut events,
                         bounds,
+                        &mut block_transfers,
                     )?;
+                    record_event_transfers(block_transfers);
                     return Ok(Node::Array(events));
                 }
                 // Inline view trim: LF/CR cannot occur (§ 3.2-pre-split line).
@@ -530,21 +663,132 @@ fn cow_to_bump<'a>(cow: Cow<'a, str>, bump: &'a Bump) -> &'a str {
 /// Emit a finished node into the flat scratch buffer in the exact
 /// order the former `value_to_events` walked the owned `Value` tree:
 /// insertion order per object, nested Begin/End brackets per compound.
-fn emit_node<'a>(node: &Node<'a>, bump: &'a Bump, buf: &mut Vec<Event<'a>>) {
+/// `transfers` counts moves/copies as in `scan_inline_array_into`.
+fn emit_node<'a>(node: &Node<'a>, bump: &'a Bump, buf: &mut Vec<Event<'a>>, transfers: &mut u64) {
     match node {
-        Node::Leaf(ev) => buf.push(*ev),
-        Node::Array(events) => buf.extend_from_slice(events),
+        Node::Leaf(ev) => {
+            buf.push(*ev);
+            *transfers += 1;
+        }
+        Node::Array(events) => {
+            *transfers += events.len() as u64;
+            buf.extend_from_slice(events);
+        }
         Node::Object(map) => {
             buf.push(Event::BeginObject);
+            *transfers += 1;
             for (k, v) in map {
                 let key: &'a str = match k {
                     Cow::Borrowed(s) => s,
                     Cow::Owned(s) => bump.alloc_str(s),
                 };
                 buf.push(Event::Key(key));
-                emit_node(v, bump, buf);
+                *transfers += 1;
+                emit_node(v, bump, buf, transfers);
             }
             buf.push(Event::EndObject);
+            *transfers += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Collecting sink for direct `scan_inline_events` calls.
+    struct CollectingSink<'a> {
+        events: Vec<Event<'a>>,
+    }
+
+    impl<'a> EventSink<'a> for CollectingSink<'a> {
+        fn push(&mut self, event: Event<'a>) {
+            self.events.push(event);
+        }
+    }
+
+    /// `[[[[…1…]]]]` with `depth` bracket pairs.
+    fn array_chain(depth: usize) -> String {
+        let mut body = String::new();
+        body.push_str(&"[".repeat(depth));
+        body.push('1');
+        body.push_str(&"]".repeat(depth));
+        body
+    }
+
+    /// Scan one inline array compound; returns (emitted events, transfers).
+    fn scan_chain(body: &str) -> (usize, u64) {
+        let bump = Bump::new();
+        let mut sink = CollectingSink { events: Vec::new() };
+        take_event_transfers();
+        scan_inline_events(
+            body,
+            InlineBody::Array,
+            1,
+            Span::new(0, 0),
+            &bump,
+            &mut sink,
+        )
+        .expect("chain must scan");
+        (sink.events.len(), take_event_transfers())
+    }
+
+    /// R8-F1 pin: in a chain of D nested arrays every event is moved
+    /// exactly twice — once into the shared scratch buffer, once into
+    /// the sink. The pre-fix staged-block path moved D² − 1 extra
+    /// copies (D² + 4D + 1 transfers total: quadratic); any silent
+    /// regression to per-item blocks breaks the exact count.
+    #[test]
+    fn nested_array_chain_moves_each_event_exactly_twice() {
+        for depth in [1usize, 2, 3, 4, 8, 16, 32, 64] {
+            let (events, transfers) = scan_chain(&array_chain(depth));
+            assert_eq!(events, 2 * depth + 1, "events at depth {depth}");
+            assert_eq!(
+                transfers,
+                (2 * (2 * depth + 1)) as u64,
+                "transfers at depth {depth}"
+            );
+        }
+    }
+
+    /// Growth-shape pin independent of the exact per-event accounting:
+    /// a 4× depth jump must multiply transfers by ~4 (linear), not
+    /// ~13–16 (quadratic). Headroom 5× keeps the pin deterministic
+    /// while a quadratic regression (≥ 13×) fails it loudly.
+    #[test]
+    fn nested_array_transfers_grow_linearly_with_depth() {
+        let (_, small) = scan_chain(&array_chain(16));
+        let (_, large) = scan_chain(&array_chain(64));
+        assert_eq!(small, 66);
+        assert_eq!(large, 258);
+        assert!(
+            large < 5 * small,
+            "transfers grew super-linearly: {small} -> {large}"
+        );
+    }
+
+    /// Positive control for the instrument: object-member arrays are
+    /// still staged as one block (deliberately — § 5.3.2 dotted
+    /// re-entry ordering), which shows up as block-build plus
+    /// block-copy transfers ABOVE the once-into-scratch,
+    /// once-into-sink floor of 2 × events.
+    #[test]
+    fn object_member_array_staging_is_visible_to_the_counter() {
+        let bump = Bump::new();
+        let mut sink = CollectingSink { events: Vec::new() };
+        take_event_transfers();
+        scan_inline_events(
+            "{a: [1, [2]]}",
+            InlineBody::Object,
+            1,
+            Span::new(0, 0),
+            &bump,
+            &mut sink,
+        )
+        .expect("object must scan");
+        let events = sink.events.len();
+        let transfers = take_event_transfers();
+        assert_eq!(events, 9); // BeginObject, Key, 6 array events, EndObject
+        assert!(transfers > 2 * events as u64);
     }
 }
