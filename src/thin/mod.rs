@@ -24,6 +24,7 @@ mod event;
 mod event_deserializer;
 mod event_parser;
 mod fast_num;
+mod inline_emit;
 mod merge;
 
 pub(crate) use event_deserializer::{EventCursor, EventDeserializer};

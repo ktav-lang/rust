@@ -47,14 +47,15 @@ use rustc_hash::FxHashMap;
 use crate::error::{CompoundKind, ConflictKind, Error, ErrorKind, Result, Span};
 use crate::parser::classify::{is_float_literal, is_pair_shape, try_parse_integer};
 use crate::parser::inline::{
-    decode_key_segment, key_is_single_segment, malformed_closer_not_at_end, scan_inline_closer,
-    scan_unescaped_colon, split_key_path, ColonScan, InlineCloserScan,
+    decode_key_segment, key_is_single_segment, scan_unescaped_colon, split_key_path, ColonScan,
+    InlineBody,
 };
 use crate::parser::leading_bom_len;
 use crate::parser::validate::{check_key, KeyValidity};
 use crate::whitespace::is_ktav_whitespace;
 
 use super::event::{Event, EventSink, EventStream};
+use super::inline_emit::{fast_plain_decimal_i64, scan_inline_events};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -179,6 +180,14 @@ pub(crate) struct EventParser<'a> {
     /// re-use the still-open synthetic and do NOT count. `from_str`
     /// uses this to decide whether a reopen-merge pass is needed.
     pub(crate) reopens: usize,
+    /// Reusable staging buffer for keyed inline compounds. The inline
+    /// scanner emits the compound's events here FIRST (so its internal
+    /// errors keep their precedence over dotted-key reconciliation and
+    /// path registration), registration walks the staged list, and only
+    /// then are the events flushed into the real stream in order. One
+    /// buffer per parse, cleared and reused per compound — no per-compound
+    /// heap allocation.
+    staging: Vec<Event<'a>>,
     /// Shared parse-wide arena of key-path node SHAPES: slot 0 is a
     /// sentinel
     /// detached root serving the implicit root frame; every other slot
@@ -227,6 +236,7 @@ impl<'a> EventParser<'a> {
             root_consumed: false,
             root_is_explicit_compound: false,
             reopens: 0,
+            staging: Vec::new(),
             nodes: {
                 let mut nodes = BumpVec::with_capacity_in(16, bump);
                 // Sentinel detached root: `frame_root` of the implicit
@@ -545,52 +555,18 @@ impl<'a> EventParser<'a> {
             return Ok(true);
         }
 
-        // § 5.0.1 rules 2/3 + the rules-2–5 addendum: a first content
-        // line beginning with `{`/`[` is diagnosed by the same § 5.2
-        // closer scan as a value body — closed at the end ⇒ the root IS
-        // the inline value; such a line is never a pair candidate.
         if trimmed.starts_with('{') || trimmed.starts_with('[') {
-            let (open, close) = if trimmed.starts_with('{') {
-                (b'{', b'}')
+            // § 5.0.1 rules 2/3 + the rules-2–5 addendum: the closer
+            // triage inside `scan_inline_events` decides rule 6 (the
+            // line IS the whole-document root) vs rule 8/9 errors.
+            let kind = if trimmed.starts_with('{') {
+                InlineBody::Object
             } else {
-                (b'[', b']')
+                InlineBody::Array
             };
-            match scan_inline_closer(trimmed, open, close, line_num, trimmed_span) {
-                InlineCloserScan::BadEscape(err) => return Err(err),
-                InlineCloserScan::NotFound => {
-                    return Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-                        line: line_num as u32,
-                        span: trimmed_span,
-                    }));
-                }
-                InlineCloserScan::Found(idx) if idx != trimmed.len() - 1 => {
-                    return Err(malformed_closer_not_at_end(line_num, trimmed_span));
-                }
-                InlineCloserScan::Found(_) => {
-                    // The line IS the whole-document root. Thin has no
-                    // strict mode (same as `dispatch_inline_events`).
-                    let value = if open == b'{' {
-                        crate::parser::inline::parse_inline_object(
-                            trimmed,
-                            line_num,
-                            trimmed_span,
-                            false,
-                        )?
-                    } else {
-                        crate::parser::inline::parse_inline_array(
-                            trimmed,
-                            line_num,
-                            trimmed_span,
-                            false,
-                        )?
-                    };
-                    for ev in value_to_events(&value, self.bump) {
-                        EventSink::push(events, ev);
-                    }
-                    self.root_consumed = true;
-                    return Ok(true);
-                }
-            }
+            scan_inline_events(trimmed, kind, line_num, trimmed_span, self.bump, events)?;
+            self.root_consumed = true;
+            return Ok(true);
         }
 
         // § 5.0.1 rules 6/7: pair-shape → implicit Object root,
@@ -660,7 +636,7 @@ impl<'a> EventParser<'a> {
             Separator::Plain => {
                 require_sep_end(after_colon, line_num, after_colon_off, trimmed_span)?;
                 let body = after_colon.trim_start();
-                match classify(body, line_num, trimmed_span, self.bump)? {
+                match classify(body, self.bump)? {
                     ValueStart::Scalar(s) => {
                         self.emit_keyed_scalar(key, Event::Str(s), line_num, key_span, events)
                     }
@@ -732,10 +708,30 @@ impl<'a> EventParser<'a> {
                         self.multiline_opener = Some(trimmed_span.end - 2);
                         r
                     }
-                    ValueStart::InlineEvents(inline_events) => {
+                    ValueStart::InlineCompound(kind) => {
+                        // Scan the closed inline compound FIRST: its
+                        // internal errors (BadEscapeSequence, inline
+                        // duplicates, …) keep their precedence over this
+                        // line's dotted-key reconciliation and path
+                        // registration. Events are staged — reconcile's
+                        // synthetic prefix events must precede the
+                        // compound's events in the stream, and
+                        // `register_inline_child_paths` must walk the
+                        // finished event list before the first inline
+                        // event is published.
+                        let mut staging = std::mem::take(&mut self.staging);
+                        staging.clear();
+                        scan_inline_events(
+                            body,
+                            kind,
+                            line_num,
+                            trimmed_span,
+                            self.bump,
+                            &mut staging,
+                        )?;
                         let (leaf, parent_node) =
                             self.reconcile_dotted_key(key, line_num, key_span, events)?;
-                        let shape = match inline_events.first() {
+                        let shape = match staging.first() {
                             Some(ev) => path_shape_of(ev),
                             None => unreachable!("inline compound always emits events"),
                         };
@@ -751,17 +747,13 @@ impl<'a> EventParser<'a> {
                             // § 5.3.2 / § 6.3: the inline compound's
                             // internal key paths must be visible to
                             // later dotted re-entry in THIS frame.
-                            self.register_inline_child_paths(
-                                node,
-                                &inline_events,
-                                line_num,
-                                key_span,
-                            )?;
+                            self.register_inline_child_paths(node, &staging, line_num, key_span)?;
                         }
                         events.push(Event::Key(leaf));
-                        for ev in inline_events {
-                            events.push(ev);
+                        for ev in &staging {
+                            events.push(*ev);
                         }
+                        self.staging = staging;
                         Ok(())
                     }
                 }
@@ -874,7 +866,7 @@ impl<'a> EventParser<'a> {
             return Ok(());
         }
 
-        match classify(trimmed, line_num, trimmed_span, self.bump)? {
+        match classify(trimmed, self.bump)? {
             ValueStart::Scalar(s) => events.push(Event::Str(s)),
             ValueStart::Integer(s) => events.push(Event::Integer(s)),
             ValueStart::Float(s) => events.push(Event::Float(s)),
@@ -917,10 +909,8 @@ impl<'a> EventParser<'a> {
                 });
                 self.multiline_opener = Some(trimmed_span.end - 2);
             }
-            ValueStart::InlineEvents(inline_events) => {
-                for ev in inline_events {
-                    events.push(ev);
-                }
+            ValueStart::InlineCompound(kind) => {
+                scan_inline_events(trimmed, kind, line_num, trimmed_span, self.bump, events)?
             }
         }
         Ok(())
@@ -1281,15 +1271,15 @@ impl<'a> EventParser<'a> {
     }
 
     /// Register the INTERNAL key paths of an inline compound value
-    /// (`a: {x: 1}` — events already flattened by `value_to_events`)
+    /// (`a: {x: 1}` — events staged by the direct inline scanner)
     /// into the shared node arena, under `base_node` (the node just
     /// registered for the compound itself). Recurses into nested
     /// objects; arrays are leaves — nothing inside a bracketed array is
     /// registered (§ 5.3.2 / § 6.3).
     ///
-    /// Registration is provably collision-free: the inline `Value` was
-    /// already validated internally by `parse_inline_object`'s
-    /// `insert_value` (each path appears exactly once), and `base_node`
+    /// Registration is provably collision-free: the inline events were
+    /// already validated internally by the shared `insert_value`
+    /// tables during the direct scan (each path appears exactly once), and `base_node`
     /// was just inserted absent. Errors are still propagated with `?`
     /// defensively rather than panicking.
     fn register_inline_child_paths(
@@ -1310,7 +1300,7 @@ impl<'a> EventParser<'a> {
             };
             // Each Key is immediately followed by exactly one value
             // event or a bracketed compound — guaranteed by
-            // `value_to_events`.
+            // the direct inline scanner.
             let value_ev = &inner[i + 1];
             let shape = path_shape_of(value_ev);
             let child_node =
@@ -1468,8 +1458,9 @@ enum ValueStart<'a> {
     OpenArray,
     OpenMultilineStripped,
     OpenMultilineVerbatim,
-    /// Inline compound parsed into a sequence of events
-    InlineEvents(Vec<Event<'a>>),
+    /// Inline compound (§ 5.2 rules 6–9): scanned directly into events
+    /// by [`scan_inline_events`] at the match site.
+    InlineCompound(InlineBody),
 }
 
 enum Separator<'a> {
@@ -1571,48 +1562,13 @@ fn matching_bracket(events: &[Event<'_>], open_idx: usize, kind: u8) -> usize {
     }
 }
 
-/// § 5.2 rules 6–9 for a non-empty `{`/`[`-prefixed value body, mirroring
-/// the owned parser's `classify::dispatch_inline_compound`: one closer
-/// scan decides closed shape (parse per § 5.8, re-emitted as events),
-/// closer-followed-by-content (`MalformedInlineCompound`), no closer
-/// (`UnterminatedInlineCompound`), with `BadEscapeSequence` taking
-/// precedence per the rules-6–9 preamble.
-fn dispatch_inline_events<'a>(
-    trimmed: &'a str,
-    open: u8,
-    close: u8,
-    line_num: usize,
-    span: Span,
-    bump: &'a Bump,
-) -> Result<ValueStart<'a>> {
-    match scan_inline_closer(trimmed, open, close, line_num, span) {
-        InlineCloserScan::BadEscape(err) => Err(err),
-        InlineCloserScan::NotFound => {
-            Err(Error::Structured(ErrorKind::UnterminatedInlineCompound {
-                line: line_num as u32,
-                span,
-            }))
-        }
-        InlineCloserScan::Found(idx) if idx == trimmed.len() - 1 => {
-            let value = if open == b'{' {
-                crate::parser::inline::parse_inline_object(trimmed, line_num, span, false)?
-            } else {
-                crate::parser::inline::parse_inline_array(trimmed, line_num, span, false)?
-            };
-            Ok(ValueStart::InlineEvents(value_to_events(&value, bump)))
-        }
-        InlineCloserScan::Found(_) => Err(malformed_closer_not_at_end(line_num, span)),
-    }
-}
-
-/// Classify a value body per § 5.2 rules 1-15 (0.5.0).
+/// Classify a value body per § 5.2 rules 1-15 (0.5.0). Inline
+/// compounds (rules 6-9) are reported as [`ValueStart::InlineCompound`]
+/// — the closer triage and event emission happen in
+/// [`scan_inline_events`] at the match site, so this function no
+/// longer raises inline-compound errors.
 #[inline]
-fn classify<'a>(
-    trimmed: &'a str,
-    line_num: usize,
-    trimmed_span: Span,
-    bump: &'a Bump,
-) -> Result<ValueStart<'a>> {
+fn classify<'a>(trimmed: &'a str, bump: &'a Bump) -> Result<ValueStart<'a>> {
     if trimmed == "{" {
         return Ok(ValueStart::OpenObject);
     }
@@ -1620,20 +1576,22 @@ fn classify<'a>(
         return Ok(ValueStart::OpenArray);
     }
 
-    // § 5.2 rules 6-9: inline compounds — diagnosed by one closer scan
-    // (see `dispatch_inline_events`). Empty compounds shortcut first.
+    // § 5.2 rules 6-9: inline compounds — triaged and scanned by
+    // `scan_inline_events` at the call site (the closer scan decides
+    // BadEscape / Unterminated / Malformed / closed there). Empty
+    // compounds shortcut first.
     if trimmed.starts_with('{') {
         if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyObject);
         }
-        return dispatch_inline_events(trimmed, b'{', b'}', line_num, trimmed_span, bump);
+        return Ok(ValueStart::InlineCompound(InlineBody::Object));
     }
 
     if trimmed.starts_with('[') {
         if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
             return Ok(ValueStart::EmptyArray);
         }
-        return dispatch_inline_events(trimmed, b'[', b']', line_num, trimmed_span, bump);
+        return Ok(ValueStart::InlineCompound(InlineBody::Array));
     }
 
     // Multi-line string openers
@@ -1704,84 +1662,6 @@ fn classify<'a>(
 
     // § 5.2 rule 15: String
     Ok(ValueStart::Scalar(trimmed))
-}
-
-/// Convert a `Value` to a flat sequence of events (for inline compounds).
-fn value_to_events<'a>(value: &crate::value::Value, bump: &'a Bump) -> Vec<Event<'a>> {
-    let mut events = Vec::new();
-    value_to_events_inner(value, bump, &mut events);
-    events
-}
-
-fn value_to_events_inner<'a>(
-    value: &crate::value::Value,
-    bump: &'a Bump,
-    events: &mut Vec<Event<'a>>,
-) {
-    use crate::value::Value;
-    match value {
-        Value::Null => events.push(Event::Null),
-        Value::Bool(b) => events.push(Event::Bool(*b)),
-        Value::Integer(s) => {
-            let s = bump.alloc_str(s.as_str());
-            events.push(Event::Integer(s));
-        }
-        Value::Float(s) => {
-            let s = bump.alloc_str(s.as_str());
-            events.push(Event::Float(s));
-        }
-        Value::String(s) => {
-            let s = bump.alloc_str(s.as_str());
-            events.push(Event::Str(s));
-        }
-        Value::Object(obj) => {
-            events.push(Event::BeginObject);
-            for (k, v) in obj {
-                let k = bump.alloc_str(k.as_str());
-                events.push(Event::Key(k));
-                value_to_events_inner(v, bump, events);
-            }
-            events.push(Event::EndObject);
-        }
-        Value::Array(items) => {
-            events.push(Event::BeginArray);
-            for item in items {
-                value_to_events_inner(item, bump, events);
-            }
-            events.push(Event::EndArray);
-        }
-    }
-}
-
-/// Fast-path check: plain ASCII decimal integer (no sign, underscore, or
-/// base prefix) that fits in i64. Returns `Some(val)` if `s` is a
-/// canonical decimal integer, `None` otherwise. The caller can use the
-/// original `s` directly as the canonical string, avoiding itoa + bump
-/// allocation.
-#[inline]
-fn fast_plain_decimal_i64(s: &str) -> Option<i64> {
-    let bytes = s.as_bytes();
-    if bytes.is_empty() {
-        return None;
-    }
-    // Leading zero is only valid for "0" itself.
-    let first = bytes[0];
-    if first == b'0' {
-        return if bytes.len() == 1 { Some(0) } else { None };
-    }
-    if !(b'1'..=b'9').contains(&first) {
-        return None;
-    }
-    // All remaining bytes must be digits; accumulate value.
-    let mut acc: i64 = (first - b'0') as i64;
-    for &b in &bytes[1..] {
-        let d = b.wrapping_sub(b'0');
-        if d > 9 {
-            return None;
-        }
-        acc = acc.checked_mul(10)?.checked_add(d as i64)?;
-    }
-    Some(acc)
 }
 
 // ---------------------------------------------------------------------------

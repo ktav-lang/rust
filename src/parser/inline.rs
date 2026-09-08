@@ -17,7 +17,7 @@ use super::classify::{fast_plain_decimal_i64, is_float_literal, lossy_scalar, tr
 use super::insert::insert_value;
 
 /// Maximum nesting depth for inline compounds (per Q-3 decision).
-const MAX_INLINE_DEPTH: usize = 128;
+pub(crate) const MAX_INLINE_DEPTH: usize = 128;
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -388,7 +388,7 @@ fn classify_inline_scalar(
 }
 
 /// Parse a float literal (already validated by is_float_literal) into f64.
-fn parse_float_value(s: &str) -> Option<f64> {
+pub(crate) fn parse_float_value(s: &str) -> Option<f64> {
     // Skip String allocation when there are no underscores
     if !s.as_bytes().contains(&b'_') {
         let val: f64 = s.parse().ok()?;
