@@ -348,35 +348,29 @@ fn emit_string_as_item(
 /// `is_pair`: if true, we need `key: ((` prefix; if false, just `((`.
 /// For the item case, `indent` is where `((` goes, and body is at indent 0.
 fn emit_multiline_string(s: &str, indent: usize, is_pair: bool, out: &mut String) -> Result<()> {
-    let segments: Vec<&str> = s.split('\n').collect();
     // § 5.9.7: prefer verbatim; fall back to stripped only when a `))`
     // content line makes verbatim impossible, and error when neither
     // form can hold the body losslessly.
     match crate::render::helpers::choose_multiline_form(s, false)? {
         crate::render::helpers::MultilineForm::Verbatim => {
-            emit_multiline_verbatim(&segments, indent, is_pair, out);
+            emit_multiline_verbatim(s, indent, is_pair, out);
         }
         crate::render::helpers::MultilineForm::Stripped => {
-            emit_multiline_stripped(&segments, indent, is_pair, out);
+            emit_multiline_stripped(s, indent, is_pair, out);
         }
     }
     Ok(())
 }
 
 /// Verbatim multi-line `((…))`. Body lines at indent 0 (§ 5.9.6).
-fn emit_multiline_verbatim(segments: &[&str], indent: usize, is_pair: bool, out: &mut String) {
+fn emit_multiline_verbatim(s: &str, indent: usize, is_pair: bool, out: &mut String) {
     if is_pair {
         out.push_str(": ((\n");
     } else {
         out.push_str("((\n");
     }
-    // Body lines at indent 0 (verbatim preserves bytes exactly).
-    for (i, seg) in segments.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        out.push_str(seg);
-    }
+    // Body at indent 0 (verbatim preserves bytes exactly).
+    out.push_str(s);
     out.push('\n');
     push_indent(out, indent);
     out.push_str("))\n");
@@ -384,22 +378,17 @@ fn emit_multiline_verbatim(segments: &[&str], indent: usize, is_pair: bool, out:
 
 /// Stripped multi-line `(…)` fallback. Body lines at indent 0
 /// so the common-indent computation yields 0.
-fn emit_multiline_stripped(segments: &[&str], indent: usize, is_pair: bool, out: &mut String) {
+fn emit_multiline_stripped(s: &str, indent: usize, is_pair: bool, out: &mut String) {
     if is_pair {
         out.push_str(": (\n");
     } else {
         out.push_str("(\n");
     }
-    for (i, seg) in segments.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        // Body at indent 0, lines kept byte-for-byte: an unindented
-        // line pins the parser's common-indent dedent to zero (the
-        // form chooser guarantees one exists), so per-line leading
-        // whitespace survives the round-trip.
-        out.push_str(seg);
-    }
+    // Body at indent 0, lines kept byte-for-byte: an unindented
+    // line pins the parser's common-indent dedent to zero (the
+    // form chooser guarantees one exists), so per-line leading
+    // whitespace survives the round-trip.
+    out.push_str(s);
     out.push('\n');
     push_indent(out, indent);
     out.push_str(")\n");
