@@ -7,17 +7,15 @@
 //! stable across toolchain and Unicode-version bumps. Every
 //! character-level and byte-level whitespace classification in this
 //! crate routes through this module (R7-P3 sweep). This includes the
-//! multiline-dedent leading-run scans `leading_whitespace_bytes`
-//! (src/parser/collecting.rs, src/thin/event_parser.rs), which use the
-//! byte view [`inline_whitespace_ascii`]: § 5.6 measures the stripped
-//! form's common leading whitespace "in whitespace code points (§ 3.3)"
-//! and § 3.3 admits no separate, narrower "structural" whitespace
-//! concept, so a leading VT (U+000B) participates in the dedent like
-//! space or TAB (deliberate behavioral change). Known deviation,
-//! documented not sanctioned: those scans classify bytes, so the
-//! multi-byte § 3.3 members (U+0085, U+00A0, U+1680, U+2000–U+200A,
-//! U+2028, U+2029, U+202F, U+205F, U+3000) do not yet participate in
-//! the leading run — a code-point-level scan is the open follow-up.
+//! multiline-dedent leading-run scans `leading_whitespace_run`
+//! (src/parser/collecting.rs, src/thin/event_parser.rs), which classify
+//! whole code points over the FULL § 3.3 class: § 5.6 measures the
+//! stripped form's common leading whitespace "in whitespace code points
+//! (§ 3.3) rather than bytes" and § 3.3 admits no separate, narrower
+//! "structural" whitespace concept, so the ASCII members take the byte
+//! view [`inline_whitespace_ascii`] and every non-ASCII member (U+0085,
+//! U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F,
+//! U+3000) is decoded and checked against [`is_inline_whitespace`].
 //! A new copy of the list must never be introduced.
 //!
 //! Views:
@@ -31,7 +29,9 @@
 //! Performance contract: both predicates are `#[inline]`, branch-cheap,
 //! allocation-free; the ASCII members (the overwhelmingly common case:
 //! space and tab) take an explicit fast path before any non-ASCII match.
-//! Byte-level scanners use [`inline_whitespace_ascii`].
+//! Code-point-level scanners use [`inline_whitespace_ascii`] on the
+//! ASCII path and decode a `char` only when a non-ASCII lead byte is
+//! actually present.
 
 /// The full § 3.3 whitespace set: exactly twenty-five code points, the
 /// Unicode `White_Space` property as of Unicode 6.3, fixed as a closed
