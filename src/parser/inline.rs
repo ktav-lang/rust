@@ -1013,11 +1013,16 @@ pub(crate) enum InlineBody {
 /// 1. ENTRY STATE. The recording walk and the standalone scan are the
 ///    same machine, and at the span's opener their states agree: same
 ///    seeds, and the opener arm re-derives in_key/seg_start/value_start/
-///    prev identically — EXCEPT a quote-free (ScanFast) walk entering a
-///    `[`-span can carry `in_key = true` residue (quirk 2 leaves
-///    `in_key` untouched where the standalone seed is `false`), which
-///    diverges the walks inside the span. Such spans are flagged impure
-///    at push and never recorded.
+///    prev identically in BOTH modes (R8-F2 closed the former
+///    fast-only residue quirks), and gated openers always run with
+///    `raw = false`. On a quote-free slice the fast and quote-aware
+///    machines are byte-identical — no quote byte can arm the
+///    quote/segment arms and every remaining policy const coincides —
+///    so a recorded span is pure for EITHER consumer slice shape (the
+///    bounded value and the split suffix), whichever mode the slice's
+///    own byte set selects at dispatch time. Recording is
+///    unconditional at push; the pop-time gates below still kill any
+///    span whose own stop byte says the standalone would disagree.
 /// 2. STOP BYTE. The standalone scan's counter is the walk's shared
 ///    `depth` offset by the value captured at the opener, so it returns
 ///    to zero exactly where global `depth` returns to `entry - 1`. That
@@ -1097,12 +1102,17 @@ impl<'a> InlineBounds<'a> {
 // folds away at compile time — no `dyn`, no runtime enum dispatch in
 // the byte loop.
 //
-// Preserved-quirk inventory (all LOAD-BEARING current behavior):
-// 1. the fast configs (find-fast, scan-fast) leave `value_start`
-//    untouched at a nested closer; the slow configs clear it
-//    (`CLEAR_VS_ON_NESTED_CLOSE`).
-// 2. a fast-config `[` opener leaves `in_key` untouched; a
-//    quote-tracking config sets `in_key = (b == b'{')`.
+// Preserved-quirk inventory (all LOAD-BEARING current behavior).
+// Former quirks 1-2 were REMOVED in R8-F2 — they made the fast and
+// quote-aware machines disagree on the meaning of the same quote-free
+// bytes (a `[` after a closed empty Array stayed a structural opener
+// in fast mode, and key-position residue leaked into Array spans), so
+// a memo recorded by one mode could lie about the other:
+// 1. REMOVED R8-F2: every find/scan config now clears `value_start`
+//    at a nested close (`CLEAR_VS_ON_NESTED_CLOSE`) — the closed
+//    compound consumed the value position (§ 5.8.5).
+// 2. REMOVED R8-F2: every config now sets `in_key = (b == b'{')` at
+//    an opener and restores it from a kind-matched pop.
 // 3. split maps an unterminated quoted key to
 //    `UnterminatedInlineCompound`, and dotted-key-then-EOF to
 //    whitespace-only-rest → no trailing segment, else `EmptyKey`;
@@ -1259,8 +1269,10 @@ trait ScanCfg {
     /// find-slow + scan-slow: a closer that matches NO scope kind
     /// still forces `seg_start = false`.
     const MISMATCH_SEG_FALSE: bool;
-    /// the slow configs: a nested closer clears `value_start`; the
-    /// fast configs deliberately leave it untouched (quirk 1).
+    /// every find/scan config (R8-F2, was fast-only quirk 1): a
+    /// nested closer clears `value_start` — the closed compound
+    /// consumed the value position (§ 5.8.5), so a following
+    /// `{`/`[` is content after a closed value, not a new opener.
     const CLEAR_VS_ON_NESTED_CLOSE: bool;
     /// scan configs only: record every nested (opener, closer) pair
     /// into `pairs_out` as the walk pops each scope. Pure side output —
@@ -1272,8 +1284,10 @@ trait ScanCfg {
 
 /// `find_matching_close`, quote-free fast path: byte-for-byte the
 /// [`ScanFast`] machine minus escape validation (R7-F1). `in_key` and
-/// `seg_start` are maintained but never read meaningfully (no quote
-/// bytes exist); writes stay so find and scan share one code path.
+/// `seg_start` are maintained with the same semantics as [`FindQ`]
+/// (R8-F2) even though no quote byte can exist: `in_key` still
+/// classifies a `:` as key-separator vs value content, and find must
+/// mean exactly what the quote-aware machine means by every byte.
 struct FindFast;
 impl ScanCfg for FindFast {
     const TRACK_QUOTES: bool = false;
@@ -1289,11 +1303,11 @@ impl ScanCfg for FindFast {
     const COMMA_CLEARS_RAW: bool = true;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
-    const RESTORE_IN_KEY_ON_MATCH: bool = false;
+    const RESTORE_IN_KEY_ON_MATCH: bool = true;
     const RESTORE_SEG_ON_MATCH: bool = false;
     const RESTORE_RAW_ON_MATCH: bool = false;
     const MISMATCH_SEG_FALSE: bool = false;
-    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = true;
     const RECORD_BOUNDS: bool = false;
 }
 
@@ -1328,9 +1342,10 @@ impl ScanCfg for FindQ {
 
 /// `scan_inline_closer`, quote-free fast path. `value_start` marks an
 /// unconsumed value position (§ 5.8.5); both closer kinds decrement
-/// the shared depth. Quirks: opener `[` leaves `in_key` untouched (the
-/// next `,` re-derives it) and a nested closer leaves `value_start`
-/// untouched.
+/// the shared depth; a nested close clears `value_start` and an opener
+/// re-derives `in_key` — byte-identical to [`ScanQ`] on quote-free
+/// slices (R8-F2 closed the former fast-only quirks), which is what
+/// lets one recorded boundary memo serve a consumer in either mode.
 struct ScanFast;
 impl ScanCfg for ScanFast {
     const TRACK_QUOTES: bool = false;
@@ -1346,11 +1361,11 @@ impl ScanCfg for ScanFast {
     const COMMA_CLEARS_RAW: bool = true;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
-    const RESTORE_IN_KEY_ON_MATCH: bool = false;
+    const RESTORE_IN_KEY_ON_MATCH: bool = true;
     const RESTORE_SEG_ON_MATCH: bool = false;
     const RESTORE_RAW_ON_MATCH: bool = false;
     const MISMATCH_SEG_FALSE: bool = false;
-    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = true;
     const RECORD_BOUNDS: bool = true;
 }
 
@@ -1749,30 +1764,29 @@ impl<'a, 'b, C: ScanCfg> Scanner<'a, 'b, C> {
                             stack.push(ScopeFrame::pack(b, in_key, seg_start, raw));
                             if C::RECORD_BOUNDS {
                                 // Entry state of this span vs the
-                                // standalone scan's seed: provably
-                                // equal for `{`-spans and whenever
-                                // quote tracking re-derives in_key
-                                // (TRACK_QUOTES); a quote-free
-                                // `[`-span is pure only when in_key is
-                                // already the array seed `false`
-                                // (quirk 2 leaves it untouched).
-                                open_at.push((i, C::TRACK_QUOTES || b == b'{' || !in_key, depth));
+                                // standalone scan's seed: the opener
+                                // arm re-derives in_key/seg_start/
+                                // value_start/prev identically in both
+                                // modes (R8-F2), so every span is
+                                // recorded. Purity still has the two
+                                // pop-time gates below (crossed-closer
+                                // and stop-byte checks).
+                                open_at.push((i, true, depth));
                             }
                         }
                         // After an array's `[` the next position is
                         // still a value position (its first item,
                         // § 5.8.5); after a nested `{` comes key
                         // context. find never reads `value_start`, so
-                        // this write is harmless there.
+                        // this write is harmless there. `in_key` is
+                        // re-derived IDENTICALLY in both modes (R8-F2,
+                        // was fast-only quirk 2): fast residue let a
+                        // span's `:` be classified as a key separator
+                        // in one mode and value content in the other.
                         value_start = b == b'[';
+                        in_key = b == b'{';
                         if C::TRACK_QUOTES {
-                            in_key = b == b'{';
                             seg_start = b == b'{';
-                        } else if b == b'{' {
-                            // scan-fast quirk: `[` leaves `in_key`
-                            // untouched; the next `,` re-derives it
-                            // (quirk 2).
-                            in_key = true;
                         }
                     }
                 }
@@ -1878,8 +1892,9 @@ impl<'a, 'b, C: ScanCfg> Scanner<'a, 'b, C> {
                         } else if C::MISMATCH_SEG_FALSE && C::TRACK_QUOTES {
                             seg_start = false;
                         }
-                        // scan-SLOW only; scan-fast deliberately
-                        // leaves `value_start` untouched (quirk 1).
+                        // The closed compound consumed the value
+                        // position (§ 5.8.5) — identical in every
+                        // find/scan config (R8-F2, was quirk 1).
                         if C::CLEAR_VS_ON_NESTED_CLOSE {
                             value_start = false;
                         }

@@ -1891,6 +1891,15 @@ fn memo_bounds_are_a_pure_memo_of_the_live_dispatches() {
         "{a: [ a:,:[],{:[}, ]}",
         "{a: [],{[:[,}]}",
         "{a: [],[:[},a[{ {,a ]}",
+        // R8-F2: the five review inputs. Pre-fix the quote-free
+        // members let the fast gate walk phantom-open an Array
+        // after the closed `[]` (value_start residue) and record /
+        // verdict differently from their quote-bearing twins.
+        "[[][text]",
+        "[[]['text]",
+        "[{}[text]",
+        "{a: [[][text]}",
+        "{a: [[][text], q: '}",
     ];
 
     let check = |body: &str| {
@@ -1917,20 +1926,35 @@ fn memo_bounds_are_a_pure_memo_of_the_live_dispatches() {
             } else {
                 (b'{', b'}')
             };
-            let span = &body[o..];
-            // The memo must agree with BOTH live dispatches over the span.
-            assert!(
-                matches!(
-                    scan_inline_closer(span, so, sc, 0, S),
-                    InlineCloserScan::Found(f) if f == c - o
-                ),
-                "scan disagrees with the memo at {o}..{c} in {body:?}"
-            );
-            assert_eq!(
-                find_matching_close(span, so, sc),
-                Some(c - o),
-                "find disagrees with the memo at {o}..{c} in {body:?}"
-            );
+            // BOTH consumer shapes must agree with the memo:
+            // - the SUFFIX `&body[o..]` is what split's opener jump
+            //   sub-scans (`scan_inline_closer(&input[i..], ...)`), and
+            // - the BOUNDED VALUE `&body[o..=c]` is what the find-first
+            //   dispatch hands to `known_closer` / `find_matching_close`
+            //   / `scan_inline_closer`. R8-F2: checking the suffix alone
+            //   let a quote-aware memo agree with a quote-aware re-scan
+            //   while the actual consumer re-scanned the bounded value
+            //   in quote-free fast mode. For the bounded shape the
+            //   recorded closer is the last byte, so the live dispatch
+            //   must find it exactly there.
+            for (shape_name, span) in [("suffix", &body[o..]), ("bounded", &body[o..=c])] {
+                // `c - o` is the recorded closer's index in both shapes;
+                // for the bounded shape it is also the last byte, which
+                // is exactly the `idx == len - 1` closed-compound read
+                // the find-first dispatch gives a memo hit.
+                assert!(
+                    matches!(
+                        scan_inline_closer(span, so, sc, 0, S),
+                        InlineCloserScan::Found(f) if f == c - o
+                    ),
+                    "scan ({shape_name}) disagrees with the memo at {o}..{c} in {body:?}"
+                );
+                assert_eq!(
+                    find_matching_close(span, so, sc),
+                    Some(c - o),
+                    "find ({shape_name}) disagrees with the memo at {o}..{c} in {body:?}"
+                );
+            }
         }
     };
 
@@ -1940,7 +1964,13 @@ fn memo_bounds_are_a_pure_memo_of_the_live_dispatches() {
 
     // Exhaustive sweep over short structural bodies (depth, crossed
     // closers, mid-scalar openers, raw markers, top-level commas).
-    let alpha: &[u8] = b"{[]}a:,";
+    // R8-F2: the alphabet MUST carry quote bytes (all three § 5.3.3
+    // delimiters) and § 3.3 whitespace — without them every body is
+    // quote-free, the gate always picks the fast walk, and the whole
+    // quote-aware memo surface (ScanQ recordings consumed by a
+    // quote-free consumer slice) is unreachable. That blind spot is
+    // why the R8-F2 family survived this test.
+    let alpha: &[u8] = b"{[]}a:,.'\"` ";
     let mut buf = [0u8; 5];
     for len in 1..=5usize {
         let total = alpha.len().pow(len as u32);
@@ -1958,10 +1988,12 @@ fn memo_bounds_are_a_pure_memo_of_the_live_dispatches() {
     }
 }
 
-// R8 regression pin: the four fuzz2-diverging documents must keep the
+// R8 regression pin: the fuzz2-diverging documents must keep the
 // pre-R8 segmentation (ground truth probed from main @ 4477ae2). The
 // memo bug changed only the `detail` payload (which segment the
-// diagnostic quoted), so the pins cover the payload exactly.
+// diagnostic quoted), so the pins cover the payload exactly. The
+// fourth former member of this list is pinned separately below: R8-F2
+// legitimately moved its whole category, not just its detail.
 #[test]
 fn crossed_closer_fuzz_inputs_keep_pre_r8_diagnostics() {
     let cases = [
@@ -1976,10 +2008,6 @@ fn crossed_closer_fuzz_inputs_keep_pre_r8_diagnostics() {
         (
             "k: {a: [],{[:[,}]}",
             "inline object pair missing ':' separator in '{[:['",
-        ),
-        (
-            "k: {a: [],[:[},a[{ {,a ]}",
-            "inline object pair missing ':' separator in '[:[}'",
         ),
     ];
     for (input, detail) in cases {
@@ -2002,5 +2030,96 @@ fn crossed_closer_fuzz_inputs_keep_pre_r8_diagnostics() {
             crate::parse_events(input, |_| {}).is_err(),
             "input {input:?}"
         );
+    }
+}
+
+// R8-F2 recategorization of the fourth formerly-pinned document:
+// `k: {a: [],[:[},a[{ {,a ]}` reached the pair-split path only via the
+// FAST gate walk, which carried `in_key = true` residue through the
+// gated `[` after the top-level comma (former quirk 2) and
+// phantom-opened the `[:[` Array as a nested compound, shifting the
+// depth accounting so the body's own `}` seemed to close it. The
+// quote-aware machine sets `in_key = false` at every opener, so the
+// `}` after `[:[` matches no scope kind and the `]` before the final
+// `}` is a CROSSED closer at depth 0 — § 5.2's matching-closer rule
+// yields no same-line matching closer, which § 6.11 diagnoses as
+// UnterminatedInlineCompound. The fast machine now agrees (R8-F2), so
+// every entry point reports UnterminatedInlineCompound.
+#[test]
+fn r8f2_fast_in_key_residue_no_longer_recategorizes_crossed_closer() {
+    let input = "k: {a: [],[:[},a[{ {,a ]}";
+    let expect_unterminated = |res: Result<(), crate::Error>| {
+        assert!(
+            matches!(
+                res,
+                Err(crate::Error::Structured(
+                    crate::ErrorKind::UnterminatedInlineCompound { .. }
+                ))
+            ),
+            "input {input:?}: expected UnterminatedInlineCompound"
+        );
+    };
+    expect_unterminated(crate::parse(input).map(|_| ()));
+    expect_unterminated(crate::parse_strict(input).map(|_| ()));
+    expect_unterminated(crate::parse_events(input, |_| {}).map(|_| ()));
+}
+
+// R8-F2 regression: the five review-round-8 inputs. Every one is an
+// INVALID document, and the quote-aware reading gives the same
+// category for all five. The value position is already consumed by the
+// closed inner compound (the empty `[]` / `{}`), so the trailing
+// `[text` is content after a closed value, not an unterminated one:
+//
+// - § 5.8.5: "The decision is made once, when the parser begins
+//   reading an inline value: if the first non-whitespace code point is
+//   `{` or `[`, the value is a nested compound; otherwise the value is
+//   an inline scalar that runs to the next unescaped `,` / `}` / `]`"
+//   — after the inner compound closes there is no open value for a
+//   following `[` to open.
+// - § 6.12: "Non-whitespace content after the same-line matching
+//   closer of a value-position compound ... The closer makes the
+//   compound closed; the trailing bytes are therefore malformed
+//   content, not an unterminated compound." The enclosing compound
+//   itself still closes on the same line, so the defect is
+//   MalformedInlineCompound, not UnterminatedInlineCompound.
+// - § 5.3.3 ("Keys only"): a quote character in a value position
+//   "is ordinary content with no special meaning" — the later
+//   unrelated `'` in the last input must not change any earlier
+//   byte's role, so the quote-free and quote-bearing twins MUST get
+//   the same verdict.
+//
+// Pre-R8-F2 the fast walks left `value_start` set after the empty
+// Array closed (former quirk 1) and carried `in_key` residue through
+// `[` openers (former quirk 2), phantom-opened a nested compound at
+// the next `[`, swallowed the enclosing body's own closer, and
+// reported UnterminatedInlineCompound for the quote-free twins
+// (`[[][text]`, `{a: [[][text]}`) while the quote-bearing twins
+// (`[[]['text]`, `{a: [[][text], q: '}`) already reported
+// MalformedInlineCompound — the same bytes, two verdicts, decided by
+// a later unrelated quote.
+#[test]
+fn r8f2_closed_empty_array_consumes_value_start_across_modes() {
+    let cases = [
+        "[[][text]",
+        "[[]['text]",
+        "[{}[text]",
+        "{a: [[][text]}",
+        "{a: [[][text], q: '}",
+    ];
+    for input in cases {
+        let expect_malformed = |res: Result<(), crate::Error>| {
+            assert!(
+                matches!(
+                    res,
+                    Err(crate::Error::Structured(
+                        crate::ErrorKind::MalformedInlineCompound { .. }
+                    ))
+                ),
+                "input {input:?}: expected MalformedInlineCompound"
+            );
+        };
+        expect_malformed(crate::parse(input).map(|_| ()));
+        expect_malformed(crate::parse_strict(input).map(|_| ()));
+        expect_malformed(crate::parse_events(input, |_| {}).map(|_| ()));
     }
 }
