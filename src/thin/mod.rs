@@ -11,16 +11,17 @@
 //! machine writes multi-line compounds straight into the flat event
 //! list; its transient state is one scope frame per open bracket plus
 //! the parse-wide dotted-key path table. Inline compounds (`a: {x:
-//! 1}`) are different: the scanner materializes a borrowed
-//! intermediate `Node` tree (`inline_emit`) before any event is
-//! published — a `Node::Array` owns one growable `Vec<Node>` per
-//! array compound, a `Node::Object` owns one insertion-ordered key
-//! table (`IndexMap`) per object scope, which duplicate/conflict
-//! detection and dotted-key merge (§ 6.3) require — and only after
-//! the whole compound validates are its events appended, through the
-//! parser's reusable per-parse staging buffer when the compound is a
-//! key's value. No owned `Value` is built, and events are never
-//! published from a half-scanned compound.
+//! 1}`) are staged before publication: the scanner appends their
+//! events to a flat per-compound `Vec<Event>` scratch (array items in
+//! source order — arrays need no staging of their own), keeps one
+//! insertion-ordered key table (`IndexMap`) per object scope for
+//! duplicate/conflict detection and dotted-key merge (§ 6.3), and
+//! stages one flat event block per array that is directly an object
+//! member's value. Only after the whole compound validates are its
+//! events appended — through the parser's reusable per-parse staging
+//! buffer when the compound is a key's value. No owned `Value` is
+//! built, and events are never published from a half-scanned
+//! compound.
 //!
 //! Internally this is the same path that powers [`crate::from_str`]: the
 //! flat-event stream is the hot deserialization route. Exposing it

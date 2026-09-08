@@ -7,16 +7,17 @@
 //! normalization allocates in the arena (escape-decoded strings,
 //! canonical integer/float forms via itoa/ryu).
 //!
-//! Transient state per compound: the `Node` tree itself —
-//! `Node::Leaf(Event)` for scalars, `Node::Array(Vec<Node>)` with one
-//! growable heap `Vec` per array compound (nested compounds recurse,
-//! so `[[1], [2]]` holds three arrays and three `Vec`s) — plus one
-//! insertion-ordered key table (`InlineMap`, an `IndexMap`) per
-//! object scope, which duplicate/conflict detection and dotted-key
-//! merge require, plus the `Vec<&str>` of top-level segments from
-//! `split_top_level`. `scan_inline_events` materializes the whole
-//! tree first and only then walks it (`emit_node`), so a compound
-//! that fails validation pushes no events into its sink.
+//! Transient state per compound: one flat `Vec<Event>` scratch that
+//! the scan appends to — array items and nested arrays land there
+//! directly in source order, so an array never materializes a
+//! per-item node list — plus one insertion-ordered key table
+//! (`InlineMap`, an `IndexMap`) per object scope, which
+//! duplicate/conflict detection and dotted-key merge require. An
+//! array that is directly an object member's value is staged as one
+//! flat bracketed event block (`Node::Array(Vec<Event>)`) until its
+//! object's insertion order is final. `scan_inline_events` copies
+//! the finished scratch into its sink only after the whole compound
+//! validates, so a failing compound pushes no events.
 //!
 //! Dotted keys inside the compound are expanded with the SAME shared
 //! § 6.3 outcome tables the owned parser uses (`parser::insert`), so
@@ -68,13 +69,18 @@ pub(crate) fn fast_plain_decimal_i64(s: &str) -> Option<i64> {
     Some(acc)
 }
 
-/// A lightweight inline value: the same shape the owned parser's
-/// `Value` would take, but holding borrowed slices / arena slices and
-/// ready-made leaf events instead of owned `Scalar`s.
+/// A lightweight inline value staged before emission. Scalars are
+/// ready-made leaf events; an array is a flat, complete event block
+/// (BeginArray .. EndArray) — arrays impose no ordering or duplicate
+/// rules of their own, so source order is emission order and no
+/// per-item nodes are staged; an object keeps the insertion-ordered
+/// key table that duplicate/conflict detection and dotted-key merge
+/// require.
 pub(crate) enum Node<'a> {
     /// A scalar leaf (Null / Bool / Integer / Float / Str).
     Leaf(Event<'a>),
-    Array(Vec<Node<'a>>),
+    /// Flat event block of an array value, brackets included.
+    Array(Vec<Event<'a>>),
     Object(InlineMap<'a>),
 }
 
@@ -176,11 +182,19 @@ pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
         }
         InlineCloserScan::Found(_) => {}
     }
-    let node = match kind {
-        InlineBody::Object => scan_inline_object(body, line_num, span, 0, bump)?,
-        InlineBody::Array => scan_inline_array(body, line_num, span, 0, bump)?,
-    };
-    emit_node(&node, bump, out);
+    let mut buf: Vec<Event<'a>> = Vec::new();
+    match kind {
+        InlineBody::Object => {
+            let node = scan_inline_object(body, line_num, span, 0, bump)?;
+            emit_node(&node, bump, &mut buf);
+        }
+        InlineBody::Array => {
+            scan_inline_array_into(body, line_num, span, 0, bump, &mut buf)?;
+        }
+    }
+    for ev in buf {
+        EventSink::push(out, ev);
+    }
     Ok(())
 }
 
@@ -272,14 +286,20 @@ fn scan_inline_object<'a>(
     Ok(Node::Object(map))
 }
 
-/// Port of `parse_inline_array_inner` (owned).
-fn scan_inline_array<'a>(
+/// Port of `parse_inline_array_inner` (owned). Appends the array's
+/// complete event block — `BeginArray`, each item's events in source
+/// order (nested arrays recurse into the same buffer, nested objects
+/// emit their finished key-table walk), `EndArray` — to `buf`.
+/// Nothing is written to the parser's sink here; the caller copies
+/// `buf` only after the whole compound validates.
+fn scan_inline_array_into<'a>(
     input: &'a str,
     line_num: usize,
     span: Span,
     depth: usize,
     bump: &'a Bump,
-) -> Result<Node<'a>, Error> {
+    buf: &mut Vec<Event<'a>>,
+) -> Result<(), Error> {
     if depth >= MAX_INLINE_DEPTH {
         return Err(malformed(
             line_num,
@@ -291,11 +311,13 @@ fn scan_inline_array<'a>(
     debug_assert!(input.starts_with('[') && input.ends_with(']'));
     let inner = &input[1..input.len() - 1];
     if inner.trim().is_empty() {
-        return Ok(Node::Array(Vec::new()));
+        buf.push(Event::BeginArray);
+        buf.push(Event::EndArray);
+        return Ok(());
     }
 
     let segments = split_top_level(inner, line_num, span, InlineBody::Array)?;
-    let mut items: Vec<Node<'a>> = Vec::new();
+    buf.push(Event::BeginArray);
     let n = segments.len();
     for (i, seg) in segments.into_iter().enumerate() {
         let trimmed = seg.trim();
@@ -313,16 +335,18 @@ fn scan_inline_array<'a>(
 
         if let Some(rest) = trimmed.strip_prefix("::") {
             let processed = process_escapes(rest.trim(), line_num, span)?;
-            items.push(Node::Leaf(Event::Str(cow_to_bump(processed, bump))));
+            buf.push(Event::Str(cow_to_bump(processed, bump)));
             continue;
         }
 
-        items.push(scan_inline_value_trimmed(
-            trimmed, line_num, span, depth, bump,
-        )?);
+        match scan_inline_value_trimmed(trimmed, line_num, span, depth, bump)? {
+            Node::Leaf(ev) => buf.push(ev),
+            Node::Array(events) => buf.extend_from_slice(&events),
+            Node::Object(map) => emit_node(&Node::Object(map), bump, buf),
+        }
     }
-
-    Ok(Node::Array(items))
+    buf.push(Event::EndArray);
+    Ok(())
 }
 
 /// Port of `parse_inline_value` (owned): the value body is NOT yet trimmed.
@@ -371,18 +395,15 @@ fn scan_inline_value_trimmed<'a>(
             // § 6.11: the matching closer is the last byte.
             Some(idx) if idx == trimmed.len() - 1 => {
                 let inner = &trimmed[1..trimmed.len() - 1];
+                if first_byte == b'[' {
+                    let mut events = Vec::new();
+                    scan_inline_array_into(trimmed, line_num, span, depth + 1, bump, &mut events)?;
+                    return Ok(Node::Array(events));
+                }
                 if inner.trim().is_empty() {
-                    return Ok(if first_byte == b'{' {
-                        Node::Object(InlineMap::default())
-                    } else {
-                        Node::Array(Vec::new())
-                    });
+                    return Ok(Node::Object(InlineMap::default()));
                 }
-                if first_byte == b'{' {
-                    scan_inline_object(trimmed, line_num, span, depth + 1, bump)
-                } else {
-                    scan_inline_array(trimmed, line_num, span, depth + 1, bump)
-                }
+                scan_inline_object(trimmed, line_num, span, depth + 1, bump)
             }
             // § 6.12: closer found, but content follows it.
             Some(_) => Err(malformed_closer_not_at_end(line_num, span)),
@@ -459,30 +480,24 @@ fn cow_to_bump<'a>(cow: Cow<'a, str>, bump: &'a Bump) -> &'a str {
     }
 }
 
-/// Emit a finished node tree in the exact order the former
-/// `value_to_events` walked the owned `Value` tree: insertion order per
-/// object, nested Begin/End brackets per compound.
-fn emit_node<'a, S: EventSink<'a>>(node: &Node<'a>, bump: &'a Bump, out: &mut S) {
+/// Emit a finished node into the flat scratch buffer in the exact
+/// order the former `value_to_events` walked the owned `Value` tree:
+/// insertion order per object, nested Begin/End brackets per compound.
+fn emit_node<'a>(node: &Node<'a>, bump: &'a Bump, buf: &mut Vec<Event<'a>>) {
     match node {
-        Node::Leaf(ev) => EventSink::push(out, *ev),
-        Node::Array(items) => {
-            EventSink::push(out, Event::BeginArray);
-            for item in items {
-                emit_node(item, bump, out);
-            }
-            EventSink::push(out, Event::EndArray);
-        }
+        Node::Leaf(ev) => buf.push(*ev),
+        Node::Array(events) => buf.extend_from_slice(events),
         Node::Object(map) => {
-            EventSink::push(out, Event::BeginObject);
+            buf.push(Event::BeginObject);
             for (k, v) in map {
                 let key: &'a str = match k {
                     Cow::Borrowed(s) => s,
                     Cow::Owned(s) => bump.alloc_str(s),
                 };
-                EventSink::push(out, Event::Key(key));
-                emit_node(v, bump, out);
+                buf.push(Event::Key(key));
+                emit_node(v, bump, buf);
             }
-            EventSink::push(out, Event::EndObject);
+            buf.push(Event::EndObject);
         }
     }
 }
