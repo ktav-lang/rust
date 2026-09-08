@@ -1290,8 +1290,11 @@ pub(crate) mod ix_probe {
 //    `UnterminatedInlineCompound`, and dotted-key-then-EOF to
 //    whitespace-only-rest → no trailing segment, else `EmptyKey`;
 //    find/scan map both to `None`/`NotFound`.
-// 4. find/scan commas set `value_start = true` even in object scopes;
-//    split's comma sets `value_start = !body_object`.
+// 4. REMOVED R9-F1: every config now derives the comma's value_start
+//    from the SAME scope kind as its in_key — after an Object comma
+//    that position is a key position (§ 4: <inline-pair> begins with
+//    <key>), so `value_start = !scope_kind`; an Array comma stays a
+//    value position.
 // 5. scan validates escapes (full-length advance,
 //    `BadEscapeSequence` precedence); find/split skip 2 bytes
 //    unvalidated (validation happens later in `process_escapes`).
@@ -1379,15 +1382,6 @@ enum ScanStop {
     Exhausted,
 }
 
-/// Policy for `value_start` at a comma.
-#[derive(Clone, Copy)]
-enum CommaVs {
-    /// scan: every loop-seen comma opens a value position.
-    Always,
-    /// split: `value_start = !body_object` (§ 5.3.3 "Keys only").
-    BodyNegated,
-}
-
 /// Compile-time policy knobs of the shared scanner. Every `const` is
 /// folded away by monomorphization, so each config's byte loop is the
 /// specialized machine of exactly one former hand-written scanner.
@@ -1422,8 +1416,6 @@ trait ScanCfg {
     /// find/scan: comma key context comes from the CURRENT scope (the
     /// stack top, R5-F1/R6-F1); split: from the body kind.
     const COMMA_CTX_SCOPE: bool;
-    /// `value_start` policy at a comma (quirk 4).
-    const COMMA_VS: CommaVs;
     /// find + scan: an unescaped comma ends raw mode (R5-F3).
     const COMMA_CLEARS_RAW: bool;
     /// a key `:` sets `value_start` (find + scan + split).
@@ -1472,7 +1464,6 @@ impl ScanCfg for FindFast {
     const TRACK_RAW: bool = true;
     const COMMA_SPLITS: bool = false;
     const COMMA_CTX_SCOPE: bool = true;
-    const COMMA_VS: CommaVs = CommaVs::Always;
     const COMMA_CLEARS_RAW: bool = true;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
@@ -1501,7 +1492,6 @@ impl ScanCfg for FindQ {
     const TRACK_RAW: bool = true;
     const COMMA_SPLITS: bool = false;
     const COMMA_CTX_SCOPE: bool = true;
-    const COMMA_VS: CommaVs = CommaVs::Always;
     const COMMA_CLEARS_RAW: bool = true;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
@@ -1530,7 +1520,6 @@ impl ScanCfg for ScanFast {
     const TRACK_RAW: bool = true;
     const COMMA_SPLITS: bool = false;
     const COMMA_CTX_SCOPE: bool = true;
-    const COMMA_VS: CommaVs = CommaVs::Always;
     const COMMA_CLEARS_RAW: bool = true;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
@@ -1558,7 +1547,6 @@ impl ScanCfg for ScanQ {
     const TRACK_RAW: bool = true;
     const COMMA_SPLITS: bool = false;
     const COMMA_CTX_SCOPE: bool = true;
-    const COMMA_VS: CommaVs = CommaVs::Always;
     const COMMA_CLEARS_RAW: bool = true;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
@@ -1584,7 +1572,6 @@ impl ScanCfg for SplitFast {
     const TRACK_RAW: bool = false;
     const COMMA_SPLITS: bool = true;
     const COMMA_CTX_SCOPE: bool = false;
-    const COMMA_VS: CommaVs = CommaVs::BodyNegated;
     const COMMA_CLEARS_RAW: bool = false;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = true;
@@ -1609,7 +1596,6 @@ impl ScanCfg for SplitQ {
     const TRACK_RAW: bool = false;
     const COMMA_SPLITS: bool = true;
     const COMMA_CTX_SCOPE: bool = false;
-    const COMMA_VS: CommaVs = CommaVs::BodyNegated;
     const COMMA_CLEARS_RAW: bool = false;
     const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = true;
@@ -1825,35 +1811,34 @@ impl<'a, 'b, C: ScanCfg> Scanner<'a, 'b, C> {
                         segments.push(&input[seg_at..i]);
                         seg_at = i + 1;
                     }
-                    if C::COMMA_CTX_SCOPE {
-                        // Next pair / item begins: re-derive key
-                        // context from the CURRENT scope (the
-                        // innermost opener on the stack), not the
-                        // outermost one (R5-F1/R6-F1) — an Object
-                        // scope starts a key position, an Array
-                        // scope stays a value position (§ 5.3.3
-                        // "Keys only").
-                        let scope_object = stack.last().map_or(body_object, |f| f.kind() == b'{');
-                        in_key = scope_object;
-                        if C::TRACK_QUOTES {
-                            seg_start = scope_object;
-                        }
+                    // Next pair / item begins: re-derive key context
+                    // from the CURRENT scope (the innermost opener on
+                    // the stack), not the outermost one (R5-F1/R6-F1)
+                    // — an Object scope starts a key position, an
+                    // Array scope stays a value position (§ 5.3.3
+                    // "Keys only"). split has no stack (OPENER_JUMP):
+                    // its commas always sit at body depth, so the body
+                    // kind is the current scope kind there.
+                    let scope_object = if C::COMMA_CTX_SCOPE {
+                        stack.last().map_or(body_object, |f| f.kind() == b'{')
                     } else {
-                        // split: the body kind decides (the stack is
-                        // always empty at a split comma).
-                        in_key = body_object;
-                        if C::TRACK_QUOTES {
-                            seg_start = body_object;
-                        }
+                        body_object
+                    };
+                    in_key = scope_object;
+                    if C::TRACK_QUOTES {
+                        seg_start = scope_object;
                     }
                     // An unescaped comma ALWAYS ends raw mode (R5-F3).
                     if C::COMMA_CLEARS_RAW {
                         raw = false;
                     }
-                    match C::COMMA_VS {
-                        CommaVs::Always => value_start = true,
-                        CommaVs::BodyNegated => value_start = !body_object,
-                    }
+                    // R9-F1: value_start mirrors the same scope kind —
+                    // after an Object comma the next position is a KEY
+                    // position (§ 4: <inline-pair> begins with <key>),
+                    // so the opener gate must reject a bracket there
+                    // instead of phantom-opening a compound whose
+                    // closer then eats the body's own closer.
+                    value_start = !scope_object;
                 }
                 b'.' if C::TRACK_QUOTES && in_key => {
                     seg_start = true;
@@ -2315,72 +2300,23 @@ fn run_find<C: ScanCfg>(input: &str, open: u8, close: u8, object: bool) -> Optio
         | ScanStop::Exhausted => None,
     }
 }
-/// Find the first unescaped `:` in `s` that is at nesting depth 0.
-/// Used to split inline pairs into key and value.
+/// Find the byte offset of an inline pair's separator — the first
+/// unescaped `:` outside quoted key segments (§ 4 `<inline-pair>`
+/// starts with `<key> (ws) ":" (ws) ...`). Delegates to the shared
+/// § 4/§ 5.3 key-separator scanner. NO compound-depth counting (R9-F1):
+/// a raw bracket in the key prefix is forbidden by `<key-char>` and is
+/// reported as `InvalidKey` at key validation; it must not hide the
+/// separator behind phantom depth. Colons inside nested value
+/// compounds cannot race this scan: the separator precedes the value,
+/// so the first colon outside quoted segments is always the pair's own
+/// separator for any prefix that could still be a valid key.
 ///
 /// Quote-aware (spec 0.7 § 5.3.3): the content of a quoted key segment
-/// opened at a segment-start position is opaque to both `:` and the
-/// `{`/`[`/`}`/`]` depth counting. A span that never closes swallows
-/// the rest of the input — `None` is returned and the caller maps that
-/// to its unterminated/unparseable error of choice.
+/// opened at a segment-start position is opaque. A span that never
+/// closes swallows the rest of the input — `None` is returned and the
+/// caller maps that to its unterminated/unparseable error of choice.
 pub(crate) fn find_unescaped_colon_inline(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    if !has_quote_bytes(bytes) {
-        // Fast path: no quote bytes — the pre-0.7 loop, unchanged.
-        let mut depth: i32 = 0;
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\\' => {
-                    i += 2;
-                    continue;
-                }
-                b'{' | b'[' => depth += 1,
-                b'}' | b']' => depth -= 1,
-                b':' if depth == 0 => return Some(i),
-                _ => {}
-            }
-            i += 1;
-        }
-        return None;
-    }
-    // Slow path (quote bytes present): quoted segments are opaque.
-    let mut depth: i32 = 0;
-    let mut i = 0;
-    let mut seg_start = true;
-    while i < bytes.len() {
-        if seg_start {
-            i = skip_segment_ws(s, i);
-            // The skip may consume every remaining byte (text ending in
-            // whitespace after a dotted-key `.`); `bytes[i]` below then
-            // indexed out of bounds (R3-F1). No colon exists after EOF.
-            if i >= bytes.len() {
-                return None;
-            }
-            if is_quote_byte(bytes[i]) {
-                // Unterminated span: the rest of the input is segment
-                // content.
-                let end = quoted_span_end(bytes, i)?;
-                i = end + 1;
-                seg_start = false;
-                continue;
-            }
-            seg_start = false;
-        }
-        match bytes[i] {
-            b'\\' => {
-                i += 2;
-                continue;
-            }
-            b'{' | b'[' => depth += 1,
-            b'}' | b']' => depth -= 1,
-            b':' if depth == 0 => return Some(i),
-            b'.' => seg_start = true,
-            _ => {}
-        }
-        i += 1;
-    }
-    None
+    find_unescaped_colon(s)
 }
 
 // ---------------------------------------------------------------------------

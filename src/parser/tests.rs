@@ -1997,43 +1997,204 @@ fn memo_bounds_are_a_pure_memo_of_the_live_dispatches() {
 // diagnostic quoted), so the pins cover the payload exactly. The
 // fourth former member of this list is pinned separately below: R8-F2
 // legitimately moved its whole category, not just its detail.
+// R9-F1 reclassification: all three inputs moved a second time, for an
+// independent spec reason. The old MalformedInlineCompound verdict
+// depended on former quirk 4 — find/scan commas set `value_start = true`
+// even in Object scopes — so the `{` after the Object comma
+// phantom-opened a compound (§ 5.8.5) that consumed a `}` and let the
+// walk reach the body's own closer; the pair split then ran and quoted
+// a missing-separator detail. § 4 excludes brackets from `<key-char>`
+// and `<inline-pair>` begins with `<key>`, so the position after an
+// Object comma is a KEY position and the `{` there is NOT a
+// value-position opener. Without the phantom scope a `]` returns the
+// shared depth to zero first; § 5.2's matching-closer rule requires a
+// depth-0 closer to be the body's own kind, so there is no same-line
+// matching closer and § 6.11 diagnoses UnterminatedInlineCompound —
+// the identical reading the quote-aware sibling below pins for
+// `k: {a: [],[:[},a[{ {,a ]}` since R8-F2.
 #[test]
-fn crossed_closer_fuzz_inputs_keep_pre_r8_diagnostics() {
+fn r9f1_crossed_closer_fuzz_inputs_reclassified_by_key_position() {
     let cases = [
-        (
-            "k: {a: [a],{:[,:,}]}",
-            "inline object pair missing ':' separator in '{:['",
-        ),
-        (
-            "k: {a: [ a:,:[],{:[}, ]}",
-            "inline object pair missing ':' separator in '{:[}'",
-        ),
-        (
-            "k: {a: [],{[:[,}]}",
-            "inline object pair missing ':' separator in '{[:['",
-        ),
+        "k: {a: [a],{:[,:,}]}",
+        "k: {a: [ a:,:[],{:[}, ]}",
+        "k: {a: [],{[:[,}]}",
     ];
-    for (input, detail) in cases {
-        let err = crate::parse(input).expect_err(input);
-        match &err {
-            crate::Error::Structured(crate::ErrorKind::MalformedInlineCompound {
-                detail: got,
-                span,
-                ..
-            }) => {
-                assert_eq!(got, detail, "input {input:?}");
-                assert_eq!(span.start as usize, 0, "input {input:?}");
-                assert_eq!(span.end as usize, input.len(), "input {input:?}");
-            }
-            other => panic!("input {input:?}: unexpected {other:?}"),
-        }
-        // Same category via the strict and event entry points.
-        assert!(crate::parse_strict(input).is_err(), "input {input:?}");
-        assert!(
-            crate::parse_events(input, |_| {}).is_err(),
-            "input {input:?}"
-        );
+    for input in cases {
+        let expect_unterminated = |res: Result<(), crate::Error>| {
+            assert!(
+                matches!(
+                    res,
+                    Err(crate::Error::Structured(
+                        crate::ErrorKind::UnterminatedInlineCompound { .. }
+                    ))
+                ),
+                "input {input:?}: expected UnterminatedInlineCompound, got {res:?}"
+            );
+        };
+        expect_unterminated(crate::parse(input).map(|_| ()));
+        expect_unterminated(crate::parse_strict(input).map(|_| ()));
+        expect_unterminated(crate::from_str::<serde_json::Value>(input).map(|_| ()));
+        expect_unterminated(crate::parse_events(input, |_| {}).map(|_| ()));
     }
+}
+
+// R9-F1: an unescaped `[`/`{` in an inline-KEY position is a forbidden
+// `<key-char>` (§ 4), so once the separator is located the pair is
+// diagnosed as InvalidKey (§ 6.4 via § 5.3.1's bare-segment rule) —
+// never as a compound-shape error. Two mechanisms carried the old
+// verdicts: (a) find/scan commas set `value_start = true` even in
+// Object scopes, so the opener gate admitted the bracket as a
+// value-position compound opener whose closer then swallowed the
+// body's own (UnterminatedInlineCompound) — § 4 puts the `<key>`
+// production first in `<inline-pair>`, so a comma's successor position
+// in an Object is a key position; (b) the inline pair's colon scan
+// counted `{`/`[` as depth and hid the separator that is actually
+// present (MalformedInlineCompound "missing ':'") — § 5.3.1: "Validation
+// operates on the raw prefix up to the first unescaped separator,
+// however malformed the separator's surrounding whitespace is".
+#[test]
+fn r9f1_key_bracket_is_invalid_key_not_phantom_compound() {
+    use crate::ErrorKind;
+    let cases = [
+        // First pair (mechanism (b) only).
+        "{[a: 1}",
+        "{{a: 1}",
+        // Later pair after an Object comma (mechanism (a) in the shape
+        // scan and the split, then (b) in the pair split). A quote in a
+        // neighbouring value must not change the diagnosis (§ 5.3.3:
+        // quotes in value positions are ordinary content).
+        "{x: 0, [a: 1}",
+        "{x: 0, {a: 1}",
+        "{x: 0, [a: 1, q: '}",
+    ];
+    for input in cases {
+        let expect_invalid_key = |res: Result<(), crate::Error>| match res {
+            Err(crate::Error::Structured(ErrorKind::InvalidKey { key, .. })) => {
+                assert!(
+                    key.starts_with('[') || key.starts_with('{'),
+                    "input {input:?}: unexpected offending key {key:?}"
+                );
+            }
+            other => panic!("input {input:?}: expected InvalidKey, got {other:?}"),
+        };
+        expect_invalid_key(crate::parse(input).map(|_| ()));
+        expect_invalid_key(crate::parse_strict(input).map(|_| ()));
+        expect_invalid_key(crate::from_str::<serde_json::Value>(input).map(|_| ()));
+        expect_invalid_key(crate::parse_events(input, |_| {}).map(|_| ()));
+    }
+}
+
+// R9-F1 positive controls: the fix must not touch legitimate brackets.
+// - `\[` is a § 3.7 escape form: the decoded key is the ordinary
+//   single-segment key `[a` (decode-time semantics unchanged).
+// - `[1]` after `a:` IS a value position (§ 5.8.5): the value is a
+//   real nested Array; likewise a nested Object value.
+// - Quoted-key opacity (§ 5.3.3) stays exactly as it is: the `}` inside
+//   the quoted segment is content, and a quoted key may quote brackets.
+#[test]
+fn r9f1_key_bracket_positive_controls_unchanged() {
+    use crate::Value;
+
+    let v = crate::parse(r"{x: 0, \[a: 1}").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("x"), Some(&Value::Integer("0".into())));
+    assert_eq!(obj.get("[a"), Some(&Value::Integer("1".into())));
+
+    let v = crate::parse(r"{\[a: 1}").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("[a"),
+        Some(&Value::Integer("1".into()))
+    );
+
+    let v = crate::parse("{x: 0, a: [1]}").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("x"), Some(&Value::Integer("0".into())));
+    assert_eq!(
+        obj.get("a"),
+        Some(&Value::Array(vec![Value::Integer("1".into())]))
+    );
+
+    let v = crate::parse("{x: 0, a: {b: 2}}").unwrap();
+    let inner = v
+        .as_object()
+        .unwrap()
+        .get("a")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    assert_eq!(inner.get("b"), Some(&Value::Integer("2".into())));
+
+    // § 5.3.3's own example, verbatim: the quoted key's `}` is content.
+    let v = crate::parse("{\"a}b\": 1, c: 2}").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("a}b"), Some(&Value::Integer("1".into())));
+    assert_eq!(obj.get("c"), Some(&Value::Integer("2".into())));
+
+    // A quoted key may quote brackets; the quoted span stays opaque.
+    let v = crate::parse("{\"[x]\": 1}").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("[x]"),
+        Some(&Value::Integer("1".into()))
+    );
+
+    // Same values via the event entry point.
+    assert!(crate::parse_events(r"{x: 0, \[a: 1}", |_| {}).is_ok());
+    assert!(crate::parse_events("{x: 0, a: [1]}", |_| {}).is_ok());
+    assert!(crate::parse_events("{\"a}b\": 1, c: 2}", |_| {}).is_ok());
+}
+
+// R9-F1 precedence: a forbidden bracket AND a malformed escape in the
+// same inline compound. § 5.2's rules-6–9 preamble (spec: "the result
+// is BadEscapeSequence (§ 6.13), which takes precedence over a missing
+// closer") fires while the compound triage scans for the closer —
+// before any pair is split — so the escape wins inside `{...}`. The
+// multiline pair path runs no compound triage; § 5.3.1's bare-segment
+// listing orders InvalidKey (raw forbidden `<key-char>`) before
+// BadEscapeSequence (malformed `\X`) within one segment, and the shared
+// validator checks forbidden raw bytes before decoding, so `a\q[` is
+// InvalidKey.
+#[test]
+fn r9f1_forbidden_bracket_and_bad_escape_precedence() {
+    let expect_bad_escape = |res: Result<(), crate::Error>| {
+        assert!(
+            matches!(
+                res,
+                Err(crate::Error::Structured(
+                    crate::ErrorKind::BadEscapeSequence { .. }
+                ))
+            ),
+            "expected BadEscapeSequence, got {res:?}"
+        );
+    };
+    expect_bad_escape(crate::parse(r"{[a\q: 1}").map(|_| ()));
+    expect_bad_escape(crate::parse_strict(r"{[a\q: 1}").map(|_| ()));
+    expect_bad_escape(crate::from_str::<serde_json::Value>(r"{[a\q: 1}").map(|_| ()));
+    expect_bad_escape(crate::parse_events(r"{[a\q: 1}", |_| {}).map(|_| ()));
+
+    let err = crate::parse(r"a\q[ : 1").expect_err("must be InvalidKey");
+    assert!(
+        matches!(
+            err,
+            crate::Error::Structured(crate::ErrorKind::InvalidKey { .. })
+        ),
+        "expected InvalidKey, got {err:?}"
+    );
+}
+
+// R9-F1 unit pin: the inline pair's separator scan shares the § 4/§ 5.3
+// key-separator scanner — NO compound depth in the key. A bracket in
+// the key prefix must not hide the separator that is actually present.
+#[test]
+fn r9f1_find_unescaped_colon_inline_ignores_key_depth() {
+    assert_eq!(find_unescaped_colon_inline("[a: 1"), Some(2));
+    assert_eq!(find_unescaped_colon_inline("{a: 1"), Some(2));
+    // Quoted bracket content is skipped wholesale; the span's end is
+    // followed by the separator.
+    assert_eq!(find_unescaped_colon_inline("\"[a\": 1"), Some(4));
+    // A colon inside a nested VALUE compound never wins: the separator
+    // precedes the value, which is why dropping key-side depth is safe.
+    assert_eq!(find_unescaped_colon_inline("a: {b: 1}"), Some(1));
+    assert_eq!(find_unescaped_colon_inline("a: [1, {c: 2}]"), Some(1));
 }
 
 // R8-F2 recategorization of the fourth formerly-pinned document:
