@@ -1,6 +1,8 @@
 //! State for collecting a multi-line string between `(` ... `)` or
 //! `((` ... `))`.
 
+use crate::whitespace::is_ktav_whitespace;
+
 #[derive(Copy, Clone)]
 pub(super) enum MultilineMode {
     /// `(` ... `)`: strip common leading whitespace from the collected lines.
@@ -50,14 +52,19 @@ impl<'a> Collecting<'a> {
             MultilineMode::Stripped => {
                 // Avoid the full dedent scan when there is only one line —
                 // the common leading whitespace is just that line's leading
-                // whitespace, so the line is trimmed on both edges — trim_start then
-                // trim_end (spec 0.7 § 5.6) — not just `line.trim_start()`.
+                // whitespace, so the line is trimmed on both edges — trim_start
+                // then trim_end, each via `is_ktav_whitespace` (spec 0.7 § 5.6) —
+                // not just `line.trim_start()`.
                 if self.lines.len() == 1 {
                     let only = self.lines[0];
-                    if only.trim().is_empty() {
+                    // LF/CR cannot occur (§ 3.2 pre-split lines, see
+                    // parser.rs:126-129); full § 3.3 class for exact `trim` parity.
+                    if only.trim_matches(is_ktav_whitespace).is_empty() {
                         String::new()
                     } else {
-                        only.trim_start().trim_end().to_string()
+                        only.trim_start_matches(is_ktav_whitespace)
+                            .trim_end_matches(is_ktav_whitespace)
+                            .to_string()
                     }
                 } else {
                     dedent(&self.lines)
@@ -86,15 +93,17 @@ fn dedent(lines: &[&str]) -> String {
         if i > 0 {
             out.push('\n');
         }
-        if l.trim().is_empty() {
+        // LF/CR cannot occur (§ 3.2 pre-split lines, see parser.rs:126-129);
+        // full § 3.3 class for exact `trim` parity.
+        if l.trim_matches(is_ktav_whitespace).is_empty() {
             // blank line → empty
         } else if common_len > 0 && l.len() >= common_len {
             // SAFETY (soundness): common_len was computed from leading
             // whitespace bytes (ASCII by construction), so slicing at that
             // byte boundary is on a valid UTF-8 char boundary.
-            out.push_str(l[common_len..].trim_end());
+            out.push_str(l[common_len..].trim_end_matches(is_ktav_whitespace));
         } else {
-            out.push_str(l.trim_end());
+            out.push_str(l.trim_end_matches(is_ktav_whitespace));
         }
     }
     out
@@ -103,7 +112,9 @@ fn dedent(lines: &[&str]) -> String {
 /// Byte length of the longest leading-whitespace prefix shared by every
 /// non-empty line. Does not allocate.
 fn common_leading_whitespace_len(lines: &[&str]) -> usize {
-    let mut iter = lines.iter().filter(|l| !l.trim().is_empty());
+    let mut iter = lines
+        .iter()
+        .filter(|l| !l.trim_matches(is_ktav_whitespace).is_empty());
     let first = match iter.next() {
         Some(l) => leading_whitespace_bytes(l),
         None => return 0,
