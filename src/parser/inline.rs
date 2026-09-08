@@ -231,13 +231,12 @@ fn parse_inline_value_raw(
     let first_byte = trimmed.as_bytes()[0];
 
     if first_byte == b'{' {
-        // Check for balanced closing `}`. `find_matching_close` counts
-        // mid-scalar openers naively; when it finds no match, fall back
-        // to the value-start-aware `scan_inline_closer` (§ 5.8.5) so a
-        // body like `{a: hello{world, b: x}` — the trailing item of
-        // `[{a: hello{world, b: x}]` — is still recognized as closed.
-        // § 6.11/§ 6.12 tri-state: closer at last byte, closer with
-        // trailing content, or no closer at all.
+        // § 6.11/§ 6.12 tri-state. Since R7-F1 `find_matching_close`
+        // applies the SAME § 5.8.5 value-start / raw-mode / quoted-key
+        // rules as `scan_inline_closer`; it differs only in never
+        // validating escapes. The fallback exists so a
+        // `BadEscapeSequence` (§ 6.13) still takes precedence over the
+        // unterminated decision when no closer is found at all.
         let close_idx = match find_matching_close(trimmed, b'{', b'}') {
             Some(close) => Some(close),
             None => match scan_inline_closer(trimmed, b'{', b'}', line_num, span) {
@@ -271,7 +270,7 @@ fn parse_inline_value_raw(
 
     if first_byte == b'[' {
         // Check for balanced closing `]` (see the `{` branch for the
-        // value-start-aware fallback).
+        // escape-precedence fallback).
         // § 6.11/§ 6.12 tri-state (see the `{` branch).
         let close_idx = match find_matching_close(trimmed, b'[', b']') {
             Some(close) => Some(close),
@@ -968,32 +967,38 @@ pub(crate) enum InlineBody {
 // the byte loop.
 //
 // Preserved-quirk inventory (all LOAD-BEARING current behavior):
-// 1. scan-fast leaves `value_start` untouched at a nested closer;
-//    scan-slow clears it (`CLEAR_VS_ON_NESTED_CLOSE`).
-// 2. scan-fast opener `[` leaves `in_key` untouched; scan-slow/find
-//    set `in_key = (b == b'{')`.
-// 3. find-object discards saved `seg_start` on EVERY closer
-//    (`RESTORE_SEG_ON_MATCH = false`); find-array restores it on
-//    kind-matched closers (`= true`).
-// 4. scan's comma sets `value_start = true` even in object scopes;
-//    split's comma sets `value_start = !body_object`.
-// 5. split maps an unterminated quoted key to
+// 1. the fast configs (find-fast, scan-fast) leave `value_start`
+//    untouched at a nested closer; the slow configs clear it
+//    (`CLEAR_VS_ON_NESTED_CLOSE`).
+// 2. a fast-config `[` opener leaves `in_key` untouched; a
+//    quote-tracking config sets `in_key = (b == b'{')`.
+// 3. split maps an unterminated quoted key to
 //    `UnterminatedInlineCompound`, and dotted-key-then-EOF to
 //    whitespace-only-rest → no trailing segment, else `EmptyKey`;
 //    find/scan map both to `None`/`NotFound`.
-// 6. scan validates escapes (full-length advance,
+// 4. find/scan commas set `value_start = true` even in object scopes;
+//    split's comma sets `value_start = !body_object`.
+// 5. scan validates escapes (full-length advance,
 //    `BadEscapeSequence` precedence); find/split skip 2 bytes
 //    unvalidated (validation happens later in `process_escapes`).
-// 7. `prev` tracking (scan only): ws arm sets prev to the run's last
-//    byte; quoted-span continue sets prev to the closing quote byte;
-//    `\\` sets prev to `\\`.
-// 8. scan's lone-`:`-in-value rule (R5-F2) clears `value_start`
-//    unless the next byte is `:`.
-// 9. find counts depth for ONE kind; scan counts BOTH kinds against
-//    one shared depth and requires the depth-0 closer to be the
-//    body's own kind.
-// 10. The segment-start skip block runs only when
+// 6. `prev` tracking (every TRACK_RAW config, i.e. find and scan):
+//    ws arm sets prev to the run's last byte; quoted-span continue
+//    sets prev to the closing quote byte; `\\` sets prev to `\\`.
+// 7. the lone-`:`-in-value rule (R5-F2) clears `value_start` unless
+//    the next byte is `:`.
+// 8. The segment-start skip block runs only when
 //     `TRACK_QUOTES && in_key && seg_start`.
+//
+// R7-F1: the find configs previously kept naive opener counting, no
+// raw-marker tracking and no value-position tracking — frozen at the
+// unification as `OPENER_GATED = false`. A literal mid-scalar `[`
+// then pushed a PHANTOM Array scope; the next comma derived key
+// context from it, quoted keys stopped being opaque, and a key's `}`
+// was mistaken for the body closer. Byte meaning (opener
+// structurality, raw mode, quoted-key opacity, crossed closers) is
+// now IDENTICAL across find and scan; the configs differ only in
+// result shape (`Option<usize>` vs [`InlineCloserScan`]) and
+// validation mode (find never validates escapes).
 
 /// Per open compound: the opener kind plus the enclosing key-position,
 /// segment-start and raw state, packed into ONE byte. The scope stack
@@ -1067,8 +1072,6 @@ enum CommaVs {
     Always,
     /// split: `value_start = !body_object` (§ 5.3.3 "Keys only").
     BodyNegated,
-    /// find: never reads `value_start`.
-    None,
 }
 
 /// Compile-time policy knobs of the shared scanner. Every `const` is
@@ -1078,25 +1081,27 @@ trait ScanCfg {
     /// Quote/segment-start tracking (§ 5.3.3). `false` for every
     /// *Fast config.
     const TRACK_QUOTES: bool;
-    /// Maintain the scope stack (find slow + scan, both modes);
-    /// `false` for find-fast and split.
+    /// Maintain the scope stack (find and scan, all four configs);
+    /// `false` for split (its `OPENER_JUMP` sub-scans keep the stack empty).
     const USE_STACK: bool;
-    /// Openers nest only at `value_start && !raw` (§ 5.8.5); when
-    /// `false` (find) every opener nests in place, naive counting.
-    const OPENER_GATED: bool;
     /// split: sub-scan a candidate nested compound with its own pair
     /// ([`scan_inline_closer`]) and jump over it.
     const OPENER_JUMP: bool;
-    /// scan: BOTH closer kinds decrement the shared depth; find: only
-    /// the body's own `close` kind counts.
+    /// find/scan: BOTH closer kinds decrement the shared depth and
+    /// the depth-0 closer must be the body's own kind; split: unused
+    /// (`}`/`]` are literal there).
     const DECREMENT_ANY_CLOSER: bool;
     /// split: `}`/`]` are ordinary content (§ 5.8.5 shields commas
     /// only inside value-start compounds).
     const CLOSER_LITERAL: bool;
-    /// scan only: [`scan_escape`] validation with
-    /// `BadEscapeSequence` precedence (§ 5.2 rules-6–9 preamble).
+    /// scan configs only ([`scan_inline_closer`]): [`scan_escape`]
+    /// validation with `BadEscapeSequence` precedence (§ 5.2
+    /// rules-6–9 preamble); find defers escape validation to
+    /// `process_escapes` so the nested find-first dispatch keeps
+    /// `BadEscapeSequence` precedence via its scan fallback.
     const VALIDATE_ESCAPES: bool;
-    /// scan only: `::` raw marker (§ 5.4) + `prev` byte tracking.
+    /// find + scan: `::` raw marker (§ 5.4) + `prev` byte tracking;
+    /// split never tracks raw.
     const TRACK_RAW: bool;
     /// split: record a segment at every loop-seen comma.
     const COMMA_SPLITS: bool;
@@ -1105,48 +1110,47 @@ trait ScanCfg {
     const COMMA_CTX_SCOPE: bool;
     /// `value_start` policy at a comma (quirk 4).
     const COMMA_VS: CommaVs;
-    /// scan: an unescaped comma ends raw mode (R5-F3).
+    /// find + scan: an unescaped comma ends raw mode (R5-F3).
     const COMMA_CLEARS_RAW: bool;
-    /// scan/split: a key `:` sets `value_start`; find: no-op.
+    /// a key `:` sets `value_start` (find + scan + split).
     const COLON_SETS_VS: bool;
     /// split: a non-key `:` clears `value_start` — `:` is never § 3.3
     /// whitespace, so split's old `_` fall-through applies.
     const COLON_ELSE_CLEAR_VS: bool;
     /// Restore `in_key` from a kind-matched popped scope.
     const RESTORE_IN_KEY_ON_MATCH: bool;
-    /// find-object: FALSE (quirk 3: both `}` and `]` arms set
-    /// `seg_start = false` even after a kind-matched pop);
-    /// find-array + scan-slow: TRUE.
+    /// scan-slow/find-slow: TRUE — a kind-matched closer restores the
+    /// saved `seg_start`; the fast configs track no segments.
     const RESTORE_SEG_ON_MATCH: bool;
-    /// scan-slow only: restore saved raw state on a kind match
+    /// scan-slow/find-slow: restore saved raw state on a kind match
     /// (§ 5.8.5, R4-F1).
     const RESTORE_RAW_ON_MATCH: bool;
     /// find-slow + scan-slow: a closer that matches NO scope kind
     /// still forces `seg_start = false`.
     const MISMATCH_SEG_FALSE: bool;
-    /// scan-SLOW only: a nested closer clears `value_start`;
-    /// scan-fast deliberately leaves it untouched (quirk 1).
+    /// the slow configs: a nested closer clears `value_start`; the
+    /// fast configs deliberately leave it untouched (quirk 1).
     const CLEAR_VS_ON_NESTED_CLOSE: bool;
 }
 
-/// `find_matching_close`, quote-free fast path (the pre-0.7 loop).
-/// Writes to `in_key`/`value_start`/`seg_start` are never read in this
-/// config — the const-gates keep them out of the loop.
+/// `find_matching_close`, quote-free fast path: byte-for-byte the
+/// [`ScanFast`] machine minus escape validation (R7-F1). `in_key` and
+/// `seg_start` are maintained but never read meaningfully (no quote
+/// bytes exist); writes stay so find and scan share one code path.
 struct FindFast;
 impl ScanCfg for FindFast {
     const TRACK_QUOTES: bool = false;
-    const USE_STACK: bool = false;
-    const OPENER_GATED: bool = false;
+    const USE_STACK: bool = true;
     const OPENER_JUMP: bool = false;
-    const DECREMENT_ANY_CLOSER: bool = false;
+    const DECREMENT_ANY_CLOSER: bool = true;
     const CLOSER_LITERAL: bool = false;
     const VALIDATE_ESCAPES: bool = false;
-    const TRACK_RAW: bool = false;
+    const TRACK_RAW: bool = true;
     const COMMA_SPLITS: bool = false;
     const COMMA_CTX_SCOPE: bool = true;
-    const COMMA_VS: CommaVs = CommaVs::None;
-    const COMMA_CLEARS_RAW: bool = false;
-    const COLON_SETS_VS: bool = false;
+    const COMMA_VS: CommaVs = CommaVs::Always;
+    const COMMA_CLEARS_RAW: bool = true;
+    const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
     const RESTORE_IN_KEY_ON_MATCH: bool = false;
     const RESTORE_SEG_ON_MATCH: bool = false;
@@ -1155,60 +1159,32 @@ impl ScanCfg for FindFast {
     const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
 }
 
-/// `find_matching_close`, object body with quote bytes: key-position
-/// tracking PER NESTING LEVEL — every `{` opens a fresh pair list, so
-/// the enclosing level's state is saved and restored around it.
-/// Quirk 3: both `]` and `}` arms set `seg_start = false` even after a
-/// kind-matched pop (`RESTORE_SEG_ON_MATCH = false`).
-struct FindObjQ;
-impl ScanCfg for FindObjQ {
+/// `find_matching_close`, slow path (quote bytes present): the
+/// [`ScanQ`] machine minus escape validation (R7-F1). The same
+/// per-scope key-position tracking, value-position gating and
+/// raw-marker rules as the root scan — only the result shape
+/// (`Option<usize>`, no error construction) and the missing escape
+/// validation differ.
+struct FindQ;
+impl ScanCfg for FindQ {
     const TRACK_QUOTES: bool = true;
     const USE_STACK: bool = true;
-    const OPENER_GATED: bool = false;
     const OPENER_JUMP: bool = false;
-    const DECREMENT_ANY_CLOSER: bool = false;
+    const DECREMENT_ANY_CLOSER: bool = true;
     const CLOSER_LITERAL: bool = false;
     const VALIDATE_ESCAPES: bool = false;
-    const TRACK_RAW: bool = false;
+    const TRACK_RAW: bool = true;
     const COMMA_SPLITS: bool = false;
     const COMMA_CTX_SCOPE: bool = true;
-    const COMMA_VS: CommaVs = CommaVs::None;
-    const COMMA_CLEARS_RAW: bool = false;
-    const COLON_SETS_VS: bool = false;
-    const COLON_ELSE_CLEAR_VS: bool = false;
-    const RESTORE_IN_KEY_ON_MATCH: bool = true;
-    const RESTORE_SEG_ON_MATCH: bool = false;
-    const RESTORE_RAW_ON_MATCH: bool = false;
-    const MISMATCH_SEG_FALSE: bool = true;
-    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
-}
-
-/// `find_matching_close`, array body with quote bytes: depth still
-/// counts only this `[`/`]` pair, but nested `{` objects track key
-/// positions per scope (R3-F2). Unlike the object body, a kind-matched
-/// closer restores the saved `seg_start` too (`RESTORE_SEG_ON_MATCH =
-/// true`).
-struct FindArrQ;
-impl ScanCfg for FindArrQ {
-    const TRACK_QUOTES: bool = true;
-    const USE_STACK: bool = true;
-    const OPENER_GATED: bool = false;
-    const OPENER_JUMP: bool = false;
-    const DECREMENT_ANY_CLOSER: bool = false;
-    const CLOSER_LITERAL: bool = false;
-    const VALIDATE_ESCAPES: bool = false;
-    const TRACK_RAW: bool = false;
-    const COMMA_SPLITS: bool = false;
-    const COMMA_CTX_SCOPE: bool = true;
-    const COMMA_VS: CommaVs = CommaVs::None;
-    const COMMA_CLEARS_RAW: bool = false;
-    const COLON_SETS_VS: bool = false;
+    const COMMA_VS: CommaVs = CommaVs::Always;
+    const COMMA_CLEARS_RAW: bool = true;
+    const COLON_SETS_VS: bool = true;
     const COLON_ELSE_CLEAR_VS: bool = false;
     const RESTORE_IN_KEY_ON_MATCH: bool = true;
     const RESTORE_SEG_ON_MATCH: bool = true;
-    const RESTORE_RAW_ON_MATCH: bool = false;
+    const RESTORE_RAW_ON_MATCH: bool = true;
     const MISMATCH_SEG_FALSE: bool = true;
-    const CLEAR_VS_ON_NESTED_CLOSE: bool = false;
+    const CLEAR_VS_ON_NESTED_CLOSE: bool = true;
 }
 
 /// `scan_inline_closer`, quote-free fast path. `value_start` marks an
@@ -1220,7 +1196,6 @@ struct ScanFast;
 impl ScanCfg for ScanFast {
     const TRACK_QUOTES: bool = false;
     const USE_STACK: bool = true;
-    const OPENER_GATED: bool = true;
     const OPENER_JUMP: bool = false;
     const DECREMENT_ANY_CLOSER: bool = true;
     const CLOSER_LITERAL: bool = false;
@@ -1248,7 +1223,6 @@ struct ScanQ;
 impl ScanCfg for ScanQ {
     const TRACK_QUOTES: bool = true;
     const USE_STACK: bool = true;
-    const OPENER_GATED: bool = true;
     const OPENER_JUMP: bool = false;
     const DECREMENT_ANY_CLOSER: bool = true;
     const CLOSER_LITERAL: bool = false;
@@ -1274,7 +1248,6 @@ struct SplitFast;
 impl ScanCfg for SplitFast {
     const TRACK_QUOTES: bool = false;
     const USE_STACK: bool = false;
-    const OPENER_GATED: bool = true;
     const OPENER_JUMP: bool = true;
     const DECREMENT_ANY_CLOSER: bool = false;
     const CLOSER_LITERAL: bool = true;
@@ -1299,7 +1272,6 @@ struct SplitQ;
 impl ScanCfg for SplitQ {
     const TRACK_QUOTES: bool = true;
     const USE_STACK: bool = false;
-    const OPENER_GATED: bool = true;
     const OPENER_JUMP: bool = true;
     const DECREMENT_ANY_CLOSER: bool = false;
     const CLOSER_LITERAL: bool = true;
@@ -1539,14 +1511,13 @@ impl<'a, C: ScanCfg> Scanner<'a, C> {
                     match C::COMMA_VS {
                         CommaVs::Always => value_start = true,
                         CommaVs::BodyNegated => value_start = !body_object,
-                        CommaVs::None => {}
                     }
                 }
                 b'.' if C::TRACK_QUOTES && in_key => {
                     seg_start = true;
                 }
                 b'{' | b'[' => {
-                    let gated_open = !C::OPENER_GATED || (value_start && !raw);
+                    let gated_open = value_start && !raw;
                     if !gated_open {
                         // Mid-scalar (or raw-mode) opener: a literal
                         // byte with no structural meaning; balancing
@@ -1868,6 +1839,12 @@ fn split_top_level_fast(input: &str, line_num: usize, span: Span, body: InlineBo
 /// starts a fresh key position, an Array scope's comma stays a value
 /// position, and the enclosing level's key context is saved and restored
 /// around each nested body.
+///
+/// Per R7-F1, openers nest only at a value position (§ 5.8.5); `::`
+/// raw values and quoted-key spans are honored exactly as in
+/// [`scan_inline_closer`] — the only differences are the result shape
+/// ([`Option<usize>`] instead of [`InlineCloserScan`], no error
+/// construction) and that escapes are never validated here.
 pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<usize> {
     let bytes = input.as_bytes();
     if bytes.is_empty() || bytes[0] != open {
@@ -1877,22 +1854,27 @@ pub(crate) fn find_matching_close(input: &str, open: u8, close: u8) -> Option<us
     // line_num/span: find's configs never build errors, so the
     // placeholder 0 / `Span::EMPTY` values are never observed.
     if !has_quote_bytes(bytes) {
-        // Fast path: no quote tracking — the pre-0.7 loop, unchanged.
+        // Fast path: no quote tracking.
         run_find::<FindFast>(input, open, close, open == b'{')
-    } else if open == b'{' {
-        // Slow path (object body with quote bytes).
-        run_find::<FindObjQ>(input, open, close, true)
     } else {
-        // Slow path (array body with quote bytes somewhere).
-        run_find::<FindArrQ>(input, open, close, false)
+        // Slow path (quote bytes present): byte-identical rules for
+        // object and array bodies (R7-F1) — key-position tracking is
+        // per nested Object scope inside the machine itself.
+        run_find::<FindQ>(input, open, close, open == b'{')
     }
 }
 
 fn run_find<C: ScanCfg>(input: &str, open: u8, close: u8, object: bool) -> Option<usize> {
     let mut sc: Scanner<'_, C> = Scanner::new(input, open, close, object, 0, Span::EMPTY);
+    // Same seed state as `run_scan` (R7-F1): find is the identical
+    // machine minus escape validation, so `Some(idx)` here is exactly
+    // `scan_inline_closer`'s `Found(idx)` whenever no bad escape
+    // intervenes.
+    sc.i = 1;
+    sc.depth = 1;
     sc.in_key = object;
     sc.seg_start = object;
-    sc.value_start = false;
+    sc.value_start = !object;
     match sc.run() {
         ScanStop::Closer { idx, byte } => (byte == close).then_some(idx),
         ScanStop::EofAfterWsSkip
