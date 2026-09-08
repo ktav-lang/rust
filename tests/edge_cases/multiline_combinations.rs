@@ -98,8 +98,9 @@ fn multiline_with_empty_lines_in_middle() {
 
 #[test]
 fn stripped_form_with_tabs_in_indent() {
-    // Parser dedents based on ASCII whitespace bytes. Tabs are treated
-    // as single-byte whitespace — common prefix is compared byte-by-byte.
+    // Parser dedents on the § 3.3 whitespace class (byte-level view:
+    // SP/TAB/VT/FF). Tabs are single-byte whitespace — the common
+    // prefix is compared byte-by-byte.
     #[derive(Debug, Deserialize, PartialEq)]
     struct Cfg {
         body: String,
