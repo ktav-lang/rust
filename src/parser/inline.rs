@@ -1064,16 +1064,199 @@ impl<'a> InlineBounds<'a> {
     /// slice": the caller MUST run the live dispatch.
     pub(crate) fn known_closer(&self, s: &str) -> Option<usize> {
         let off = s.as_ptr() as usize - self.origin;
-        let idx = self.pairs.binary_search_by_key(&off, |p| p.0).ok()?;
+        #[cfg(test)]
+        if ix_probe::BYPASS.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        #[cfg(test)]
+        let idx = {
+            // Counted twin of `binary_search_by_key` — the identical
+            // probe closure `binary_search_by_key` itself uses — so
+            // test builds see the same iteration sequence plus its
+            // step count. Non-test builds keep the original line.
+            let mut steps = 0usize;
+            let idx = self.pairs.binary_search_by(|p| {
+                steps += 1;
+                p.0.cmp(&off)
+            });
+            ix_probe::record_lookup(
+                &ix_probe::KC_CALLS,
+                &ix_probe::KC_STEPS,
+                &ix_probe::KC_STEPS_MAX,
+                steps,
+            );
+            idx
+        };
+        #[cfg(not(test))]
+        let idx = self.pairs.binary_search_by_key(&off, |p| p.0);
+        let idx = idx.ok()?;
         let rel = self.pairs[idx].1 - off;
-        (rel < s.len()).then_some(rel)
+        let hit = (rel < s.len()).then_some(rel);
+        #[cfg(test)]
+        if hit.is_some() {
+            ix_probe::record_hit(&ix_probe::KC_HITS);
+        }
+        hit
     }
 
     /// Closer absolute offset of a recorded span whose opener sits at
     /// absolute offset `abs`, for split's opener jump.
     fn opener_close_at(&self, abs: usize) -> Option<usize> {
-        let idx = self.pairs.binary_search_by_key(&abs, |p| p.0).ok()?;
+        #[cfg(test)]
+        if ix_probe::BYPASS.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        #[cfg(test)]
+        let idx = {
+            let mut steps = 0usize;
+            let idx = self.pairs.binary_search_by(|p| {
+                steps += 1;
+                p.0.cmp(&abs)
+            });
+            ix_probe::record_lookup(
+                &ix_probe::OCA_CALLS,
+                &ix_probe::OCA_STEPS,
+                &ix_probe::OCA_STEPS_MAX,
+                steps,
+            );
+            idx
+        };
+        #[cfg(not(test))]
+        let idx = self.pairs.binary_search_by_key(&abs, |p| p.0);
+        let idx = idx.ok()?;
+        #[cfg(test)]
+        ix_probe::record_hit(&ix_probe::OCA_HITS);
         Some(self.pairs[idx].1)
+    }
+}
+
+// R8-F6 measurement-only counters. Compiled ONLY under `cfg(test)`; a
+// release build carries none of this. They record the deterministic
+// operation counts of the `InlineBounds` index — binary-search steps
+// per lookup site (calls/hits/total/max steps), the boundary sort
+// (calls/elements/comparisons), and the recorded bodies themselves
+// (count, total body bytes, total and max recorded pairs) — so the
+// index's cost can be measured against the O(N) walk instead of
+// guessed at. See the ix_probe_* tests in src/parser/tests.rs.
+#[cfg(test)]
+pub(crate) mod ix_probe {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    pub(crate) static KC_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static KC_HITS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static KC_STEPS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static KC_STEPS_MAX: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static OCA_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static OCA_HITS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static OCA_STEPS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static OCA_STEPS_MAX: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static SORT_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static SORT_ELEMS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static SORT_CMPS: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static BODIES: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static BODY_BYTES: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static PAIRS_TOTAL: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static PAIRS_MAX: AtomicU64 = AtomicU64::new(0);
+
+    /// R8-F6 A/B switch: when true, both lookup sites return `None`
+    /// without searching, forcing callers down the live-dispatch
+    /// fallback (the memo is a proven pure memo — parser::tests
+    /// `memo_bounds_are_a_pure_memo_of_the_live_dispatches` — so the
+    /// parse result is byte-identical; only the index is skipped).
+    /// Recording and sorting still happen, so this isolates exactly the
+    /// lookup cost.
+    pub(crate) static BYPASS: AtomicBool = AtomicBool::new(false);
+
+    /// One lookup's binary-search step count (loop iterations = element
+    /// comparisons) plus whether it was a call/hit at all.
+    pub(crate) fn record_lookup(
+        site_calls: &AtomicU64,
+        site_steps: &AtomicU64,
+        site_steps_max: &AtomicU64,
+        steps: usize,
+    ) {
+        site_calls.fetch_add(1, Ordering::Relaxed);
+        site_steps.fetch_add(steps as u64, Ordering::Relaxed);
+        site_steps_max.fetch_max(steps as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_hit(hits: &AtomicU64) {
+        hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_sort(elems: usize, cmps: usize) {
+        SORT_CALLS.fetch_add(1, Ordering::Relaxed);
+        SORT_ELEMS.fetch_add(elems as u64, Ordering::Relaxed);
+        SORT_CMPS.fetch_add(cmps as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_body(input_len: usize, pairs: usize) {
+        BODIES.fetch_add(1, Ordering::Relaxed);
+        BODY_BYTES.fetch_add(input_len as u64, Ordering::Relaxed);
+        PAIRS_TOTAL.fetch_add(pairs as u64, Ordering::Relaxed);
+        PAIRS_MAX.fetch_max(pairs as u64, Ordering::Relaxed);
+    }
+
+    #[derive(Default, Clone, Copy)]
+    pub(crate) struct Snapshot {
+        pub kc_calls: u64,
+        pub kc_hits: u64,
+        pub kc_steps: u64,
+        pub kc_steps_max: u64,
+        pub oca_calls: u64,
+        pub oca_hits: u64,
+        pub oca_steps: u64,
+        pub oca_steps_max: u64,
+        pub sort_calls: u64,
+        pub sort_elems: u64,
+        pub sort_cmps: u64,
+        pub bodies: u64,
+        pub body_bytes: u64,
+        pub pairs_total: u64,
+        pub pairs_max: u64,
+    }
+
+    pub(crate) fn snapshot() -> Snapshot {
+        Snapshot {
+            kc_calls: KC_CALLS.load(Ordering::Relaxed),
+            kc_hits: KC_HITS.load(Ordering::Relaxed),
+            kc_steps: KC_STEPS.load(Ordering::Relaxed),
+            kc_steps_max: KC_STEPS_MAX.load(Ordering::Relaxed),
+            oca_calls: OCA_CALLS.load(Ordering::Relaxed),
+            oca_hits: OCA_HITS.load(Ordering::Relaxed),
+            oca_steps: OCA_STEPS.load(Ordering::Relaxed),
+            oca_steps_max: OCA_STEPS_MAX.load(Ordering::Relaxed),
+            sort_calls: SORT_CALLS.load(Ordering::Relaxed),
+            sort_elems: SORT_ELEMS.load(Ordering::Relaxed),
+            sort_cmps: SORT_CMPS.load(Ordering::Relaxed),
+            bodies: BODIES.load(Ordering::Relaxed),
+            body_bytes: BODY_BYTES.load(Ordering::Relaxed),
+            pairs_total: PAIRS_TOTAL.load(Ordering::Relaxed),
+            pairs_max: PAIRS_MAX.load(Ordering::Relaxed),
+        }
+    }
+
+    pub(crate) fn reset() {
+        BYPASS.store(false, Ordering::Relaxed);
+        for s in [
+            &KC_CALLS,
+            &KC_HITS,
+            &KC_STEPS,
+            &KC_STEPS_MAX,
+            &OCA_CALLS,
+            &OCA_HITS,
+            &OCA_STEPS,
+            &OCA_STEPS_MAX,
+            &SORT_CALLS,
+            &SORT_ELEMS,
+            &SORT_CMPS,
+            &BODIES,
+            &BODY_BYTES,
+            &PAIRS_TOTAL,
+            &PAIRS_MAX,
+        ] {
+            s.store(0, Ordering::Relaxed);
+        }
     }
 }
 
@@ -2356,6 +2539,22 @@ fn run_scan<C: ScanCfg>(
                 // once for the consumers' binary searches. Keys are
                 // unique — one span per opener byte — so unstable is
                 // fine.
+                #[cfg(test)]
+                {
+                    // Counted twin of the production
+                    // `sort_unstable_by_key` below — std implements
+                    // that as exactly this `sort_unstable_by` closure —
+                    // so test builds see the same algorithm, input and
+                    // comparison count plus its count.
+                    let mut cmps = 0usize;
+                    pairs.sort_unstable_by(|a, b| {
+                        cmps += 1;
+                        a.0.cmp(&b.0)
+                    });
+                    ix_probe::record_sort(pairs.len(), cmps);
+                    ix_probe::record_body(input.len(), pairs.len());
+                }
+                #[cfg(not(test))]
                 pairs.sort_unstable_by_key(|p| p.0);
                 *bounds_out = pairs;
                 InlineCloserScan::Found(idx)
