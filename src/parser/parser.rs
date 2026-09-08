@@ -109,7 +109,9 @@ impl<'a> Parser<'a> {
         // Inside a multi-line string the line is raw content unless it is
         // the terminator — comments/brackets are NOT special here.
         if let Some(ref mut collecting) = self.collecting {
-            let trimmed = raw.trim();
+            // § 3.3 fixed class, never the host primitive. Same pre-split `raw` as
+            // below (LF/CR cannot occur); full class for exact trim parity.
+            let trimmed = raw.trim_matches(is_ktav_whitespace);
             if collecting.is_terminator(trimmed) {
                 let finished = self.collecting.take().unwrap().finish();
                 self.multiline_opener = None;
@@ -280,7 +282,9 @@ impl<'a> Parser<'a> {
 
         // `line` is already trim'ed by `handle_line`; only trailing
         // whitespace between the key and `:` is possible here.
-        let key = line[..colon].trim_end();
+        // Pre-split line: LF/CR cannot occur; full class for exact
+        // trim parity (see handle_line above).
+        let key = line[..colon].trim_end_matches(is_ktav_whitespace);
         let key_start = trimmed_span.start; // first non-ws byte of trimmed line
         let key_end = key_start + key.len() as u32;
         let _ = raw; // raw kept for parity with future refactors
@@ -316,7 +320,7 @@ impl<'a> Parser<'a> {
                     after_colon_off + 1,
                     trimmed_span,
                 )?;
-                let value = Value::String(after.trim().into());
+                let value = Value::String(after.trim_matches(is_ktav_whitespace).into());
                 self.insert_object_pair(key, value, line_num, Span::new(key_start, key_end))
             }
             Separator::Plain(after) => {
@@ -403,7 +407,7 @@ impl<'a> Parser<'a> {
 
         if let Some(rest) = line.strip_prefix("::") {
             require_sep_end(rest, line_num, line_start, 1, line_start + 2, trimmed_span)?;
-            let value = Value::String(rest.trim_start().into());
+            let value = Value::String(rest.trim_start_matches(is_ktav_whitespace).into());
             return self.push_array_item(value);
         }
 
@@ -598,7 +602,7 @@ fn bracket_to_compound(b: Bracket) -> CompoundKind {
 
 /// Compute a span for the trimmed line content given the raw line and
 /// its start offset. `raw` may have leading/trailing whitespace; `trimmed`
-/// is its `.trim()` view.
+/// is its `trim_matches(is_ktav_whitespace)` view.
 fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span {
     if trimmed.is_empty() {
         return Span::new(line_start, line_start);

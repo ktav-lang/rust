@@ -13,13 +13,14 @@ use memchr::memchr3;
 
 use crate::error::{Error, ErrorKind, Span};
 use crate::value::Scalar;
+use crate::whitespace::is_ktav_whitespace;
 
 use super::inline;
 use super::value_start::ValueStart;
 
 /// `text` MUST already have trailing whitespace removed (guaranteed by
-/// `handle_line`'s `raw.trim()` at the top of the pipeline). Only leading
-/// whitespace — between `:` and the value — needs to be stripped here.
+/// `handle_line`'s `raw.trim_matches(is_ktav_whitespace)` at the top of
+/// the pipeline). Only leading whitespace — between `:` and the value — needs to be stripped here.
 ///
 /// `trimmed_span` covers the trimmed source line; it is used as the
 /// `Span` payload for any structured error emitted here.
@@ -29,7 +30,10 @@ pub(super) fn classify_value_start(
     trimmed_span: Span,
     strict: bool,
 ) -> Result<ValueStart, Error> {
-    let trimmed = text.trim_start();
+    // § 3.3 fixed class, never the host primitive. Same pre-split line
+    // as `handle_line` (LF/CR cannot occur); full class for exact trim
+    // parity.
+    let trimmed = text.trim_start_matches(is_ktav_whitespace);
 
     if trimmed == "{" {
         return Ok(ValueStart::OpenObject);
@@ -41,7 +45,11 @@ pub(super) fn classify_value_start(
     // § 5.2 rules 6–9: inline compounds.
     if trimmed.starts_with('{') {
         // Empty object: `{}` or `{ }`
-        if trimmed.ends_with('}') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
+        if trimmed.ends_with('}')
+            && trimmed[1..trimmed.len() - 1]
+                .trim_matches(is_ktav_whitespace)
+                .is_empty()
+        {
             return Ok(ValueStart::EmptyObject);
         }
         // § 5.2 rules 6–9: one shared § 5.8 quote-aware, escape-aware
@@ -54,7 +62,11 @@ pub(super) fn classify_value_start(
 
     if trimmed.starts_with('[') {
         // Empty array: `[]` or `[ ]`
-        if trimmed.ends_with(']') && trimmed[1..trimmed.len() - 1].trim().is_empty() {
+        if trimmed.ends_with(']')
+            && trimmed[1..trimmed.len() - 1]
+                .trim_matches(is_ktav_whitespace)
+                .is_empty()
+        {
             return Ok(ValueStart::EmptyArray);
         }
         // § 5.2 rule 7 vs 8/9: same shared scan as the `{` branch.
@@ -629,7 +641,9 @@ pub(crate) fn is_pair_shape(trimmed: &str) -> bool {
         return false;
     };
     // Empty prefix before `:` → array-item shape
-    let key_part = trimmed[..colon_idx].trim_end();
+    // Pre-split line: LF/CR cannot occur; full class for exact trim
+    // parity (see handle_line / classify_value_start above).
+    let key_part = trimmed[..colon_idx].trim_end_matches(is_ktav_whitespace);
     if key_part.is_empty() {
         return false;
     }
