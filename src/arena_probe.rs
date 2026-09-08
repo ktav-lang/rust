@@ -4,7 +4,9 @@
 //! documents, for both arena entry points (`parse_events_merged` — the
 //! `from_str` path — and `parse_events_raw` — the public `parse_events`
 //! path) plus the whole `from_str` allocation cost via a counting global
-//! allocator. Run with:
+//! allocator (a wrapper that forwards ALL FOUR `GlobalAlloc` operations to
+//! `System` unchanged, with counters that separate alloc / zeroed /
+//! realloc / dealloc). Run with:
 //! `cargo test arena_probe -- --ignored --test-threads=1 --nocapture`
 //!
 //! `used` = cumulative reserved bytes minus the free tail of the current
@@ -53,12 +55,23 @@ use bumpalo::Bump;
 // Counting global allocator
 // ---------------------------------------------------------------------------
 
+/// Counting wrapper: every operation forwards to the matching `System`
+/// method unchanged (realloc = the platform HeapReAlloc path on Windows for
+/// ordinary alignments). Per-op counters: alloc = fresh uninitialized
+/// allocations; zeroed = fresh zero-filled allocations, separate from
+/// alloc; realloc = in-place-or-move grow/shrink, bytes = requested NEW
+/// size; dealloc = releases, bytes = the released layout. A `Vec` doubling
+/// ten times is 1 alloc + 9 reallocs; all bytes are requested layout bytes.
 struct CountingAlloc;
 
 static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
 static DEALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 static DEALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+static REALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
+static REALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+static ZEROED_COUNT: AtomicU64 = AtomicU64::new(0);
+static ZEROED_BYTES: AtomicU64 = AtomicU64::new(0);
 
 #[global_allocator]
 static GLOBAL: CountingAlloc = CountingAlloc;
@@ -72,6 +85,27 @@ unsafe impl GlobalAlloc for CountingAlloc {
         System.alloc(layout)
     }
 
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // Relaxed is fine: the probe test only reads counts in a
+        // single-threaded window, no cross-thread ordering needed.
+        ZEROED_COUNT.fetch_add(1, Ordering::Relaxed);
+        ZEROED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        // SAFETY: standard forwarding wrapper — we validate nothing and
+        // defer entirely to `System`'s own safety guarantees.
+        System.alloc_zeroed(layout)
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // Relaxed is fine: the probe test only reads counts in a
+        // single-threaded window, no cross-thread ordering needed.
+        REALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        REALLOC_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        // SAFETY: the ptr/layout pair is the caller-guaranteed grown
+        // allocation per the GlobalAlloc contract; we validate nothing and
+        // defer entirely to `System`'s own safety guarantees.
+        System.realloc(ptr, layout, new_size)
+    }
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         DEALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
@@ -79,13 +113,30 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 }
 
-fn alloc_snapshot() -> (u64, u64, u64, u64) {
-    (
-        ALLOC_COUNT.load(Ordering::Relaxed),
-        ALLOC_BYTES.load(Ordering::Relaxed),
-        DEALLOC_COUNT.load(Ordering::Relaxed),
-        DEALLOC_BYTES.load(Ordering::Relaxed),
-    )
+/// All eight global-allocator counters at one instant.
+#[derive(Clone, Copy, Default)]
+struct Snapshot {
+    alloc_count: u64,
+    alloc_bytes: u64,
+    zeroed_count: u64,
+    zeroed_bytes: u64,
+    realloc_count: u64,
+    realloc_bytes: u64,
+    dealloc_count: u64,
+    dealloc_bytes: u64,
+}
+
+fn alloc_snapshot() -> Snapshot {
+    Snapshot {
+        alloc_count: ALLOC_COUNT.load(Ordering::Relaxed),
+        alloc_bytes: ALLOC_BYTES.load(Ordering::Relaxed),
+        zeroed_count: ZEROED_COUNT.load(Ordering::Relaxed),
+        zeroed_bytes: ZEROED_BYTES.load(Ordering::Relaxed),
+        realloc_count: REALLOC_COUNT.load(Ordering::Relaxed),
+        realloc_bytes: REALLOC_BYTES.load(Ordering::Relaxed),
+        dealloc_count: DEALLOC_COUNT.load(Ordering::Relaxed),
+        dealloc_bytes: DEALLOC_BYTES.load(Ordering::Relaxed),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +168,10 @@ struct AllocRow {
     ok: bool,
     alloc_count: u64,
     alloc_bytes: u64,
+    realloc_count: u64,
+    realloc_bytes: u64,
+    zeroed_count: u64,
+    zeroed_bytes: u64,
     dealloc_count: u64,
     dealloc_bytes: u64,
 }
@@ -193,16 +248,20 @@ fn measure_arena(name: &'static str, doc: &str, raw: bool) -> Row {
 /// `ktav::Value` is not `DeserializeOwned`, so a fully dynamic
 /// `serde_json::Value` target (dev-dependency) drives the full path.
 fn measure_from_str(name: &'static str, doc: &str) -> AllocRow {
-    let (c0, b0, d0, db0) = alloc_snapshot();
+    let s0 = alloc_snapshot();
     let res = crate::from_str::<serde_json::Value>(doc);
-    let (c1, b1, d1, db1) = alloc_snapshot();
+    let s1 = alloc_snapshot();
     AllocRow {
         name,
         ok: res.is_ok(),
-        alloc_count: c1 - c0,
-        alloc_bytes: b1 - b0,
-        dealloc_count: d1 - d0,
-        dealloc_bytes: db1 - db0,
+        alloc_count: s1.alloc_count - s0.alloc_count,
+        alloc_bytes: s1.alloc_bytes - s0.alloc_bytes,
+        realloc_count: s1.realloc_count - s0.realloc_count,
+        realloc_bytes: s1.realloc_bytes - s0.realloc_bytes,
+        zeroed_count: s1.zeroed_count - s0.zeroed_count,
+        zeroed_bytes: s1.zeroed_bytes - s0.zeroed_bytes,
+        dealloc_count: s1.dealloc_count - s0.dealloc_count,
+        dealloc_bytes: s1.dealloc_bytes - s0.dealloc_bytes,
     }
 }
 
@@ -326,18 +385,35 @@ fn print_table_1(title: &str, rows: &[Row]) {
 }
 
 fn print_table_2(rows: &[AllocRow]) {
-    println!("Table 2: whole from_str cost (allocation-counting global allocator)");
+    println!("Table 2: whole from_str cost (per-operation allocation-counting global allocator)");
     println!(
-        "{:<20} {:>6} {:>12} {:>12} {:>14} {:>14}",
-        "name", "result", "alloc_count", "alloc_bytes", "dealloc_count", "dealloc_bytes"
+        "alloc = fresh `alloc` calls; realloc = `realloc` calls (bytes = requested new size); \
+         zeroed = fresh `alloc_zeroed` calls; dealloc = releases; bytes are requested layout bytes"
+    );
+    println!(
+        "{:<20} {:>6} {:>11} {:>11} {:>13} {:>13} {:>12} {:>12} {:>13} {:>13}",
+        "name",
+        "result",
+        "alloc_count",
+        "alloc_bytes",
+        "realloc_count",
+        "realloc_bytes",
+        "zeroed_count",
+        "zeroed_bytes",
+        "dealloc_count",
+        "dealloc_bytes"
     );
     for r in rows {
         println!(
-            "{:<20} {:>6} {:>12} {:>12} {:>14} {:>14}",
+            "{:<20} {:>6} {:>11} {:>11} {:>13} {:>13} {:>12} {:>12} {:>13} {:>13}",
             r.name,
             if r.ok { "ok" } else { "err" },
             r.alloc_count,
             r.alloc_bytes,
+            r.realloc_count,
+            r.realloc_bytes,
+            r.zeroed_count,
+            r.zeroed_bytes,
             r.dealloc_count,
             r.dealloc_bytes,
         );

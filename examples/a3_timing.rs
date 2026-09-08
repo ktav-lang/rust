@@ -1,152 +1,26 @@
-//! Counting-only measurement harness for the owned-vs-thin allocation
-//! experiment (a3). Self-contained: no criterion, no test harness.
+//! Timing-only harness for the owned-vs-thin allocation experiment (a3).
+//! Deliberately has NO `#[global_allocator]` anywhere, so every byte goes
+//! through plain `System` and timings describe the unmodified system
+//! allocation path. Counting lives in `examples/a3_measure.rs`.
 //!
-//! Run: `cargo run --release --example a3_measure`
+//! Run: `cargo run --release --example a3_timing [-- --quick]`
 //!
-//! Prints TSV lines to stdout, four per scenario:
-//! - `ALLOCS\t<scenario>\t<allocs_per_iter>\t<bytes_per_iter>` — fresh
-//!   uninitialized `alloc` calls and their requested bytes
-//! - `ZEROED\t<scenario>\t<zeroed_per_iter>\t<bytes_per_iter>` — fresh
-//!   zero-filled `alloc_zeroed` calls and their requested bytes (counted
-//!   separately so `ALLOCS` stays strictly "alloc calls")
-//! - `REALLOCS\t<scenario>\t<reallocs_per_iter>\t<new_bytes_per_iter>` —
-//!   `realloc` calls and the requested NEW size per call
-//! - `DEALLOCS\t<scenario>\t<deallocs_per_iter>\t<bytes_per_iter>` —
-//!   `dealloc` calls and their requested bytes
+//! Prints TSV lines to stdout:
+//! - `TIMING\t<scenario>\t<batch>\t<ns_per_iter>` per measured batch
+//! - `SUMMARY\t<scenario>\t<min>\t<median>` after all batches
 //!
-//! All byte counters are REQUESTED layout bytes, never the allocator's
-//! underlying block size. A `Vec` which doubles ten times is ONE
-//! allocation plus NINE reallocations.
-//!
-//! Timings are taken by the separate `examples/a3_timing.rs`, which has NO
-//! `#[global_allocator]`: this binary's wrapper stays on the call path even
-//! with `COUNTING` off, and a counting wrapper that overrides only some
-//! `GlobalAlloc` operations silently substitutes the default
-//! allocate-copy-free `realloc` for the platform's `HeapReAlloc` path
-//! (review R7-F4). Historical timings printed by earlier versions of this
-//! binary describe the instrumented allocator, not plain System.
+//! The scenario/validator code is intentionally duplicated from
+//! a3_measure rather than shared so that each measurement binary stays
+//! self-contained and independently auditable (same pattern as the
+//! existing `#[path]` use of benches/fixtures.rs, which is shared).
 
 #[path = "../benches/fixtures.rs"]
 mod fixtures;
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 
 use ktav::Value;
-
-// ---------------------------------------------------------------------------
-// Counting global allocator (phase-gated)
-// ---------------------------------------------------------------------------
-
-static COUNTING: AtomicBool = AtomicBool::new(false);
-static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-static ZEROED_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ZEROED_BYTES: AtomicUsize = AtomicUsize::new(0);
-static REALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static REALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-static DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static DEALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-/// Pure counting wrapper: every operation forwards to the matching `System`
-/// method unchanged (realloc = the platform `HeapReAlloc` path on Windows
-/// for ordinary alignments); the `COUNTING` flag only gates counting.
-/// Counters: alloc = fresh uninitialized allocations; zeroed = fresh
-/// zero-filled allocations, counted separately from alloc; realloc =
-/// grow/shrink calls, bytes = the requested NEW size; dealloc = releases,
-/// bytes = the released layout. A `Vec` which doubles ten times is ONE
-/// allocation plus NINE reallocations. All byte counters are REQUESTED
-/// layout bytes, never the allocator's underlying block size.
-struct CountingAllocator;
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-            ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        }
-        // SAFETY: standard forwarding wrapper — we validate nothing and
-        // defer entirely to `System`'s own safety guarantees.
-        System.alloc(layout)
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ZEROED_COUNT.fetch_add(1, Ordering::Relaxed);
-            ZEROED_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        }
-        // SAFETY: standard forwarding wrapper — we validate nothing and
-        // defer entirely to `System`'s own safety guarantees.
-        System.alloc_zeroed(layout)
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            REALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-            REALLOC_BYTES.fetch_add(new_size, Ordering::Relaxed);
-        }
-        // SAFETY: the ptr/layout pair is the caller-guaranteed grown
-        // allocation per the GlobalAlloc contract; we validate nothing and
-        // defer entirely to `System`'s own safety guarantees.
-        System.realloc(ptr, layout, new_size)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if COUNTING.load(Ordering::Relaxed) {
-            DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-            DEALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        }
-        // SAFETY: ptr/layout pair came from the caller of GlobalAlloc,
-        // whose contract guarantees they are valid for System::dealloc.
-        System.dealloc(ptr, layout)
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
-
-/// Per-operation allocation counters for one counting window.
-#[derive(Clone, Copy, Default)]
-struct AllocStats {
-    alloc_count: usize,
-    alloc_bytes: usize,
-    zeroed_count: usize,
-    zeroed_bytes: usize,
-    realloc_count: usize,
-    realloc_bytes: usize,
-    dealloc_count: usize,
-    dealloc_bytes: usize,
-}
-
-/// Resets all counters, runs `f` exactly `iters` times with counting
-/// enabled, returning the per-operation stats for the whole run.
-fn counted<F: FnMut()>(iters: usize, mut f: F) -> AllocStats {
-    COUNTING.store(false, Ordering::Relaxed);
-    ALLOC_COUNT.store(0, Ordering::Relaxed);
-    ALLOC_BYTES.store(0, Ordering::Relaxed);
-    ZEROED_COUNT.store(0, Ordering::Relaxed);
-    ZEROED_BYTES.store(0, Ordering::Relaxed);
-    REALLOC_COUNT.store(0, Ordering::Relaxed);
-    REALLOC_BYTES.store(0, Ordering::Relaxed);
-    DEALLOC_COUNT.store(0, Ordering::Relaxed);
-    DEALLOC_BYTES.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
-    for _ in 0..iters {
-        f();
-    }
-    COUNTING.store(false, Ordering::Relaxed);
-    AllocStats {
-        alloc_count: ALLOC_COUNT.load(Ordering::Relaxed),
-        alloc_bytes: ALLOC_BYTES.load(Ordering::Relaxed),
-        zeroed_count: ZEROED_COUNT.load(Ordering::Relaxed),
-        zeroed_bytes: ZEROED_BYTES.load(Ordering::Relaxed),
-        realloc_count: REALLOC_COUNT.load(Ordering::Relaxed),
-        realloc_bytes: REALLOC_BYTES.load(Ordering::Relaxed),
-        dealloc_count: DEALLOC_COUNT.load(Ordering::Relaxed),
-        dealloc_bytes: DEALLOC_BYTES.load(Ordering::Relaxed),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Custom deterministic documents (index-driven, no randomness)
@@ -406,35 +280,50 @@ fn thin_float_heavy(input: &str) -> usize {
 // Measurement driver
 // ---------------------------------------------------------------------------
 
-fn measure_allocs(scenario: &str, input: &str, f: fn(&str) -> usize, iters: usize) {
-    let s = counted(iters, || {
-        black_box(f(input));
-    });
-    println!(
-        "ALLOCS\t{scenario}\t{}\t{}",
-        s.alloc_count / iters,
-        s.alloc_bytes / iters
-    );
-    println!(
-        "ZEROED\t{scenario}\t{}\t{}",
-        s.zeroed_count / iters,
-        s.zeroed_bytes / iters
-    );
-    println!(
-        "REALLOCS\t{scenario}\t{}\t{}",
-        s.realloc_count / iters,
-        s.realloc_bytes / iters
-    );
-    println!(
-        "DEALLOCS\t{scenario}\t{}\t{}",
-        s.dealloc_count / iters,
-        s.dealloc_bytes / iters
-    );
+fn ns_per_iter_batches(
+    scenario: &str,
+    input: &str,
+    f: fn(&str) -> usize,
+    batches: usize,
+    min_ms: u128,
+) -> Vec<f64> {
+    // Warm-up: at least `min_ms`, discarded.
+    let start = Instant::now();
+    let mut warm = 0usize;
+    while start.elapsed().as_millis() < min_ms {
+        f(input);
+        warm += 1;
+    }
+    black_box(warm);
+
+    let mut results = Vec::with_capacity(batches);
+    for batch in 0..batches {
+        let start = Instant::now();
+        let mut iters = 0usize;
+        while start.elapsed().as_millis() < min_ms {
+            f(input);
+            iters += 1;
+        }
+        let total_ns = start.elapsed().as_nanos() as f64;
+        let per_iter = total_ns / iters as f64;
+        results.push(per_iter);
+        println!("TIMING\t{scenario}\t{batch}\t{per_iter:.1}");
+    }
+    results
+}
+
+fn median(v: &mut [f64]) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[v.len() / 2]
 }
 
 type Scenario<'a> = (&'a str, &'a str, fn(&str) -> usize, usize);
 
 fn main() {
+    let quick = std::env::args().any(|a| a == "--quick");
+    let batches = if quick { 3 } else { 7 };
+    let min_ms = if quick { 100 } else { 200 };
+
     let small = fixtures::small_1k();
     let medium = fixtures::medium_50k();
     fixtures::validate_synth(&small);
@@ -459,7 +348,10 @@ fn main() {
         ("thin_float_heavy", &floats, thin_float_heavy, 25),
     ];
 
-    for (name, input, f, alloc_iters) in scenarios {
-        measure_allocs(name, input, *f, *alloc_iters);
+    for (name, input, f, _alloc_iters) in scenarios {
+        let mut per_batch = ns_per_iter_batches(name, input, *f, batches, min_ms);
+        let min = per_batch.iter().cloned().fold(f64::INFINITY, f64::min);
+        let med = median(&mut per_batch);
+        println!("SUMMARY\t{name}\t{min:.1}\t{med:.1}");
     }
 }
