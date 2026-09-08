@@ -14,7 +14,9 @@ did not carry that claim: its A/B ran in the instrumented lib-test binary
 re-ran live scans instead of consulting a different index, and its batches
 were not alternated. Its verdict is withdrawn and replaced below by an
 isolated, uninstrumented attribution: **the index is a real 5–37% of parse
-time on compound-dense single-line shapes and ≤0.4% on mainstream shapes.
+time on compound-dense single-line shapes and under 1% on mainstream
+shapes (0.72%/0.58% and 0.38%/0.34% on the two mainstream-shaped rows
+below after the R10-F3 arithmetic correction, 0% where C=0).
 The sorted-`Vec` index is KEPT as a conservative engineering choice.** The
 measured data below is unchanged — only its interpretation is corrected.
 
@@ -116,6 +118,18 @@ Point micros (`MIKC`, C=1024 table): hit 12.10 / 12.67 ns, miss
 incl. the 16 KB clone the loop performs): ascending 600 / 736 ns, reverse
 801 / 1013 ns.
 
+**CORRECTED 2026-09-09 (round-10 review, R10-F3).** The table below
+originally used only ONE of KC calls / OCA calls for `many_trees_2000`
+and `inline_doc_50k` — the two shapes whose recorded pairs come from
+BOTH an Object and an Array level, so both lookup sites fire once per
+pair. `lookups` for those two rows is corrected from 4000/1240 to
+8000/2480 (verified by re-running `ix_probe_r8f6_index_counters`
+against the current tree: `many_trees_2000` kc=4000/4000 calls,
+oca=4000/4000 calls; `inline_doc_50k` kc=1240/1240, oca=1240/1240 —
+sum, not either alone). This is an arithmetic recheck of the existing
+timing data with the report's own published per-lookup `bin` rates and
+`SCEN` denominators, not a new measurement.
+
 Attribution (share of the whole-parse wall clock the binary searches
 could account for = (kc+oca calls) × bin rate ÷ SCEN; all numbers
 min / median):
@@ -128,9 +142,16 @@ min / median):
 | wide_obj_tiny_1024 | 2048 | 1024 | 207 / 246 | 22 / 28 | 11% / 11% |
 | deep_chain_96 | 190 | 95 | 63 / 64 | ≤2.6 | ≤4% |
 | wide_arr_small_1024 | 2048 | 1024 | 462 / 607 | 22 / 28 | 5% / 5% |
-| many_trees_2000 | 4000 | 2 | 2851 / 3825 | 10 / 11 | 0.4% / 0.3% |
-| inline_doc_50k | 1240 | 2 | 1656 / 1981 | 3.2 / 3.4 | 0.2% / 0.2% |
+| many_trees_2000 | 8000 | 2 | 2851 / 3825 | 20.48 / 22.00 | 0.72% / 0.58% |
+| inline_doc_50k | 2480 | 2 | 1656 / 1981 | 6.35 / 6.82 | 0.38% / 0.34% |
 | synth_50k | 0 | — | 582 / 680 | 0 | 0% |
+
+The corrected `many_trees_2000` / `inline_doc_50k` shares roughly
+double but stay the same order of magnitude and change nothing about
+the kept-index decision; they do mean the headline "≤0.4% on
+mainstream" below no longer follows from this table as stated for
+these two rows — the verdict is restated to name the shape it actually
+holds for.
 
 E-leg shares are the same attributed µs over larger denominators (e.g.
 `wide_arr_tiny_4096:E` 510 / 596 µs → 22–23%).
@@ -183,17 +204,32 @@ binaries.
 - The index is NOT free, and the first version's "no material cost" was
   wrong for the shapes the review worried about: on single-line
   compound-dense documents the binary searches are a measured 33–37% of
-  the parse. On mainstream mixes the index costs ≤0.4% of the parse and
-  is never consulted in vain (100% hit rate, exactly 2·C lookups).
+  the parse. On mainstream-shaped documents (`many_trees_2000`,
+  `inline_doc_50k` — many small trees rather than one deep or wide
+  compound) the index costs under 1% of the parse (0.72%/0.58% and
+  0.38%/0.34% respectively, corrected in R10-F3) and is never consulted
+  in vain (100% hit rate, exactly 2·C lookups).
 - The sorted-`Vec` index is KEPT. The alternatives' win is concentrated
   on pathological single-line shapes with C in the thousands; taking it
   would add a second lookup machine next to the two scanners rounds 3
   through 9 just finished reconciling (R8-F2 byte-identity discipline),
   for a benefit mainstream documents cannot measure.
-- Production `src/` code remains byte-identical to `cc58308` outside
-  `#[cfg(test)]` blocks (the corpus diff is therefore not applicable;
-  the A/B carried its own positive controls, and the counters test pins
-  the deterministic behaviour on every ordinary suite run).
+- **Scope of the "unchanged" claim (corrected in R10-F3):** `src/` as a
+  whole is NOT byte-identical to `cc58308` — R9-F1 (`fea9513`) changed
+  inline key-position and separator-scan behavior (some inputs now get
+  a different error category) and R9-F4 (`f8ac675`) changed the writer
+  helper; `git diff cc58308..HEAD -- src` shows both. What IS
+  byte-identical to `cc58308` outside `#[cfg(test)]` is narrower and is
+  the only thing this report's "no corpus diff needed" claim actually
+  rests on: the `InlineBounds` struct's `known_closer` and
+  `opener_close_at` lookup bodies (the `#[cfg(not(test))]` line in each
+  is textually the same `self.pairs.binary_search_by_key(...)` call the
+  pre-instrumentation code had) and the `pairs.sort_unstable_by_key(|p|
+  p.0)` call itself — verified directly against
+  `git diff cc58308..HEAD -- src/parser/inline.rs`. The A/B's own
+  positive controls and the counters test's every-suite-run check are
+  what actually cover this narrower claim; the corpus is not a
+  substitute for either.
 
 ## Reproduce
 
@@ -216,7 +252,10 @@ binaries.
   `ix_counters_*.txt`, `ix_wallclock_r*.txt`, `ix_ab_r*.txt`.
 
 Commits: b9d5e6d, 77e7d9c, 4961040, 1225795, fb065a0 (first version,
-`r8-index`); cef7124 (R9-F2 probe isolation + this correction).
+`r8-index`); cef7124 (R9-F2 probe isolation + first correction); this
+file's R10-F3 pass (attribution arithmetic and provenance scope) is a
+documentation-only correction with no accompanying commit hash of its
+own.
 
 ## Verification (revised tree, all re-run)
 
