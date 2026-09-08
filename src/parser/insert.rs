@@ -41,8 +41,14 @@ pub(crate) trait InsertTable<'k>: Sized {
     type Value: InsertShape;
 
     /// Insert `value` at an already-validated, already-decoded single
-    /// segment. `Err(existing)` (slot left untouched) when occupied.
-    fn insert_leaf(&mut self, key: Cow<'k, str>, value: Self::Value) -> Result<(), OccupiedShape>;
+    /// segment. `Err((existing_shape, value))` — slot left untouched,
+    /// `value` handed back so conflict diagnostics can inspect it
+    /// lazily — when occupied; `Ok(())` when inserted.
+    fn insert_leaf(
+        &mut self,
+        key: Cow<'k, str>,
+        value: Self::Value,
+    ) -> Result<(), (OccupiedShape, Self::Value)>;
 
     /// Descend one dotted-key segment, inserting an empty object when
     /// absent; `Err(())` when a non-object value blocks the path (§ 6.3
@@ -70,14 +76,21 @@ impl InsertShape for Value {
 impl<'k> InsertTable<'k> for ObjectMap {
     type Value = Value;
 
-    fn insert_leaf(&mut self, key: Cow<'k, str>, value: Value) -> Result<(), OccupiedShape> {
+    fn insert_leaf(
+        &mut self,
+        key: Cow<'k, str>,
+        value: Value,
+    ) -> Result<(), (OccupiedShape, Value)> {
         match self.entry(key.as_ref().into()) {
             Entry::Occupied(e) => {
                 let existing = e.get();
-                Err(OccupiedShape {
-                    is_object: existing.is_object(),
-                    label: existing.kind_label(),
-                })
+                Err((
+                    OccupiedShape {
+                        is_object: existing.is_object(),
+                        label: existing.kind_label(),
+                    },
+                    value,
+                ))
             }
             Entry::Vacant(v) => {
                 v.insert(value);
@@ -153,11 +166,10 @@ pub(crate) fn insert_value<'k, T: InsertTable<'k>>(
             }
         }
         let decoded = decode_key_segment(trimmed_key, line_num, span)?;
-        let new_is_object = value.is_object();
-        let new_label = value.kind_label();
         return match table.insert_leaf(decoded, value) {
-            Err(existing) => {
-                if existing.is_object != new_is_object {
+            Err((existing, value)) => {
+                let new_label = value.kind_label();
+                if existing.is_object != value.is_object() {
                     Err(Error::Structured(ErrorKind::KeyPathConflict {
                         line: line_num as u32,
                         path: path.to_string(),

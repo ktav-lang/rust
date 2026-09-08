@@ -92,12 +92,19 @@ impl InsertShape for Node<'_> {
 impl<'a> InsertTable<'a> for InlineMap<'a> {
     type Value = Node<'a>;
 
-    fn insert_leaf(&mut self, key: Cow<'a, str>, value: Node<'a>) -> Result<(), OccupiedShape> {
+    fn insert_leaf(
+        &mut self,
+        key: Cow<'a, str>,
+        value: Node<'a>,
+    ) -> Result<(), (OccupiedShape, Node<'a>)> {
         match self.entry(key) {
-            indexmap::map::Entry::Occupied(e) => Err(OccupiedShape {
-                is_object: e.get().is_object(),
-                label: e.get().kind_label(),
-            }),
+            indexmap::map::Entry::Occupied(e) => Err((
+                OccupiedShape {
+                    is_object: e.get().is_object(),
+                    label: e.get().kind_label(),
+                },
+                value,
+            )),
             indexmap::map::Entry::Vacant(v) => {
                 v.insert(value);
                 Ok(())
