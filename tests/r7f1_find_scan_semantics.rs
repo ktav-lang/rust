@@ -289,9 +289,9 @@ fn thin_path_repro_events() {
     enum Owned {
         BeginArray,
         BeginObject,
-        Key(&'static str),
-        Str(&'static str),
-        Integer(&'static str),
+        Key(String),
+        Str(String),
+        Integer(String),
         EndObject,
         EndArray,
     }
@@ -301,9 +301,9 @@ fn thin_path_repro_events() {
             evs.push(match e {
                 ParseEvent::BeginArray => Owned::BeginArray,
                 ParseEvent::BeginObject => Owned::BeginObject,
-                ParseEvent::Key(k) => Owned::Key(Box::leak(k.to_string().into_boxed_str())),
-                ParseEvent::Str(v) => Owned::Str(Box::leak(v.to_string().into_boxed_str())),
-                ParseEvent::Integer(v) => Owned::Integer(Box::leak(v.to_string().into_boxed_str())),
+                ParseEvent::Key(k) => Owned::Key(k.to_string()),
+                ParseEvent::Str(v) => Owned::Str(v.to_string()),
+                ParseEvent::Integer(v) => Owned::Integer(v.to_string()),
                 ParseEvent::EndObject => Owned::EndObject,
                 ParseEvent::EndArray => Owned::EndArray,
                 other => panic!("thin path unexpected event: {other:?}"),
@@ -318,10 +318,10 @@ fn thin_path_repro_events() {
         vec![
             Owned::BeginArray,
             Owned::BeginObject,
-            Owned::Key("a"),
-            Owned::Str("x["),
-            Owned::Key("b}c"),
-            Owned::Integer("2"),
+            Owned::Key("a".to_string()),
+            Owned::Str("x[".to_string()),
+            Owned::Key("b}c".to_string()),
+            Owned::Integer("2".to_string()),
             Owned::EndObject,
             Owned::EndArray,
         ]
