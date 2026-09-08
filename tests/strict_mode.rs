@@ -184,3 +184,71 @@ fn lossy_error_display_names_body_and_canonical() {
     assert!(msg.contains("1.10"), "message: {msg}");
     assert!(msg.contains("1.1"), "message: {msg}");
 }
+
+// --- multi-line float path (classify_value_start): diagnostics + lax forms ---
+
+#[test]
+fn lossy_float_error_payload_is_exact() {
+    // Third line "ratio: 1.10" starts at byte 24; the span covers the
+    // trimmed source line [24, 35).
+    let src = "service: web\nport: 8080\nratio: 1.10\n";
+    match ktav::parse_strict(src) {
+        Err(Error::Structured(ErrorKind::LossyScalar {
+            line,
+            body,
+            canonical,
+            span,
+        })) => {
+            assert_eq!(line, 3);
+            assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
+            assert_eq!(span, ktav::error::Span::new(24, 35));
+            assert_eq!(span.slice(src), Some("ratio: 1.10"));
+        }
+        other => panic!("expected LossyScalar, got {other:?}"),
+    }
+}
+
+#[test]
+fn lax_multiline_float_stores_ryu_form_at_magnitude_extremes() {
+    // The lax branch never applies the § 5.9.8 rendering: stored forms
+    // are the Ryu shortest decimals, never scientific rewrites.
+    let doc = ktav::parse("big: 10000000.5\ntiny: 2e-3\nneg: -0.001\nzero: 0.000\n")
+        .expect("valid lax Ktav");
+    let Value::Object(top) = &doc else {
+        panic!("top-level must be an object");
+    };
+    assert_eq!(
+        top.get("big"),
+        Some(&Value::Float("10000000.5".into())),
+        "big must keep the Ryu form, not § 5.9.8's 1.00000005e7"
+    );
+    assert_eq!(
+        top.get("tiny"),
+        Some(&Value::Float("0.002".into())),
+        "tiny must keep the Ryu form, not § 5.9.8's 2e-3"
+    );
+    assert_eq!(top.get("neg"), Some(&Value::Float("-0.001".into())));
+    assert_eq!(top.get("zero"), Some(&Value::Float("0.0".into())));
+}
+
+#[test]
+fn strict_multiline_float_canonical_payload_for_scientific_region() {
+    // A float in the >= 1e7 region whose source form is not the § 5.9.8
+    // rendering is rejected with that rendering as the canonical payload.
+    let (line, body, canonical) = lossy("big: 10000000.5\n");
+    assert_eq!(
+        (line, body.as_str(), canonical.as_str()),
+        (1, "10000000.5", "1.00000005e7")
+    );
+    // The § 5.9.8 canonical source form itself passes strict and is
+    // stored as the same value.
+    let v = ktav::parse_strict("big: 1.00000005e7\n").expect("§ 5.9.8 form must pass strict");
+    let Value::Object(top) = &v else {
+        panic!("top-level must be an object");
+    };
+    assert_eq!(
+        top.get("big"),
+        Some(&Value::Float("10000000.5".into())),
+        "strict stores the same Ryu form as lax"
+    );
+}
