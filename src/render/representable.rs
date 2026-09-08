@@ -103,6 +103,20 @@ mod tests {
                 choose_multiline_form("a\n))", prefer),
                 Ok(MultilineForm::Stripped)
             ));
+            // R8-F5: differing leading code points share NO common
+            // prefix (§ 5.6 compares code-point-for-code-point), so the
+            // stripped fallback stays lossless even though every line
+            // is indented.
+            assert!(matches!(
+                choose_multiline_form("\talpha\n ))", prefer),
+                Ok(MultilineForm::Stripped)
+            ));
+            // U+2000 vs U+2001 share their first two UTF-8 bytes but
+            // are different code points — still no common prefix.
+            assert!(matches!(
+                choose_multiline_form("\u{2000}alpha\n\u{2001}))", prefer),
+                Ok(MultilineForm::Stripped)
+            ));
             let code = choose_multiline_form("))\n)", prefer)
                 .unwrap_err()
                 .reason_code()

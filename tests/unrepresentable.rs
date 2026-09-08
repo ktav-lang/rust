@@ -494,6 +494,74 @@ fn collision_edge_trailing_wins_over_leading() {
     );
 }
 
+// --- R8-F5: differing indents are representable (§ 5.6 common prefix) ------
+
+#[test]
+fn r8f5_differing_tab_space_indent_roundtrip() {
+    // TAB at position 0 on line 1, SPACE on line 2: § 5.6 — "a line
+    // starting with a tab and a line starting with a space share no
+    // common prefix at all". The `))` segment forces the stripped
+    // fallback; nothing is dedented, so the body is representable and
+    // must round-trip to the identical Value.
+    let v = obj(&[("value", s("\talpha\n ))"))]);
+    assert_canonical_roundtrip(&v);
+    assert_render_roundtrip(&v);
+}
+
+#[test]
+fn r8f5_differing_unicode_indent_roundtrip() {
+    // U+2000 vs U+2001 share their first two UTF-8 bytes but are
+    // different code points; § 5.6 measures the common prefix
+    // code-point-for-code-point, so again no shared prefix exists.
+    let v = obj(&[("value", s("\u{2000}alpha\n\u{2001}))"))]);
+    assert_canonical_roundtrip(&v);
+    assert_render_roundtrip(&v);
+}
+
+#[test]
+fn r8f5_review_lossless_candidate_parses_to_same_value() {
+    // The review's verified lossless document for the rejected body:
+    // the four writer-added spaces dedent away, the differing
+    // TAB/SPACE survive.
+    let v = obj(&[("value", s("\talpha\n ))"))]);
+    let back = parse("value: (\n    \talpha\n     ))\n)\n")
+        .unwrap_or_else(|e| panic!("parse of the review candidate: {e}"));
+    assert_eq!(back, v);
+}
+
+#[test]
+fn r8f5_differing_indent_serde_roundtrip() {
+    let m: BTreeMap<String, String> = [("value".to_string(), "\talpha\n ))".to_string())]
+        .into_iter()
+        .collect();
+    let out = to_string(&m).unwrap_or_else(|e| panic!("to_string: {e}"));
+    let back: BTreeMap<String, String> = from_str(&out).unwrap();
+    assert_eq!(back, m);
+}
+
+#[test]
+fn r8f5_differing_indent_array_item_roundtrip() {
+    let v = Value::Array(vec![s("\talpha\n ))")]);
+    assert_canonical_roundtrip(&v);
+    assert_render_roundtrip(&v);
+}
+
+#[test]
+fn r8f5_shared_unicode_prefix_still_collides() {
+    // The negative survives for a REAL common prefix: U+2000 at the
+    // same position on every non-blank line is one identical leading
+    // code point, which § 5.6's dedent strips on re-parse.
+    let v = obj(&[("k", s("\u{2000}))\n\u{2000}x"))]);
+    assert_eq!(
+        code_of(emit_canonical(&v.clone())),
+        ReasonCode::LeadingWhitespaceCollision
+    );
+    assert_eq!(
+        code_of(render(&v.clone())),
+        ReasonCode::LeadingWhitespaceCollision
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Section 2 — rust#5 regression (the originally-cited keys)
 // ---------------------------------------------------------------------------

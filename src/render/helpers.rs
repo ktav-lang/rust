@@ -3,7 +3,9 @@
 use crate::error::{Error, ReasonCode, Result};
 use crate::parser::classify;
 use crate::value::Value;
-use crate::whitespace::{is_inline_whitespace, is_ktav_whitespace};
+use crate::whitespace::{
+    common_leading_whitespace_prefix_len, is_inline_whitespace, is_ktav_whitespace,
+};
 
 pub(super) const INDENT: &str = "    ";
 
@@ -240,9 +242,15 @@ pub(crate) enum MultilineForm {
 /// the block). Stripped breaks on a line trimming to `)` (it would
 /// close the block too), on a whitespace-only line (§ 5.6 blanks it),
 /// and on a line with trailing whitespace (spec 0.7 § 5.6 strips it).
-/// Stripped also loses per-line indentation, because the parser
-/// dedents by the COMMON leading whitespace, unless at least one
-/// non-blank line is unindented and pins the common indent to zero.
+/// Stripped also loses leading indentation exactly when the non-blank
+/// lines share a common leading-whitespace prefix (§ 5.6 dedents by
+/// it), so the decision uses the shared § 5.6 scan
+/// [`common_leading_whitespace_prefix_len`] — the very computation
+/// both parsers apply on re-parse. "At least one line is unindented"
+/// is sufficient for an empty prefix but not necessary: lines whose
+/// leading runs differ at some position (a TAB line against a SPACE
+/// line, U+2000 against U+2001) share no common prefix at all (§ 5.6)
+/// and stay lossless in stripped form.
 ///
 /// `prefer_stripped` keeps the pretty renderers' historical choice
 /// (indented stripped output when it is unconditionally safe); the
@@ -252,9 +260,9 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
     let mut sole_double = false;
     let mut ws_only_line = false;
     let mut indented_line = false;
-    let mut unindented_line = false;
     let mut trailing_ws_line = false;
-    for line in s.split('\n') {
+    let lines: Vec<&str> = s.split('\n').collect();
+    for line in &lines {
         // Callers reject CR bytes (§ 5.9.7) before reaching here and
         // this loop re-splits on LF, so each `line` is terminator-free:
         // use the INLINE whitespace view.
@@ -271,8 +279,6 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
             ws_only_line = true;
         } else if line.starts_with(is_inline_whitespace) {
             indented_line = true;
-        } else {
-            unindented_line = true;
         }
         if line.trim_end_matches(is_inline_whitespace).len() != line.len() {
             trailing_ws_line = true;
@@ -280,7 +286,17 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
     }
 
     let stripped_safe = !sole_single && !ws_only_line && !indented_line && !trailing_ws_line;
-    let stripped_lossless = !sole_single && !ws_only_line && unindented_line && !trailing_ws_line;
+    // § 5.6: the parser removes from every non-blank line the longest
+    // leading § 3.3 whitespace prefix that is identical
+    // code-point-for-code-point across every non-blank line's own
+    // leading run; blank lines do not participate. Stripped bodies are
+    // emitted at indent 0, so the emission is lossless exactly when
+    // that common prefix is EMPTY. Same scan as the parsers' dedent
+    // (src/parser/collecting.rs, src/thin/event_parser.rs): one notion
+    // of "common prefix", no second § 3.3 list.
+    let has_common_indent = common_leading_whitespace_prefix_len(&lines) != 0;
+    let stripped_lossless =
+        !sole_single && !ws_only_line && !has_common_indent && !trailing_ws_line;
     let verbatim_ok = !sole_double;
 
     if prefer_stripped && stripped_safe {
@@ -295,12 +311,16 @@ pub(crate) fn choose_multiline_form(s: &str, prefer_stripped: bool) -> Result<Mu
         // remaining blockers map onto the three named collision codes:
         // - a segment trimming to `)`        → BothFormsRequired
         // - any line with trailing whitespace → TrailingWhitespaceCollision
-        // - otherwise every non-blank line is indented
+        // - otherwise the residual rejection is exactly § 5.9.7's
+        //   condition: every non-blank segment shares at least one
+        //   leading whitespace code point in the same position. With
+        //   `sole_single` and `trailing_ws_line` both false, a
+        //   whitespace-only line is impossible (it would have set
+        //   `trailing_ws_line` — its every byte is trailing
+        //   whitespace), so `stripped_lossless` can only have failed
+        //   via `has_common_indent`: the shared prefix § 5.6's dedent
+        //   would strip from the content on re-parse.
         //                                     → LeadingWhitespaceCollision
-        // A whitespace-only line always sets `trailing_ws_line` above
-        // (its every byte is trailing whitespace and § 5.6's stripped
-        // form blanks it), so the whitespace-only-line case reports as
-        // TrailingWhitespaceCollision rather than an unnamed eighth case.
         let code = if sole_single {
             ReasonCode::BothFormsRequired
         } else if trailing_ws_line {
