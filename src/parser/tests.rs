@@ -2293,12 +2293,6 @@ fn r8f2_closed_empty_array_consumes_value_start_across_modes() {
 #[path = "../../benches/fixtures_ix.rs"]
 mod ix_fixtures;
 
-/// Both probe tests must hold this: each resets the crate-global
-/// ix_probe counters, so concurrent tests would pollute each other's
-/// windows (the filtered probe run has only these tests, but the full
-/// suite can schedule them side by side with parsing tests).
-static IX_PROBE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn ix_probe_r8f6_fixture_shapes_are_valid() {
     use crate::Value;
@@ -2395,10 +2389,6 @@ fn ix_print_counters(
 fn ix_probe_r8f6_index_counters() {
     use std::fmt::Write as _;
 
-    let _guard = IX_PROBE_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
     let shapes: Vec<(&str, String)> = vec![
         ("wide_arr_tiny_64", ix_fixtures::wide_line_arr_tiny(64)),
         ("wide_arr_tiny_1024", ix_fixtures::wide_line_arr_tiny(1024)),
@@ -2462,23 +2452,29 @@ fn ix_run_events(input: &str) -> bool {
 }
 
 /// R8-F6 wall-clock side-instrument (NOISY MACHINE — deterministic
-/// counters above are the primary instrument). Same scenario names as
-/// the counters test, bench_ab-style output: `SCEN <shape>:<path>
+/// counters above are the primary instrument). INSTRUMENTED: this runs
+/// in the lib test binary, i.e. the cfg(test) build with ix_probe
+/// counters live and the counting global allocator of src/arena_probe
+/// in place — its numbers are NOT production timings; the
+/// uninstrumented instrument is the a2-harness binary `bench_ix`.
+/// Same scenario names as the counters test, bench_ab-style output: `SCEN <shape>:<path>
 /// iters=<n>` then nine `SCEN <shape>:<path> batch=<i> nanos=<ns>`
 /// lines; normalize per iteration with each run's own iters line.
 /// Plus micro lines: `MIKC ...` (ns/op of `known_closer` hit/miss over
 /// the wide_arr_small body's C=1024 pairs) and `MISORT ...` (ns per
 /// `sort_unstable_by_key` of C elements in the all-sibling pop order,
 /// which is already ascending).
+///
+/// #[ignore] (R9-F2): calibration loops and nine timing batches per
+/// scenario must not run in the ordinary suite. Run explicitly, in a
+/// single-threaded window of its own:
+/// `cargo test --release --lib ix_probe_r8f6_wall_clock -- --ignored --test-threads=1 --nocapture`
 #[test]
+#[ignore]
 fn ix_probe_r8f6_wall_clock() {
     use std::fmt::Write as _;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
-
-    let _guard = IX_PROBE_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     let shapes: Vec<(&str, String)> = vec![
         ("wide_arr_tiny_1024", ix_fixtures::wide_line_arr_tiny(1024)),
@@ -2631,24 +2627,30 @@ fn ix_probe_r8f6_wall_clock() {
         println!("MISORT C=1024 order={order_label} iters={iters} min_batch_nanos={best} ns_per_sort_incl_clone={}", best as f64 / iters as f64);
     }
 }
-/// R8-F6 direct A/B: the memo lookups are bypassed (live-dispatch
-/// fallback, proven byte-identical by the purity test), so the batch
-/// delta is the index lookup cost on the real parse path — no
-/// ns-per-step extrapolation. Positive controls per shape: (1) the
-/// bypassed parse must produce a Value whose Debug matches the
-/// memo-on parse exactly; (2) with the bypass engaged the ix_probe
-/// lookup counters must be zero (a vacuous A/B would show zeros
-/// anyway — this proves the switch really flipped).
+/// R8-F6 direct A/B, RELABELED by the round-9 review (R9-F3): the
+/// bypass forces the live-dispatch fallback, so the batch delta is
+/// cached-vs-uncached PARSING — the memo's benefit — measured in the
+/// instrumented lib-test binary (cfg(test) ix counters + the counting
+/// global allocator). It is NOT the isolated cost of the binary
+/// search, and not a comparison of index choices; that isolated,
+/// uninstrumented measurement lives in the a2-harness binary
+/// `bench_ix` (binary search vs monotonic cursor vs passed boundary,
+/// both sides keeping the recorded boundaries). Positive controls per
+/// shape: (1) the bypassed parse must produce a Value whose Debug
+/// matches the memo-on parse exactly; (2) with the bypass engaged the
+/// ix_probe lookup counters must be zero (a vacuous A/B would show
+/// zeros anyway — this proves the switch really flipped).
+///
+/// #[ignore] (R9-F2): timing batches must not run in the ordinary
+/// suite. Run explicitly, single-threaded:
+/// `cargo test --release --lib ix_probe_r8f6_memo_lookup_ab -- --ignored --test-threads=1 --nocapture`
 #[test]
+#[ignore]
 fn ix_probe_r8f6_memo_lookup_ab() {
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
-    use super::inline::ix_probe::{self, BYPASS};
-
-    let _guard = IX_PROBE_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    use super::inline::ix_probe;
 
     let shapes: Vec<(&str, String)> = vec![
         ("wide_arr_tiny_1024", ix_fixtures::wide_line_arr_tiny(1024)),
@@ -2671,13 +2673,13 @@ fn ix_probe_r8f6_memo_lookup_ab() {
             let s = ix_probe::snapshot();
             s.kc_calls + s.oca_calls
         };
-        BYPASS.store(true, std::sync::atomic::Ordering::Relaxed);
+        let bypassed = ix_probe::set_bypass(true);
         let off = crate::parse(doc).unwrap_or_else(|e| panic!("{name}: bypass parse failed: {e}"));
         let lookup_calls_while_bypassed = {
             let s = ix_probe::snapshot();
             s.kc_calls + s.oca_calls - lookups_before_bypass
         };
-        BYPASS.store(false, std::sync::atomic::Ordering::Relaxed);
+        drop(bypassed);
         assert_eq!(
             format!("{on:?}"),
             format!("{off:?}"),
@@ -2692,31 +2694,28 @@ fn ix_probe_r8f6_memo_lookup_ab() {
         );
 
         for (label, bypass) in [("on", false), ("off", true)] {
+            let _mode = ix_probe::set_bypass(bypass);
             for _ in 0..2 {
                 black_box(crate::parse(doc).is_ok());
             }
             let mut iters: u64 = 1;
             loop {
-                BYPASS.store(bypass, std::sync::atomic::Ordering::Relaxed);
                 let t = Instant::now();
                 for _ in 0..iters {
                     black_box(crate::parse(doc).is_ok());
                 }
                 let e = t.elapsed();
-                BYPASS.store(false, std::sync::atomic::Ordering::Relaxed);
                 if e >= Duration::from_millis(40) || iters >= (1 << 22) {
                     break;
                 }
                 iters *= 2;
             }
             for batch in 0..9u32 {
-                BYPASS.store(bypass, std::sync::atomic::Ordering::Relaxed);
                 let t = Instant::now();
                 for _ in 0..iters {
                     black_box(crate::parse(doc).is_ok());
                 }
                 let e = t.elapsed();
-                BYPASS.store(false, std::sync::atomic::Ordering::Relaxed);
                 println!(
                     "AB {name} memo={label} iters={iters} batch={batch} nanos={}",
                     e.as_nanos() as u64

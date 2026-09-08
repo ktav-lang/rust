@@ -7,46 +7,66 @@ compared with the consistently short local scans" when a document has many
 short shallow compounds. Explicitly not a bug; measurement requested before
 any replacement.
 
-**Verdict: the index costs nothing material. No production code was
-changed.** Measured with deterministic counters first; then a direct
-memo-on/memo-off A/B on the real parse path. The index is the cheap side of
-the trade everywhere, including exactly the shape the review worried about:
-the live-dispatch fallback it replaced is 2–12× slower on every
-compound-dense shape, and parity (within noise) on small-C mainstream
-shapes.
+**REVISED 2026-09-08 (round-9 review, R9-F2/R9-F3).** The first version of
+this report concluded "the index costs nothing material" on evidence that
+did not carry that claim: its A/B ran in the instrumented lib-test binary
+(cfg(test) ix counters plus the counting global allocator), its `off` side
+re-ran live scans instead of consulting a different index, and its batches
+were not alternated. Its verdict is withdrawn and replaced below by an
+isolated, uninstrumented attribution: **the index is a real 5–37% of parse
+time on compound-dense single-line shapes and ≤0.4% on mainstream shapes.
+The sorted-`Vec` index is KEPT as a conservative engineering choice.** The
+measured data below is unchanged — only its interpretation is corrected.
 
-## Instruments
+## What each instrument is valid for (revised)
 
-1. `ix_probe` (`src/parser/inline.rs`, `#[cfg(test)]` only): atomic counters
-   at the two lookup sites (`known_closer`, `opener_close_at`) recording
-   calls / hits / total / max binary-search steps, at the boundary sort
-   (calls / elements / comparisons via the identical `sort_unstable_by`
-   closure std implements `sort_unstable_by_key` with), and per recorded
-   body (count, bytes, total and max pairs). Release builds compile none of
-   it; every `#[cfg(not(test))]` statement is byte-identical to `cc58308`.
-2. Direct A/B: the memo is a proven pure memo, so a cfg(test) `BYPASS`
-   switch makes both lookup sites return `None` and forces the
-   live-dispatch fallback — a byte-identical parse (controlled per shape:
-   Debug-equality of the parsed Values) without the index lookups. The
-   switch's engagement is proven per shape by a zero lookup-counter delta
-   across the bypassed parse. Timing `memo=on` vs `memo=off` in ONE binary
-   with alternated batches avoids the cross-binary calibration trap
-   entirely (ns/iter normalized per run's own `iters=` line regardless).
-3. Wall-clock SCEN batches (bench_ab protocol: 2 warmups, calibrate to
-   >= 40 ms, 9 batches) and two micros (ns/op of `known_closer` hit/miss on
-   a C=1024 table; ns per `sort_unstable_by_key` of a C=1024 table).
+1. `ix_probe` deterministic counters (`src/parser/inline.rs:1141`,
+   `#[cfg(test)]`, thread-local since R9-F2): calls / hits / total / max
+   binary-search steps per lookup site, sort calls / elements /
+   comparisons, recorded-body counts. Primary instrument; production
+   -equivalent counts. Now an ordinary (non-ignored) test,
+   `ix_probe_r8f6_index_counters` (src/parser/tests.rs:2389); its output
+   was re-verified byte-identical across the R9-F2 refactor (base
+   `fea9513` vs `cef7124`, 22/22 `IX` lines equal).
+2. The bypass A/B, `ix_probe_r8f6_memo_lookup_ab`
+   (src/parser/tests.rs:2649, `#[ignore]` since R9-F2): the bypass makes
+   both lookup sites return `None` and forces the live-dispatch fallback.
+   The batch delta is therefore **cached-vs-uncached PARSING — the memo's
+   benefit — under lib-test instrumentation**, NOT the isolated cost of
+   the binary search and not a comparison of index choices. The first
+   version's "the switch's engagement is proven by a zero counter delta"
+   control stays (now thread-locally exact), and the first version's
+   claim that its batches were "alternated" is corrected: the loop runs
+   all `on` batches and then all `off` batches
+   (`for (label, bypass) in [("on", false), ("off", true)]`), two
+   sequential blocks with no defence against drift.
+3. `bench_ix` (a2-harness `h-meas-post/src/bench_ix.rs`, NEW): the
+   isolated instrument. A harness binary links `ktav` as a plain
+   dependency, so the library is compiled WITHOUT `cfg(test)` — no ix
+   counters, no counting allocator. It measures (a) production parse
+   wall clock per shape (`SCEN`), (b) the production lookup sequence in
+   isolation — a byte-faithful copy of `known_closer`'s non-test body
+   (`MIKC` point micros; `MSWEEP` full sweeps at C=2/1024/4096), (c) the
+   index-CHOICE comparison the first version lacked: binary search vs a
+   monotonic cursor vs a passed boundary — all three KEEPING the computed
+   boundaries, never re-parsing, and (d) boundary-sort cost (`MISORT`).
+   There is no memo on/off switch here: the memo has no production
+   switch, and forking the parser for measurement would reopen the
+   R8-F2 machine-divergence defect family.
 
 Fixture family (`benches/fixtures_ix.rs`, mounted by the probe tests in
 `src/parser/tests.rs`): single-line inline bodies chosen to MAXIMISE `C` at
-depth 1–2 — `k: [{}×n]` (3-byte items: the most lookups per body byte the
-grammar can spell, n up to 4096 on one 12.3 KB line), `k: [{a:1}×n]`,
-`k: {a_i: {}×n}`, `k: [[{}]×n]` (C = 2n, depth 2), plus `many_inline_trees`
-(2000 lines × C=2 trees), `deep_chain` (32/96 — the opposite shape), the
-harness `inline_doc` mix and the `synth` 50 KB mainstream mix. Shape
-validation test pins item counts; the 4096-item line is asserted >12,000
-bytes (no line cap shrinking C).
+depth 1–2 — `k: [{}×n]` (3-byte items, n up to 4096 on one 12.3 KB line),
+`k: [{a:1}×n]`, `k: {a_i: {}×n}`, `k: [[{}]×n]` (C = 2n, depth 2), plus
+`many_inline_trees` (2000 lines × C=2 trees), `deep_chain` (32/96 — the
+opposite shape), the harness `inline_doc` mix and the `synth` 50 KB
+mainstream mix. Shape validation test pins item counts; the 4096-item line
+is asserted >12,000 bytes (no line cap shrinking C).
 
 ## Deterministic counters (final tree; P = `parse`, E = `parse_events` — identical counts, same machines)
+
+Re-verified identical after the R9-F2 thread-local refactor (base
+`fea9513` vs `cef7124`): 22/22 `IX` lines equal.
 
 | shape | doc B | walked B | C (max/tree) | kc hits/calls | kc steps (max) | oca steps (max) | sorts | sort elems | sort cmps |
 |---|---|---|---|---|---|---|---|---|---|
@@ -62,52 +82,89 @@ bytes (no line cap shrinking C).
 | inline_doc_50k | 50072 | 45842 | 1240 (2) | 1240/1240 | 2480 (2) | 2480 (2) | 620 | 1240 | 620 |
 | synth_50k | 51211 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 
-Observations the review's `O(C log C)` model does not predict:
+Two corrections to the first version's reading of this table:
 
-- Lookups are exactly 2·C per shape at a 100% hit rate (one
-  `opener_close_at` per gated opener in split, one `known_closer` per
-  compound-valued segment dispatch), ~log2(C) steps each. No miss ever
-  pays on these shapes; a miss would fall to the live dispatch, which the
-  A/B shows is far more expensive than any search.
-- The sort is O(C) comparisons, not O(C log C), on every all-sibling
-  shape: recorded pop order for siblings is already opener-ascending, and
-  pattern-defeating quicksort detects the run — exactly C−1 comparisons
-  (63 / 1023 / 4095 / 94 / 30 above). Only the depth-2 interleaved pop
-  order defeats the run detection (`two_level_512`: 9578 comparisons for
-  1024 elements, still under the 10240 a random order costs).
-- Index operations per walked byte: worst case here is
-  `wide_arr_tiny_4096` at ~9.0 (110,591 ops / 12,289 B). Mainstream:
-  `inline_doc_50k` ~0.12, `many_trees_2000` ~0.69, `synth_50k` exactly 0 —
-  the synth mix has no single-line inline compounds, so it never touches
-  the index at all.
+- "The sort is O(C), not O(C log C)" — a run of already-ascending keys is
+  INPUT that pdqsort's run detection exploits; it is fully COMPATIBLE with
+  the `O(C log C)` upper bound, not a refutation of it. Only the
+  depth-2 interleaved pop order pays the log factor here
+  (`two_level_512`: 9578 comparisons for 1024 elements).
+- Lookups stay LOGARITHMIC regardless of how cheap one comparison is on
+  this machine: ~log2(C) comparisons per lookup (13 at C = 4096). A cheap
+  comparison lowers the constant, never the asymptotics.
 
-## Timings (secondary; this machine is noisy — treat <±20% as unmeasurable)
+## Isolated, uninstrumented measurement (bench_ix, R9-F3 instrument)
 
-SCEN wall-clock per iteration (min of 9 batches, normalized by each run's
-own `iters=` line; rounds r2/r3 on the final code, r1 on a binary whose
-production code was identical): P-path mins ranged, e.g.
-`wide_arr_tiny_4096:P` 558.8 µs (12293 B), `wide_arr_tiny_1024:P` 122.1 µs,
-`deep_chain_96:P` 81.7 µs, `synth_50k:P` 850.7 µs, `inline_doc_50k:P`
-3.45 ms, `many_trees_2000:P` 5.20 ms. Direction of same-code batch
-comparisons flipped between batches on unchanged code, consistent with the
-series' noise history; none of the conclusions below rests on
-cross-binary wall-clock.
+Protocol: 6 rounds pinned to one logical processor (Job Object, `capt 1`)
+plus 1 unpinned warm-up round; each round runs 9 shapes × P/E through the
+bench_ab protocol (2 warmups, calibrate to ≥40 ms, 9 batches, ns/iter
+normalized by each run's own `iters=` line) and the micros; every value
+below reports the per-round minimum AND the median across the six pinned
+rounds' minima.
 
-Micros (release, min of 9 batches, two rounds): `known_closer` on the
-C=1024 table: hit 23.8–24.6 ns/op, miss 18.1–20.0 ns/op (11 search steps +
-call overhead). `sort_unstable_by_key` of C=1024 (incl. a 16 KB clone of
-the table in the loop): ascending 469–516 ns, reverse 796–848 ns. The real
-all-sibling pop order is the ascending case.
+Isolated lookup cost (ns per lookup, all hits — the real access pattern;
+the production `known_closer` body including the span check):
 
-### Direct A/B: memo lookups on vs off (same binary, controls pass)
+| strategy | C=2 | C=1024 | C=4096 |
+|---|---|---|---|
+| bin (production binary search) | 2.56 / 2.75 | 10.77 / 13.55 | 13.83 / 16.63 |
+| cursor (monotonic, boundaries kept) | 2.43 / 2.64 | 1.59 / 1.68 | 1.69 / 1.80 |
+| direct (passed boundary, O(1)) | 1.67 / 1.69 | 0.93 / 0.99 | 0.86 / 0.98 |
 
-Three rounds (r1 unpinned, r2/r3 pinned to one logical processor via a Job
-Object), 9 batches per mode per round, 27 batches pooled per mode; ns/iter
-per batch's own iters; min (mean) reported:
+Point micros (`MIKC`, C=1024 table): hit 12.10 / 12.67 ns, miss
+10.50 / 11.53 ns — consistent with the sweep. Sort (`MISORT`, C=1024,
+incl. the 16 KB clone the loop performs): ascending 600 / 736 ns, reverse
+801 / 1013 ns.
+
+Attribution (share of the whole-parse wall clock the binary searches
+could account for = (kc+oca calls) × bin rate ÷ SCEN; all numbers
+min / median):
+
+| shape | lookups | C | SCEN P µs (min/med) | attributed µs | share |
+|---|---|---|---|---|---|
+| wide_arr_tiny_4096 | 8192 | 4096 | 327 / 367 | 113 / 136 | **35% / 37%** |
+| wide_arr_tiny_1024 | 2048 | 1024 | 68 / 83 | 22 / 28 | **33% / 34%** |
+| two_level_512 | 2048 | 1024 | 168 / 182 | 22 / 28 | 13% / 15% |
+| wide_obj_tiny_1024 | 2048 | 1024 | 207 / 246 | 22 / 28 | 11% / 11% |
+| deep_chain_96 | 190 | 95 | 63 / 64 | ≤2.6 | ≤4% |
+| wide_arr_small_1024 | 2048 | 1024 | 462 / 607 | 22 / 28 | 5% / 5% |
+| many_trees_2000 | 4000 | 2 | 2851 / 3825 | 10 / 11 | 0.4% / 0.3% |
+| inline_doc_50k | 1240 | 2 | 1656 / 1981 | 3.2 / 3.4 | 0.2% / 0.2% |
+| synth_50k | 0 | — | 582 / 680 | 0 | 0% |
+
+E-leg shares are the same attributed µs over larger denominators (e.g.
+`wide_arr_tiny_4096:E` 510 / 596 µs → 22–23%).
+
+Noise assessment (honest): even the per-round MIN of 9 batches moves
+1.34×–1.96× across the six pinned rounds on whole-parse SCEN
+(`many_trees_2000:P` round-minima 2.85–5.59 ms), so absolute SCEN numbers
+are quoted as a min–median band and any wall-clock difference under ±20%
+is unmeasurable on this machine. The per-lookup micros are much steadier
+(spread 1.14×–1.29× for bin C=2/4096; one drift round reached 1.72× at
+C=1024). The attribution is a MODEL — isolated sweeps of the exact lookup
+sequence, table sizes matched to the counters, applied against the same
+binary's whole-parse totals — not a marginal A/B of production code; the
+memo's recording cost (pairs pushed during the live scan) is not
+separately instrumented, and in-parse cache/branch state may differ from
+the sweep. The band above is the honest resolution this machine supports,
+and it is enough to settle the question the first version got wrong.
+
+What a different index could win (both sides keeping the boundaries): a
+monotonic cursor costs ~1.6–1.8 ns/lookup vs 10.8–16.6 ns for the binary
+search at C≥1024, so `wide_arr_tiny_4096` could shed roughly a third of
+its parse and `wide_arr_tiny_1024` ~30%. At C=2 — every mainstream shape
+— cursor 2.64 vs bin 2.75 ns/lookup is parity within noise: there is
+nothing to win where the document does not concentrate C on one line.
+
+### The bypass A/B: memo benefit (instrumented; kept as an `#[ignore]`d side-instrument)
+
+Three rounds on the pre-R9 code (r1 unpinned, r2/r3 pinned), 27 batches
+pooled per mode; ns/iter per batch's own iters; min (mean) reported —
+VALID only as cached-vs-uncached parsing under instrumentation:
 
 | shape | memo=on µs | memo=off µs | off/on (min) |
 |---|---|---|---|
-| wide_arr_tiny_4096 | 464.2 (698.1) | 5548.2 (6761.2) | **12.0×** |
+| wide_arr_tiny_4096 | 464.2 (698.1) | 5548.2 (6761.2) | 12.0× |
 | wide_arr_tiny_1024 | 99.7 (164.0) | 437.9 (548.2) | 4.4× |
 | wide_arr_small_1024 | 500.1 (700.0) | 1075.5 (1441.2) | 2.1× |
 | wide_obj_tiny_1024 | 261.7 (352.0) | 1235.4 (1484.0) | 4.7× |
@@ -115,50 +172,59 @@ per batch's own iters; min (mean) reported:
 | deep_chain_96 | 59.9 (73.9) | 343.8 (423.9) | 5.7× |
 | many_trees_2000 | 3263.4 (4095.3) | 3091.9 (4191.0) | 0.95× (noise) |
 
-Removing the index lookups makes every compound-dense shape 2–12× SLOWER
-— min and mean agree, and the gaps are 5–50× the noise band — because the
-fallback re-runs full live scans (`find_matching_close` /
-`scan_inline_closer` / per-dispatch machine setup) over each span, which
-dwarfs log2(C) in-table steps. `many_trees_2000` (C=2 per tree, where the
-live dispatch is also trivial) is parity within noise: 0.95× on mins, ~1.0×
-on means.
+Reading: the memo pays for its lookups everywhere it fires at scale —
+the fallback re-runs full live scans, which dwarf even the 33–37% the
+searches cost on the pathological shapes. These numbers are NOT
+production timings (instrumented binary) and are not comparable across
+binaries.
 
-## Verdict
+## Revised verdict
 
-- The index is NOT a material cost. It is the cheap half of the trade on
-  every shape measured, including the review's hypothesized worst case
-  (many short shallow compounds at depth 1–2): there the memo path is
-  ~10× faster than the scans it replaced.
-- Model attribution bounds what any replacement could still win: on
-  `wide_arr_tiny_4096`, 8192 lookups × ~2.2 ns/step ≈ 35–40% of the
-  memo-on parse is the binary searches themselves (consistent with the
-  micro); a boundary-ID pass-down or a monotonic cursor could recover a
-  fraction of that on this pathological 12 KB single-line shape, and
-  <1% anywhere realistic. Not worth touching machines R8-F2 just finished
-  reconciling.
-- Deliberate non-change: production `src/` code is byte-identical to
-  `cc58308` outside `#[cfg(test)]` blocks; the corpus diff is therefore
-  not applicable, and the A/B carried its own positive controls
-  (per-shape Debug-equality of parsed Values; zero-lookup-delta proof of
-  switch engagement) on top of the standing memo purity test.
+- The index is NOT free, and the first version's "no material cost" was
+  wrong for the shapes the review worried about: on single-line
+  compound-dense documents the binary searches are a measured 33–37% of
+  the parse. On mainstream mixes the index costs ≤0.4% of the parse and
+  is never consulted in vain (100% hit rate, exactly 2·C lookups).
+- The sorted-`Vec` index is KEPT. The alternatives' win is concentrated
+  on pathological single-line shapes with C in the thousands; taking it
+  would add a second lookup machine next to the two scanners rounds 3
+  through 9 just finished reconciling (R8-F2 byte-identity discipline),
+  for a benefit mainstream documents cannot measure.
+- Production `src/` code remains byte-identical to `cc58308` outside
+  `#[cfg(test)]` blocks (the corpus diff is therefore not applicable;
+  the A/B carried its own positive controls, and the counters test pins
+  the deterministic behaviour on every ordinary suite run).
 
 ## Reproduce
 
-`cargo test --release --lib parser::tests::ix_probe -- --nocapture`
-(counters `IX` lines, wall-clock `SCEN`, micros `MIKC`/`MISORT`, A/B `AB`
-lines). Raw runs: `D:/system_artefact/Temp/ktav-a2-harness/ix_counters_*.txt`,
-`ix_wallclock_r*.txt`, `ix_ab_r*.txt`, `ix_fulltest*.txt`.
+- Counters (ordinary test, every suite run):
+  `cargo test --release --lib ix_probe_r8f6_index_counters -- --nocapture`
+- Wall-clock instrument (ignored, single-threaded):
+  `cargo test --release --lib ix_probe_r8f6_wall_clock -- --ignored --test-threads=1 --nocapture`
+- Bypass A/B (ignored, single-threaded):
+  `cargo test --release --lib ix_probe_r8f6_memo_lookup_ab -- --ignored --test-threads=1 --nocapture`
+- Uninstrumented isolated instrument (a2-harness `h-meas-post`):
+  `cargo build --release --bin bench_ix` then
+  `capt 1 target/release/bench_ix.exe` (pin optional). Summary lines
+  carry min/median; raw batch lines must be normalized by their own
+  `iters=` line. Raw rounds:
+  `D:/system_artefact/Temp/ktav-a2-harness/ix_r9_b1..b7.txt`;
+  counters base/post positive control:
+  `ix_r9_counters_base.ix` vs `ix_r9_counters_post.ix` (identical);
+  corpus diff: `ix_r9_corpus.diff` (trailer-only).
+- First-version raw runs (pre-correction):
+  `ix_counters_*.txt`, `ix_wallclock_r*.txt`, `ix_ab_r*.txt`.
 
-Commits on `r8-index`: b9d5e6d (ix_probe counters), 77e7d9c (wip fixtures +
-probe tests), 4961040 (micro body-slice fix), 1225795 (A/B + controls),
-fb065a0 (lint fixes, fixtures_ix split), plus this report.
+Commits: b9d5e6d, 77e7d9c, 4961040, 1225795, fb065a0 (first version,
+`r8-index`); cef7124 (R9-F2 probe isolation + this correction).
 
-## Verification (all on the final tree)
+## Verification (revised tree, all re-run)
 
 - `cargo build` — pass
-- `cargo test` — 52 suites, 1069 passed, 0 failed, 1 ignored (baseline
-  1065 + 4 new probe tests: shape validation, counters, wall-clock, A/B)
+- `cargo test` with NO skip flags — 52 suites, 1071 passed, 0 failed,
+  3 ignored (the two timing probes now `#[ignore]`d and validated by
+  their own invocation: wall-clock 15.0 s ok, A/B 9.5 s ok with both
+  positive controls passing on the thread-local state)
 - `cargo clippy --all-targets -- -D warnings` — pass
 - `cargo fmt --check` — clean
-- `Cargo.toml` — unchanged vs `cc58308` (version 0.6.4,
-  spec-version 0.6.4)
+- `Cargo.toml` — unchanged (version 0.6.4, spec-version 0.6.4)

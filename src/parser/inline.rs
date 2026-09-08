@@ -1065,7 +1065,7 @@ impl<'a> InlineBounds<'a> {
     pub(crate) fn known_closer(&self, s: &str) -> Option<usize> {
         let off = s.as_ptr() as usize - self.origin;
         #[cfg(test)]
-        if ix_probe::BYPASS.load(std::sync::atomic::Ordering::Relaxed) {
+        if ix_probe::bypass_engaged() {
             return None;
         }
         #[cfg(test)]
@@ -1079,12 +1079,7 @@ impl<'a> InlineBounds<'a> {
                 steps += 1;
                 p.0.cmp(&off)
             });
-            ix_probe::record_lookup(
-                &ix_probe::KC_CALLS,
-                &ix_probe::KC_STEPS,
-                &ix_probe::KC_STEPS_MAX,
-                steps,
-            );
+            ix_probe::record_kc_lookup(steps);
             idx
         };
         #[cfg(not(test))]
@@ -1094,7 +1089,7 @@ impl<'a> InlineBounds<'a> {
         let hit = (rel < s.len()).then_some(rel);
         #[cfg(test)]
         if hit.is_some() {
-            ix_probe::record_hit(&ix_probe::KC_HITS);
+            ix_probe::record_kc_hit();
         }
         hit
     }
@@ -1103,7 +1098,7 @@ impl<'a> InlineBounds<'a> {
     /// absolute offset `abs`, for split's opener jump.
     fn opener_close_at(&self, abs: usize) -> Option<usize> {
         #[cfg(test)]
-        if ix_probe::BYPASS.load(std::sync::atomic::Ordering::Relaxed) {
+        if ix_probe::bypass_engaged() {
             return None;
         }
         #[cfg(test)]
@@ -1113,19 +1108,14 @@ impl<'a> InlineBounds<'a> {
                 steps += 1;
                 p.0.cmp(&abs)
             });
-            ix_probe::record_lookup(
-                &ix_probe::OCA_CALLS,
-                &ix_probe::OCA_STEPS,
-                &ix_probe::OCA_STEPS_MAX,
-                steps,
-            );
+            ix_probe::record_oca_lookup(steps);
             idx
         };
         #[cfg(not(test))]
         let idx = self.pairs.binary_search_by_key(&abs, |p| p.0);
         let idx = idx.ok()?;
         #[cfg(test)]
-        ix_probe::record_hit(&ix_probe::OCA_HITS);
+        ix_probe::record_oca_hit();
         Some(self.pairs[idx].1)
     }
 }
@@ -1138,63 +1128,118 @@ impl<'a> InlineBounds<'a> {
 // (count, total body bytes, total and max recorded pairs) — so the
 // index's cost can be measured against the O(N) walk instead of
 // guessed at. See the ix_probe_* tests in src/parser/tests.rs.
+//
+// R9-F2: the state is THREAD-LOCAL. The former process-global atomics
+// let any concurrent parse bump the counters and let a probe's BYPASS
+// flip flip the lookup path of every other test in the process, so no
+// probe's snapshot window was isolated from the rest of the suite (a
+// mutex held only by probe tests does not close that interleaving).
+// Each thread now sees only its own window, and `set_bypass` returns
+// an RAII guard so an unwinding test cannot leak the bypassed mode to
+// the next test on the same thread (the timing probes are `#[ignore]`d
+// and run with `--test-threads=1`).
 #[cfg(test)]
 pub(crate) mod ix_probe {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::cell::RefCell;
 
-    pub(crate) static KC_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static KC_HITS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static KC_STEPS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static KC_STEPS_MAX: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static OCA_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static OCA_HITS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static OCA_STEPS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static OCA_STEPS_MAX: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static SORT_CALLS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static SORT_ELEMS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static SORT_CMPS: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static BODIES: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static BODY_BYTES: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static PAIRS_TOTAL: AtomicU64 = AtomicU64::new(0);
-    pub(crate) static PAIRS_MAX: AtomicU64 = AtomicU64::new(0);
+    #[derive(Clone, Copy, Default)]
+    struct State {
+        bypass: bool,
+        kc_calls: u64,
+        kc_hits: u64,
+        kc_steps: u64,
+        kc_steps_max: u64,
+        oca_calls: u64,
+        oca_hits: u64,
+        oca_steps: u64,
+        oca_steps_max: u64,
+        sort_calls: u64,
+        sort_elems: u64,
+        sort_cmps: u64,
+        bodies: u64,
+        body_bytes: u64,
+        pairs_total: u64,
+        pairs_max: u64,
+    }
 
-    /// R8-F6 A/B switch: when true, both lookup sites return `None`
+    thread_local! {
+        static STATE: RefCell<State> = RefCell::new(State::default());
+    }
+
+    fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
+        STATE.with(|s| f(&mut s.borrow_mut()))
+    }
+
+    /// RAII: restores `bypass = false` when dropped (even on unwind),
+    /// so the bypassed mode cannot leak into another test sharing this
+    /// thread under `--test-threads=1`.
+    pub(crate) struct BypassGuard;
+
+    impl Drop for BypassGuard {
+        fn drop(&mut self) {
+            with_state(|s| s.bypass = false);
+        }
+    }
+
+    /// R8-F6 A/B switch: when set, both lookup sites return `None`
     /// without searching, forcing callers down the live-dispatch
     /// fallback (the memo is a proven pure memo — parser::tests
     /// `memo_bounds_are_a_pure_memo_of_the_live_dispatches` — so the
     /// parse result is byte-identical; only the index is skipped).
-    /// Recording and sorting still happen, so this isolates exactly the
-    /// lookup cost.
-    pub(crate) static BYPASS: AtomicBool = AtomicBool::new(false);
+    /// Recording and sorting still happen. NOTE (R9-F3): this measures
+    /// the memo's benefit (cached vs live re-scan), not the isolated
+    /// cost of the binary search. Returns an RAII guard restoring
+    /// `bypass = false` on drop.
+    pub(crate) fn set_bypass(on: bool) -> BypassGuard {
+        with_state(|s| s.bypass = on);
+        BypassGuard
+    }
+
+    pub(crate) fn bypass_engaged() -> bool {
+        with_state(|s| s.bypass)
+    }
 
     /// One lookup's binary-search step count (loop iterations = element
     /// comparisons) plus whether it was a call/hit at all.
-    pub(crate) fn record_lookup(
-        site_calls: &AtomicU64,
-        site_steps: &AtomicU64,
-        site_steps_max: &AtomicU64,
-        steps: usize,
-    ) {
-        site_calls.fetch_add(1, Ordering::Relaxed);
-        site_steps.fetch_add(steps as u64, Ordering::Relaxed);
-        site_steps_max.fetch_max(steps as u64, Ordering::Relaxed);
+    pub(crate) fn record_kc_lookup(steps: usize) {
+        with_state(|s| {
+            s.kc_calls += 1;
+            s.kc_steps += steps as u64;
+            s.kc_steps_max = s.kc_steps_max.max(steps as u64);
+        });
     }
 
-    pub(crate) fn record_hit(hits: &AtomicU64) {
-        hits.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn record_kc_hit() {
+        with_state(|s| s.kc_hits += 1);
+    }
+
+    pub(crate) fn record_oca_lookup(steps: usize) {
+        with_state(|s| {
+            s.oca_calls += 1;
+            s.oca_steps += steps as u64;
+            s.oca_steps_max = s.oca_steps_max.max(steps as u64);
+        });
+    }
+
+    pub(crate) fn record_oca_hit() {
+        with_state(|s| s.oca_hits += 1);
     }
 
     pub(crate) fn record_sort(elems: usize, cmps: usize) {
-        SORT_CALLS.fetch_add(1, Ordering::Relaxed);
-        SORT_ELEMS.fetch_add(elems as u64, Ordering::Relaxed);
-        SORT_CMPS.fetch_add(cmps as u64, Ordering::Relaxed);
+        with_state(|s| {
+            s.sort_calls += 1;
+            s.sort_elems += elems as u64;
+            s.sort_cmps += cmps as u64;
+        });
     }
 
     pub(crate) fn record_body(input_len: usize, pairs: usize) {
-        BODIES.fetch_add(1, Ordering::Relaxed);
-        BODY_BYTES.fetch_add(input_len as u64, Ordering::Relaxed);
-        PAIRS_TOTAL.fetch_add(pairs as u64, Ordering::Relaxed);
-        PAIRS_MAX.fetch_max(pairs as u64, Ordering::Relaxed);
+        with_state(|s| {
+            s.bodies += 1;
+            s.body_bytes += input_len as u64;
+            s.pairs_total += pairs as u64;
+            s.pairs_max = s.pairs_max.max(pairs as u64);
+        });
     }
 
     #[derive(Default, Clone, Copy)]
@@ -1217,46 +1262,30 @@ pub(crate) mod ix_probe {
     }
 
     pub(crate) fn snapshot() -> Snapshot {
-        Snapshot {
-            kc_calls: KC_CALLS.load(Ordering::Relaxed),
-            kc_hits: KC_HITS.load(Ordering::Relaxed),
-            kc_steps: KC_STEPS.load(Ordering::Relaxed),
-            kc_steps_max: KC_STEPS_MAX.load(Ordering::Relaxed),
-            oca_calls: OCA_CALLS.load(Ordering::Relaxed),
-            oca_hits: OCA_HITS.load(Ordering::Relaxed),
-            oca_steps: OCA_STEPS.load(Ordering::Relaxed),
-            oca_steps_max: OCA_STEPS_MAX.load(Ordering::Relaxed),
-            sort_calls: SORT_CALLS.load(Ordering::Relaxed),
-            sort_elems: SORT_ELEMS.load(Ordering::Relaxed),
-            sort_cmps: SORT_CMPS.load(Ordering::Relaxed),
-            bodies: BODIES.load(Ordering::Relaxed),
-            body_bytes: BODY_BYTES.load(Ordering::Relaxed),
-            pairs_total: PAIRS_TOTAL.load(Ordering::Relaxed),
-            pairs_max: PAIRS_MAX.load(Ordering::Relaxed),
-        }
+        STATE.with(|s| {
+            let s = s.borrow();
+            Snapshot {
+                kc_calls: s.kc_calls,
+                kc_hits: s.kc_hits,
+                kc_steps: s.kc_steps,
+                kc_steps_max: s.kc_steps_max,
+                oca_calls: s.oca_calls,
+                oca_hits: s.oca_hits,
+                oca_steps: s.oca_steps,
+                oca_steps_max: s.oca_steps_max,
+                sort_calls: s.sort_calls,
+                sort_elems: s.sort_elems,
+                sort_cmps: s.sort_cmps,
+                bodies: s.bodies,
+                body_bytes: s.body_bytes,
+                pairs_total: s.pairs_total,
+                pairs_max: s.pairs_max,
+            }
+        })
     }
 
     pub(crate) fn reset() {
-        BYPASS.store(false, Ordering::Relaxed);
-        for s in [
-            &KC_CALLS,
-            &KC_HITS,
-            &KC_STEPS,
-            &KC_STEPS_MAX,
-            &OCA_CALLS,
-            &OCA_HITS,
-            &OCA_STEPS,
-            &OCA_STEPS_MAX,
-            &SORT_CALLS,
-            &SORT_ELEMS,
-            &SORT_CMPS,
-            &BODIES,
-            &BODY_BYTES,
-            &PAIRS_TOTAL,
-            &PAIRS_MAX,
-        ] {
-            s.store(0, Ordering::Relaxed);
-        }
+        with_state(|s| *s = State::default());
     }
 }
 
