@@ -1,5 +1,5 @@
 //! Tokenize Ktav text directly into a flat [`EventStream`] — no
-//! intermediate tree. Mirrors the validation logic of [`super::parser`]
+//! intermediate tree. Mirrors the validation logic of [`crate::parser`]
 //! but emits a linear sequence of `Event`s into a single bump-arena
 //! `Vec` instead of a recursive `ThinValue`.
 //!

@@ -406,7 +406,7 @@ fn emit_multiline_stripped(s: &str, indent: usize, is_pair: bool, out: &mut Stri
 /// - Scientific: lowercase `e`, no `+` in exponent, strip trailing `.0`
 ///   in mantissa (so `1.0e9` → `1e9`).
 ///
-/// Returns [`Cow::Borrowed`] whenever the stored form is already canonical
+/// Returns [`std::borrow::Cow::Borrowed`] whenever the stored form is already canonical
 /// text (zero / decimal region / passthrough); only the scientific branch
 /// allocates. Thresholds, sign of zero, the shortest-roundtrip guarantee,
 /// and the LossyScalar payload are unchanged.

@@ -1,11 +1,11 @@
-//! `serde::Deserializer` over an [`EventSource`].
+//! `serde::Deserializer` over an `EventSource`.
 //!
 //! Generic over the source so the same code path serves both:
 //!
-//! - [`super::streaming::StreamingParser`] — the typed-deserialize hot
-//!   path used by `crate::from_str`. Events generated on demand,
-//!   no whole-document buffer.
-//! - (Reserved) — any other source that implements [`EventSource`]
+//! - `StreamingParser` — the typed-deserialize hot path used by
+//!   `crate::from_str`. Events generated on demand, no whole-document
+//!   buffer.
+//! - (Reserved) — any other source that implements `EventSource`
 //!   (e.g. the public `parse_events` callback path could in principle
 //!   be wired through a slice-cursor source if a future need arose).
 //!

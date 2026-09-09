@@ -100,7 +100,7 @@ pub(crate) fn parse_events_merged<'a>(text: &'a str, bump: &'a Bump) -> Result<E
 /// `Key` + `BeginObject` … `EndObject` block at its own document
 /// position — the stream never re-opens an already-closed compound.
 /// Consumers that build values from the stream MUST merge such blocks
-/// under the same key path (the crate's own [`from_str`] does).
+/// under the same key path (the crate's own [`crate::from_str`] does).
 ///
 /// # Numeric scalars (spec 0.5.0)
 ///

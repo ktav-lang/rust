@@ -680,8 +680,9 @@ fn is_quote_byte(b: u8) -> bool {
 /// R10-F1: one call hands a slice of up to `bytes.len()` bytes to each
 /// of the three `contains` passes, so the true byte-view count of one
 /// call is between 1x and 3x the length recorded by
-/// [`ix_probe::record_quote_prescan`]; comparisons across parser
-/// versions hold because the factor is the same.
+/// `ix_probe::record_quote_prescan` (test-only, not visible outside
+/// `#[cfg(test)]` builds); comparisons across parser versions hold
+/// because the factor is the same.
 pub(crate) fn has_quote_bytes(bytes: &[u8]) -> bool {
     #[cfg(test)]
     ix_probe::record_quote_prescan(bytes.len());

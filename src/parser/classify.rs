@@ -634,7 +634,7 @@ pub fn matches_float_grammar(s: &str) -> bool {
 /// marker).
 ///
 /// Spec 0.6.0 § 5.3 — the separator is the first UNescaped `:` (§ 4's
-/// separator-scanning rule). [`find_unescaped_colon`] returns `None` for
+/// separator-scanning rule). [`crate::parser::inline::find_unescaped_colon`] returns `None` for
 /// an unterminated quoted segment, so a quote-swallowed first line falls
 /// through to the Array root per § 5.0.1 rules 6/7 — intended
 /// (spec 0.7 § 5.3.3).

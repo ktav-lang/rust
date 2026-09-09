@@ -1,6 +1,6 @@
 //! Flat event representation of a parsed Ktav document.
 //!
-//! Replaces the recursive [`super::value::ThinValue`] tree on the typed
+//! Replaces the recursive `ThinValue` tree (since removed) on the typed
 //! deserialization hot path. Each compound (`{...}`, `[...]`) is bracketed
 //! by a `BeginObject`/`EndObject` or `BeginArray`/`EndArray` pair instead
 //! of being its own boxed `BumpVec`.
