@@ -4,9 +4,12 @@
 mod describe;
 mod enum_access;
 mod from_value;
+mod key_deserializer;
 mod map_access;
 mod seq_access;
 mod value_deserializer;
 mod variant_access;
+
+pub(crate) use key_deserializer::KeyDeserializer;
 
 pub use from_value::from_value;

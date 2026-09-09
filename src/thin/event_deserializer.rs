@@ -14,6 +14,7 @@ use serde::de::{
     self, DeserializeSeed, Deserializer, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor,
 };
 
+use crate::de::KeyDeserializer;
 use crate::error::{Error, Result};
 
 use super::event::Event;
@@ -455,9 +456,7 @@ impl<'de, 'e, 'c> MapAccess<'de> for EventMap<'de, 'e, 'c> {
     fn next_key_seed<K: DeserializeSeed<'de>>(&mut self, seed: K) -> Result<Option<K::Value>> {
         match self.cursor.next() {
             Some(Event::EndObject) => Ok(None),
-            Some(Event::Key(k)) => seed
-                .deserialize(BorrowedStrDeserializer { value: k })
-                .map(Some),
+            Some(Event::Key(k)) => seed.deserialize(KeyDeserializer::borrowed(k)).map(Some),
             other => Err(<Error as de::Error>::custom(format!(
                 "expected Key or EndObject in map, got {:?}",
                 other
@@ -521,7 +520,7 @@ impl<'de, 'e, 'c> EnumAccess<'de> for EventEnum<'de, 'e, 'c> {
                     )))
                 }
             };
-            let v = seed.deserialize(BorrowedStrDeserializer { value: name })?;
+            let v = seed.deserialize(KeyDeserializer::borrowed(name))?;
             Ok((
                 v,
                 EventVariant {
@@ -540,7 +539,7 @@ impl<'de, 'e, 'c> EnumAccess<'de> for EventEnum<'de, 'e, 'c> {
                     )))
                 }
             };
-            let v = seed.deserialize(BorrowedStrDeserializer { value: name })?;
+            let v = seed.deserialize(KeyDeserializer::borrowed(name))?;
             Ok((
                 v,
                 EventVariant {
@@ -628,90 +627,5 @@ impl<'de, 'e, 'c> VariantAccess<'de> for EventVariant<'de, 'e, 'c> {
                 other
             ))),
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// BorrowedStrDeserializer — exact same shape as the tree-builder's, kept
-// local so the modules don't cross-depend.
-// ---------------------------------------------------------------------------
-
-struct BorrowedStrDeserializer<'de> {
-    value: &'de str,
-}
-
-impl<'de> BorrowedStrDeserializer<'de> {
-    fn parse<T: FromStr>(&self, ty: &str) -> Result<T> {
-        self.value.parse::<T>().map_err(|_| {
-            <Error as de::Error>::custom(format!(
-                "failed to parse map key '{}' as {}",
-                self.value, ty
-            ))
-        })
-    }
-}
-
-impl<'de> Deserializer<'de> for BorrowedStrDeserializer<'de> {
-    type Error = Error;
-
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_borrowed_str(self.value)
-    }
-    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_borrowed_str(self.value)
-    }
-    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_str(self.value)
-    }
-    fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_borrowed_str(self.value)
-    }
-    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_bool(self.parse::<bool>("bool")?)
-    }
-    fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_i8(self.parse::<i8>("i8")?)
-    }
-    fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_i16(self.parse::<i16>("i16")?)
-    }
-    fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_i32(self.parse::<i32>("i32")?)
-    }
-    fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_i64(self.parse::<i64>("i64")?)
-    }
-    fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_u8(self.parse::<u8>("u8")?)
-    }
-    fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_u16(self.parse::<u16>("u16")?)
-    }
-    fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_u32(self.parse::<u32>("u32")?)
-    }
-    fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_u64(self.parse::<u64>("u64")?)
-    }
-    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_f32(self.parse::<f32>("f32")?)
-    }
-    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        visitor.visit_f64(self.parse::<f64>("f64")?)
-    }
-    fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let mut chars = self.value.chars();
-        match (chars.next(), chars.next()) {
-            (Some(c), None) => visitor.visit_char(c),
-            _ => Err(<Error as de::Error>::custom(format!(
-                "expected single character map key, got '{}'",
-                self.value
-            ))),
-        }
-    }
-
-    serde::forward_to_deserialize_any! {
-        i128 u128 bytes byte_buf option unit unit_struct newtype_struct
-        seq tuple tuple_struct map struct enum ignored_any
     }
 }

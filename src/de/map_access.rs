@@ -1,11 +1,12 @@
 //! `MapAccess` over a `Value::Object`.
 
-use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess};
+use serde::de::{self, DeserializeSeed, MapAccess};
 
 use crate::error::{Error, Result};
 use crate::value::{ObjectMap, Scalar, Value};
 
 use super::value_deserializer::ValueDeserializer;
+use super::KeyDeserializer;
 
 pub(super) struct MapDe {
     iter: indexmap::map::IntoIter<Scalar, Value>,
@@ -28,10 +29,8 @@ impl<'de> MapAccess<'de> for MapDe {
         match self.iter.next() {
             Some((key, value)) => {
                 self.next_value = Some(value);
-                seed.deserialize(<String as IntoDeserializer<Error>>::into_deserializer(
-                    key.into_string(),
-                ))
-                .map(Some)
+                seed.deserialize(KeyDeserializer::local(key.as_str()))
+                    .map(Some)
             }
             None => Ok(None),
         }
