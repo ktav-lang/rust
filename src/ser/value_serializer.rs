@@ -6,7 +6,6 @@ use rustc_hash::FxBuildHasher;
 use serde::ser::Serialize;
 
 use crate::error::{Error, Result};
-use crate::parser::classify::try_parse_integer;
 use crate::value::{Scalar, Value};
 
 use super::map_serializer::MapSerializer;
@@ -24,17 +23,28 @@ fn int_scalar<I: itoa::Integer>(v: I) -> Scalar {
 }
 
 /// WHY (R14-F2): the parser's normative Integer domain (§ 5, § 5.2 rule 13)
-/// is i64 — `try_parse_integer` rejects wider decimal literals, and
-/// `parse()` of such a literal stores it as `Value::String` (fixtures
-/// `i64_overflow_to_string` / `big_overflow_to_string`). `to_value` must
-/// produce the same `Value` that `parse()` of the emitted text would, or
-/// `to_value -> writer -> parse` silently changes both the variant and the
-/// canonical bytes. In-domain stays `Value::Integer`; beyond it becomes
-/// `Value::String` — infallible, no new error kind.
-fn int_value_in_i64_domain<I: itoa::Integer>(v: I) -> Value {
+/// is i64 — a decimal literal outside it is stored as `Value::String` by
+/// `parse()` (fixtures `i64_overflow_to_string` / `big_overflow_to_string`).
+/// `to_value` must produce the same `Value` that `parse()` of the emitted
+/// text would, or `to_value -> writer -> parse` silently changes both the
+/// variant and the canonical bytes. In-domain stays `Value::Integer`;
+/// beyond it becomes `Value::String` — infallible, no new error kind.
+///
+/// WHY (R15-F3): the domain question is answered with a native
+/// `i64::try_from` range check, not by formatting and re-parsing the
+/// decimal text through the general-purpose literal grammar (sign/base-
+/// prefix/underscore handling) — `v` is already a native integer, so
+/// there's no syntax left to check, only a range comparison. Formats the
+/// digits exactly once either way.
+fn int_value_in_i64_domain<I>(v: I) -> Value
+where
+    I: itoa::Integer + Copy,
+    i64: TryFrom<I>,
+{
+    let in_domain = i64::try_from(v).is_ok();
     let mut buf = itoa::Buffer::new();
     let text = buf.format(v);
-    if try_parse_integer(text).is_some() {
+    if in_domain {
         Value::Integer(text.into())
     } else {
         Value::String(text.into())
