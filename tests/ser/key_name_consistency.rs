@@ -12,6 +12,10 @@ use serde::ser::{Serialize, SerializeMap, Serializer};
 use ktav::value::Value;
 use ktav::{from_str, parse, render, ser, to_string};
 
+/// 47 bytes: beyond the 24-byte inline capacity of `Scalar` (compact_str
+/// 0.9.0, 64-bit), so the name spills to heap while staying a legal bare key.
+const LONG_KEY: &str = "a_very_long_map_key_name_beyond_inline_capacity";
+
 /// Custom wrapper emitting a one-entry map with a non-String runtime key
 /// (std maps cannot hold f64 keys).
 struct OneEntry<K>(K);
@@ -43,7 +47,7 @@ fn parsed_sole_key(text: &str) -> String {
 
 /// Assert both writer paths accept `key` and produce the same sole key
 /// name, equal to `expected`.
-fn assert_both_paths<K: Serialize>(key: &K, expected: &str) {
+fn assert_both_paths<K: Serialize + ?Sized>(key: &K, expected: &str) {
     let direct =
         to_string(&OneEntry(key)).unwrap_or_else(|e| panic!("to_string({expected}) failed: {e}"));
     let value = ser::to_value(&OneEntry(key))
@@ -162,4 +166,12 @@ fn some_and_char_and_unit_variant_keys_match() {
     assert_both_paths(&Some("k") as &Option<&str>, "k");
     assert_both_paths(&'x', "x");
     assert_both_paths(&Tag::Alpha, "Alpha");
+}
+
+#[test]
+fn short_and_long_key_names_match_across_paths() {
+    // 4 bytes — inside the Scalar's 24-byte inline capacity.
+    assert_both_paths("port", "port");
+    // 47 bytes — beyond inline capacity; the name Scalar spills to heap.
+    assert_both_paths(LONG_KEY, LONG_KEY);
 }

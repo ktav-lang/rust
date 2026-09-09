@@ -467,6 +467,11 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
 // `ser::to_value` (`MapSerializer::serialize_key`), so one key value always
 // produces byte-identical name text regardless of which writer API is used.
 //
+// The name is written directly into the inline-capable `Scalar` (R16-F2):
+// `CompactString` implements `fmt::Write`, so a short name (up to the
+// 24-byte inline capacity on 64-bit) never materializes an intermediate
+// heap `String`.
+//
 // Accepted scalar-like key types: `str`; `bool` (`true`/`false`); all
 // native ints i8–i64 plus i128/u128 (plain decimal); `f32`/`f64`; `char`;
 // unit-enum variant name; newtype-struct and `Some` (delegated). Everything
@@ -479,16 +484,16 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
 // ---------------------------------------------------------------------------
 
 struct KeyOnlySer<'a> {
-    out: &'a mut String,
+    out: &'a mut Scalar,
 }
 
 /// The single map key-name policy (R15-F2): both the direct text writer
 /// and `ser::to_value` route key names through here so one key value
 /// always produces byte-identical name text on both paths.
 pub(super) fn serialize_key_name<T: ?Sized + Serialize>(key: &T) -> Result<Scalar> {
-    let mut buf = String::new();
+    let mut buf = Scalar::default();
     key.serialize(KeyOnlySer { out: &mut buf })?;
-    Ok(buf.into())
+    Ok(buf)
 }
 
 impl<'a> ser::Serializer for KeyOnlySer<'a> {
