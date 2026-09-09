@@ -5,58 +5,87 @@
 //! the target type asks for it through a specific `deserialize_*` method;
 //! `deserialize_any` and the string methods always yield the original text,
 //! so a numeric-looking name into a `String` target stays verbatim.
+//!
+//! Option keys (R16-F1): `deserialize_option` always yields `visit_some` — a
+//! key name always exists (§5), so the literal name `null` stays a string and
+//! never becomes `None`; the writer's rejection of `None`/`Some(None)` keys is
+//! unchanged.
+//!
+//! Owned buffers (R16-F3): in the owned branch the adapter owns the key
+//! Scalar, so the string methods transfer its heap buffer via `visit_string`
+//! while numeric methods keep parsing the borrowed slice; the borrowed event
+//! branch keeps `visit_borrowed_str` and never lends a locally owned buffer as
+//! a long-lived borrow.
 
 use std::str::FromStr;
 
 use serde::de::{self, DeserializeSeed, Deserializer, EnumAccess, VariantAccess, Visitor};
 
 use crate::error::{Error, Result};
+use crate::value::Scalar;
 
-#[derive(Clone, Copy)]
-enum KeyText<'key, 'de> {
+#[derive(Clone)]
+enum KeyText<'de> {
     /// Event-path key, borrowed straight from the document buffer.
     Borrowed(&'de str),
-    /// Owned-tree key; the scalar moves out of the map iteration, so the
-    /// text is only valid for the duration of the key visit.
-    Local(&'key str),
+    /// Owned-tree key; the scalar moves out of the map iteration and is
+    /// owned here so its heap buffer can be handed to a String target
+    /// (R16-F3) instead of being copied.
+    Local(Scalar),
 }
 
-pub(crate) struct KeyDeserializer<'key, 'de> {
-    text: KeyText<'key, 'de>,
+pub(crate) struct KeyDeserializer<'de> {
+    text: KeyText<'de>,
 }
 
-impl<'key, 'de> KeyDeserializer<'key, 'de> {
+impl<'de> KeyDeserializer<'de> {
     pub(crate) fn borrowed(value: &'de str) -> Self {
         Self {
             text: KeyText::Borrowed(value),
         }
     }
 
-    pub(crate) fn local(value: &'key str) -> Self {
+    pub(crate) fn local(value: Scalar) -> Self {
         Self {
             text: KeyText::Local(value),
+        }
+    }
+
+    fn text(&self) -> &str {
+        match &self.text {
+            KeyText::Borrowed(s) => s,
+            KeyText::Local(s) => s.as_str(),
         }
     }
 
     fn visit_text<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         match self.text {
             KeyText::Borrowed(s) => visitor.visit_borrowed_str(s),
-            KeyText::Local(s) => visitor.visit_str(s),
+            KeyText::Local(s) => visitor.visit_str(&s),
+        }
+    }
+
+    fn visit_owned_text<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        match self.text {
+            KeyText::Borrowed(s) => visitor.visit_borrowed_str(s),
+            // R16-F3: hand the buffer to the target String — `into_string`
+            // moves a heap-backed Scalar's allocation without copying; an
+            // inline Scalar allocates here, but a String target needed that
+            // allocation anyway. Numeric targets below still parse the
+            // borrowed slice untouched.
+            KeyText::Local(s) => visitor.visit_string(s.into_string()),
         }
     }
 
     fn parse<T: FromStr>(&self, type_name: &'static str) -> Result<T> {
-        let s = match self.text {
-            KeyText::Borrowed(s) => s,
-            KeyText::Local(s) => s,
-        };
+        let s = self.text();
         s.parse::<T>().map_err(|_| {
             <Error as de::Error>::custom(format!("failed to parse map key '{s}' as {type_name}"))
         })
     }
 }
 
-impl<'de, 'key> Deserializer<'de> for KeyDeserializer<'key, 'de> {
+impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
     type Error = Error;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -64,11 +93,11 @@ impl<'de, 'key> Deserializer<'de> for KeyDeserializer<'key, 'de> {
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.visit_text(visitor)
+        self.visit_owned_text(visitor)
     }
 
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.visit_text(visitor)
+        self.visit_owned_text(visitor)
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
@@ -126,10 +155,7 @@ impl<'de, 'key> Deserializer<'de> for KeyDeserializer<'key, 'de> {
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        let s = match self.text {
-            KeyText::Borrowed(s) => s,
-            KeyText::Local(s) => s,
-        };
+        let s = self.text();
         let mut chars = s.chars();
         match (chars.next(), chars.next()) {
             (Some(c), None) => visitor.visit_char(c),
@@ -160,17 +186,25 @@ impl<'de, 'key> Deserializer<'de> for KeyDeserializer<'key, 'de> {
         self.visit_text(visitor)
     }
 
+    // A map key name always exists (§5: Object names are strings, not scalar
+    // values), so an Option key is always `Some`: the inner type deserializes
+    // from the same name, and a literal name `null` stays the string "null"
+    // rather than becoming `None` (R16-F1).
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        visitor.visit_some(self)
+    }
+
     serde::forward_to_deserialize_any! {
-        bytes byte_buf option unit unit_struct seq tuple tuple_struct map
+        bytes byte_buf unit unit_struct seq tuple tuple_struct map
         struct ignored_any
     }
 }
 
-struct KeyEnum<'key, 'de> {
-    text: KeyText<'key, 'de>,
+struct KeyEnum<'de> {
+    text: KeyText<'de>,
 }
 
-impl<'de, 'key> EnumAccess<'de> for KeyEnum<'key, 'de> {
+impl<'de> EnumAccess<'de> for KeyEnum<'de> {
     type Error = Error;
     type Variant = KeyUnitVariant;
 

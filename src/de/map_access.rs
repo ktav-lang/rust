@@ -29,8 +29,7 @@ impl<'de> MapAccess<'de> for MapDe {
         match self.iter.next() {
             Some((key, value)) => {
                 self.next_value = Some(value);
-                seed.deserialize(KeyDeserializer::local(key.as_str()))
-                    .map(Some)
+                seed.deserialize(KeyDeserializer::local(key)).map(Some)
             }
             None => Ok(None),
         }

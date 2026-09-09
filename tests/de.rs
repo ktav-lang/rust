@@ -15,6 +15,10 @@ mod keywords;
 mod multiline;
 #[path = "de/objects.rs"]
 mod objects;
+#[path = "de/option_map_keys.rs"]
+mod option_map_keys;
+#[path = "de/owned_key_names.rs"]
+mod owned_key_names;
 #[path = "de/raw_marker.rs"]
 mod raw_marker;
 #[path = "de/scalars.rs"]
