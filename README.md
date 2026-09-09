@@ -364,9 +364,11 @@ parse_events(src, |ev| {
 assert_eq!(keys, ["port", "host"]);
 ```
 
-The whole document is wrapped in an outer `BeginObject` / `EndObject`
-pair; nested compounds bracket their contents. `ParseEvent` is
-`#[non_exhaustive]`. A complete runnable example with depth tracking
+The root is `BeginObject`/`EndObject` or `BeginArray`/`EndArray`
+depending on the document's first content line (an Object here, since
+`port: 8080` is a pair); nested compounds bracket their contents the
+same way. `ParseEvent` is `#[non_exhaustive]`. A complete runnable
+example with depth tracking
 and a pretty-printer:
 [`examples/events.rs`](examples/events.rs) — `cargo run --example events`.
 
@@ -393,13 +395,14 @@ port: 20082
 ```json5
 {
   name: "Russia",
-  port: "20082"
+  port: 20082
 }
 ```
 
-All scalars come out as strings at the `Value` level; numeric / boolean
-types are parsed through serde when you deserialize into `u16` / `bool`
-/ `f64` / …
+Scalars are typed at the `Value` level from their lexical form
+(`Integer`/`Float`/`Bool`/`Null`/`String`); force a literal string with
+the `::` raw marker (e.g. `port:: 20082`) when a numeric-looking body
+must stay a string.
 
 ### 2. Dotted keys = nested objects
 
@@ -410,8 +413,8 @@ app.debug: true
 ```
 ```json5
 {
-  server: { host: "127.0.0.1", port: "8080" },
-  app: { debug: "true" }
+  server: { host: "127.0.0.1", port: 8080 },
+  app: { debug: true }
 }
 ```
 
@@ -431,7 +434,7 @@ server: {
 {
   server: {
     host: "127.0.0.1",
-    port: "8080",
+    port: 8080,
     endpoints: { api: "/v1", admin: "/admin" }
   }
 }
@@ -468,8 +471,8 @@ upstreams: [
 ```json5
 {
   upstreams: [
-    { host: "a.example", port: "1080" },
-    { host: "b.example", port: "1080" }
+    { host: "a.example", port: 1080 },
+    { host: "b.example", port: 1080 }
   ]
 }
 ```

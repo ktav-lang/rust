@@ -355,8 +355,10 @@ parse_events(src, |ev| {
 assert_eq!(keys, ["port", "host"]);
 ```
 
-Весь документ обёрнут внешней парой `BeginObject` / `EndObject`;
-вложенные компаунды обрамляют своё содержимое. `ParseEvent` помечен
+Корень — `BeginObject`/`EndObject` или `BeginArray`/`EndArray`, в
+зависимости от первой содержательной строки документа (здесь Object,
+так как `port: 8080` — это пара); вложенные компаунды обрамляют своё
+содержимое так же. `ParseEvent` помечен
 `#[non_exhaustive]`. Полный запускаемый пример с tracking-ом глубины
 и pretty-print-ом:
 [`examples/events.rs`](examples/events.rs) — `cargo run --example events`.
@@ -385,13 +387,14 @@ port: 20082
 ```json5
 {
   name: "Russia",
-  port: "20082"
+  port: 20082
 }
 ```
 
-Все скаляры выходят строками на уровне `Value`; числовые / булевые
-типы разбираются через serde, когда вы десериализуете в `u16` / `bool`
-/ `f64` / …
+Скаляры типизируются на уровне `Value` по своей лексической форме
+(`Integer`/`Float`/`Bool`/`Null`/`String`); принудить числоподобное
+тело остаться строкой можно raw-маркером `::` (например,
+`port:: 20082`).
 
 ### 2. Точечные ключи = вложенные объекты
 
@@ -402,8 +405,8 @@ app.debug: true
 ```
 ```json5
 {
-  server: { host: "127.0.0.1", port: "8080" },
-  app: { debug: "true" }
+  server: { host: "127.0.0.1", port: 8080 },
+  app: { debug: true }
 }
 ```
 
@@ -423,7 +426,7 @@ server: {
 {
   server: {
     host: "127.0.0.1",
-    port: "8080",
+    port: 8080,
     endpoints: { api: "/v1", admin: "/admin" }
   }
 }
@@ -460,8 +463,8 @@ upstreams: [
 ```json5
 {
   upstreams: [
-    { host: "a.example", port: "1080" },
-    { host: "b.example", port: "1080" }
+    { host: "a.example", port: 1080 },
+    { host: "b.example", port: 1080 }
   ]
 }
 ```

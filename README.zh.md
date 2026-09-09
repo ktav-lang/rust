@@ -336,8 +336,10 @@ parse_events(src, |ev| {
 assert_eq!(keys, ["port", "host"]);
 ```
 
-整个文档由外层 `BeginObject` / `EndObject` 对包裹;嵌套复合值括起其
-自身内容。`ParseEvent` 标注 `#[non_exhaustive]`。完整的、带深度跟踪
+根据文档第一条内容行的形状,根节点是 `BeginObject`/`EndObject` 或
+`BeginArray`/`EndArray`(此处因为 `port: 8080` 是一个 pair,所以是
+Object);嵌套复合值以同样方式括起自身内容。`ParseEvent` 标注
+`#[non_exhaustive]`。完整的、带深度跟踪
 和漂亮打印的可运行示例:
 [`examples/events.rs`](examples/events.rs) —— `cargo run --example events`。
 
@@ -363,12 +365,13 @@ port: 20082
 ```json5
 {
   name: "Russia",
-  port: "20082"
+  port: 20082
 }
 ```
 
-在 `Value` 层,所有标量都是字符串;当你反序列化到 `u16` / `bool` /
-`f64` / …… 时,由 serde 负责把它们解析为数值或布尔类型。
+标量在 `Value` 层就已根据其字面形式被分类
+(`Integer`/`Float`/`Bool`/`Null`/`String`);若数字形状的内容需要保持
+字符串,可用 `::` raw 标记强制(例如 `port:: 20082`)。
 
 ### 2. 点分键 = 嵌套对象
 
@@ -379,8 +382,8 @@ app.debug: true
 ```
 ```json5
 {
-  server: { host: "127.0.0.1", port: "8080" },
-  app: { debug: "true" }
+  server: { host: "127.0.0.1", port: 8080 },
+  app: { debug: true }
 }
 ```
 
@@ -400,7 +403,7 @@ server: {
 {
   server: {
     host: "127.0.0.1",
-    port: "8080",
+    port: 8080,
     endpoints: { api: "/v1", admin: "/admin" }
   }
 }
@@ -437,8 +440,8 @@ upstreams: [
 ```json5
 {
   upstreams: [
-    { host: "a.example", port: "1080" },
-    { host: "b.example", port: "1080" }
+    { host: "a.example", port: 1080 },
+    { host: "b.example", port: 1080 }
   ]
 }
 ```

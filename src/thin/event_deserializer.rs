@@ -1,13 +1,9 @@
-//! `serde::Deserializer` over an `EventSource`.
-//!
-//! Generic over the source so the same code path serves both:
-//!
-//! - `StreamingParser` — the typed-deserialize hot path used by
-//!   `crate::from_str`. Events generated on demand, no whole-document
-//!   buffer.
-//! - (Reserved) — any other source that implements `EventSource`
-//!   (e.g. the public `parse_events` callback path could in principle
-//!   be wired through a slice-cursor source if a future need arose).
+//! `serde::Deserializer` over an [`EventCursor`] — a plain `&[Event]`
+//! slice walked sequentially, built once up front by
+//! `parse_events_merged` (see `crate::from_str`) rather than generated
+//! on demand. An on-demand streaming source was tried and dropped: it
+//! regressed 15-60% vs. this whole-buffer cursor, see the comment on
+//! `EventCursor` below for why.
 //!
 //! Number deserialization re-uses [`super::fast_num`] for the byte-loop
 //! atoi; floats stay on `<f64 as FromStr>::from_str`.
