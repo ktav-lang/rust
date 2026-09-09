@@ -16,6 +16,17 @@ fn readme_scalars_example_types_port_as_integer() {
     assert_eq!(obj.get("port").unwrap(), &Value::Integer("20082".into()));
 }
 
+/// The "### Numbers" intro section (R15-F4): `Integer`/`Float` store a
+/// *normalized* payload, not the original spelling — `+1_000` becomes
+/// `Integer("1000")`, `1.0e+2` becomes `Float("100.0")`.
+#[test]
+fn readme_numbers_intro_stores_normalized_payload_not_original_spelling() {
+    let v = parse("i: +1_000\nf: 1.0e+2\n").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("i").unwrap(), &Value::Integer("1000".into()));
+    assert_eq!(obj.get("f").unwrap(), &Value::Float("100.0".into()));
+}
+
 /// The `parse_events` doc section: the root's begin/end event pair
 /// depends on the document's root kind (§ 5.0.1) — an Array-shaped
 /// document emits `BeginArray`/`EndArray`, not an outer Object.

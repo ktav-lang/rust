@@ -88,10 +88,18 @@ pattern:: [a-z]+
 
 Numbers are written bare (no quotes) and typed by lexical form: a bare
 integer body parses to `Value::Integer`, a bare decimal to
-`Value::Float` (each holds its exact text, so precision round-trips).
-serde deserializes them into the target Rust type (`u16`, `i64`,
-`f64`, …) via `FromStr`, and formats them with `Display` on
-serialization; a value forced to a string with `::` is still accepted.
+`Value::Float`. Each stores a *normalized* payload, not the original
+spelling: `Integer` holds the canonical base-10 form (no underscores,
+no leading zeros/`+`), `Float` holds the shortest decimal form that
+round-trips the exact `f64` bits — `+1_000` becomes `Integer("1000")`,
+`1.0e+2` becomes `Float("100.0")`. `Value`-level `Integer` covers the
+i64 range; a native Rust integer type wider than i64 (`u64`, `i128`,
+`u128`) that doesn't fit is stored as `Value::String` instead when
+going through `ser::to_value`, matching what parsing that same decimal
+text back would produce. serde deserializes numbers into the target
+Rust type (`u16`, `i64`, `i128`, `f64`, …) via direct parsing, and
+formats them with the same canonicalization on serialization; a value
+forced to a string with `::` is still accepted.
 
 ```text
 port: 8080
