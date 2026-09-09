@@ -16,6 +16,7 @@ use serde::ser::{
 };
 
 use crate::error::{Error, Result};
+use crate::value::Scalar;
 
 const INDENT: &str = "    ";
 
@@ -352,7 +353,7 @@ struct ObjectCompound<'a> {
     out: &'a mut String,
     field_indent: usize,
     close: Option<usize>, // Some(outer_indent) → write `<outer>}\n` at end.
-    pending_key: Option<String>, // used by SerializeMap
+    pending_key: Option<Scalar>, // used by SerializeMap
     empty_so_far: bool,
     /// True only for the document-root Object: its FIRST serialized
     /// key is the only one that can land at byte offset 0, so it is
@@ -425,9 +426,7 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
     type Error = Error;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<()> {
-        let mut buf = String::new();
-        key.serialize(KeyOnlySer { out: &mut buf })?;
-        self.pending_key = Some(buf);
+        self.pending_key = Some(serialize_key_name(key)?);
         Ok(())
     }
 
@@ -462,12 +461,34 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// KeyOnlySer — serializes a map key into a plain string. Only scalar-like
-// serializations are allowed; compounds error.
+// KeyOnlySer — THE shared map key-name policy (R15-F2). This serializer
+// defines how a map key becomes its name text; it is the single policy
+// shared by the direct text writer (`ObjectCompound::serialize_key`) and
+// `ser::to_value` (`MapSerializer::serialize_key`), so one key value always
+// produces byte-identical name text regardless of which writer API is used.
+//
+// Accepted scalar-like key types: `str`; `bool` (`true`/`false`); all
+// native ints i8–i64 plus i128/u128 (plain decimal); `f32`/`f64`; `char`;
+// unit-enum variant name; newtype-struct and `Some` (delegated). Everything
+// else errors.
+//
+// WHY: float key names intentionally use Rust `Display`, NOT the `Value`
+// -float ryu normalization — a key name is a string and must be
+// byte-identical regardless of which writer API produced it; ryu
+// normalization exists only so float VALUES re-parse identically (R15-F2).
 // ---------------------------------------------------------------------------
 
 struct KeyOnlySer<'a> {
     out: &'a mut String,
+}
+
+/// The single map key-name policy (R15-F2): both the direct text writer
+/// and `ser::to_value` route key names through here so one key value
+/// always produces byte-identical name text on both paths.
+pub(super) fn serialize_key_name<T: ?Sized + Serialize>(key: &T) -> Result<Scalar> {
+    let mut buf = String::new();
+    key.serialize(KeyOnlySer { out: &mut buf })?;
+    Ok(buf.into())
 }
 
 impl<'a> ser::Serializer for KeyOnlySer<'a> {
@@ -503,6 +524,9 @@ impl<'a> ser::Serializer for KeyOnlySer<'a> {
     fn serialize_i64(self, v: i64) -> Result<()> {
         write!(self.out, "{v}").map_err(|_| Error::Message("fmt error".into()))
     }
+    fn serialize_i128(self, v: i128) -> Result<()> {
+        write!(self.out, "{v}").map_err(|_| Error::Message("fmt error".into()))
+    }
     fn serialize_u8(self, v: u8) -> Result<()> {
         write!(self.out, "{v}").map_err(|_| Error::Message("fmt error".into()))
     }
@@ -513,6 +537,9 @@ impl<'a> ser::Serializer for KeyOnlySer<'a> {
         write!(self.out, "{v}").map_err(|_| Error::Message("fmt error".into()))
     }
     fn serialize_u64(self, v: u64) -> Result<()> {
+        write!(self.out, "{v}").map_err(|_| Error::Message("fmt error".into()))
+    }
+    fn serialize_u128(self, v: u128) -> Result<()> {
         write!(self.out, "{v}").map_err(|_| Error::Message("fmt error".into()))
     }
     fn serialize_f32(self, v: f32) -> Result<()> {

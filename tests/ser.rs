@@ -4,6 +4,8 @@
 mod arrays;
 #[path = "ser/enums.rs"]
 mod enums;
+#[path = "ser/key_name_consistency.rs"]
+mod key_name_consistency;
 #[path = "ser/keywords.rs"]
 mod keywords;
 #[path = "ser/multiline.rs"]

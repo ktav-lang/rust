@@ -1,5 +1,6 @@
-//! Backs `serialize_map` — collects pairs where keys must serialize to
-//! strings.
+//! Backs `serialize_map` — collects pairs. Keys go through the shared
+//! `text_serializer::serialize_key_name` policy (R15-F2) so both writer
+//! paths accept the same key types and produce identical name text.
 
 use serde::ser::{self, Serialize, SerializeMap};
 
@@ -18,16 +19,8 @@ impl SerializeMap for MapSerializer {
     type Error = Error;
 
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<()> {
-        let key_value = key.serialize(ValueSerializer)?;
-        match key_value {
-            Value::String(s) | Value::Integer(s) | Value::Float(s) => {
-                self.next_key = Some(s);
-                Ok(())
-            }
-            _ => Err(<Error as ser::Error>::custom(
-                "map keys must serialize to strings",
-            )),
-        }
+        self.next_key = Some(super::text_serializer::serialize_key_name(key)?);
+        Ok(())
     }
 
     fn serialize_value<T: ?Sized + Serialize>(&mut self, v: &T) -> Result<()> {
