@@ -40,3 +40,28 @@ upstreams: [
     let round: Config = ktav::from_str(&back).unwrap();
     assert_eq!(cfg, round);
 }
+
+// Pins the crate-level rustdoc's Syntax section (single `#` is content,
+// only `##` is a comment, § 3.4) so it can't silently drift from the parser
+// again (R12-F3).
+#[test]
+fn lib_doc_single_hash_is_content_not_comment() {
+    let text = "# comment\nkey: value\n";
+    let value = ktav::parse(text).unwrap();
+    assert_eq!(
+        value,
+        ktav::Value::Array(vec![
+            ktav::Value::String("# comment".into()),
+            ktav::Value::String("key: value".into()),
+        ])
+    );
+}
+
+#[test]
+fn lib_doc_double_hash_is_comment() {
+    let text = "## comment\nkey: value\n";
+    let value = ktav::parse(text).unwrap();
+    let mut expected = ktav::ObjectMap::with_hasher(Default::default());
+    expected.insert("key".into(), ktav::Value::String("value".into()));
+    assert_eq!(value, ktav::Value::Object(expected));
+}

@@ -1,14 +1,16 @@
 //! # Ktav — a plain configuration format
 //!
 //! JSON5-shaped, but with no quotes, no commas, and dotted keys for nesting.
-//! A document is an implicit top-level object. Native `serde` integration:
-//! any type implementing `Serialize` / `Deserialize` (including
-//! `#[derive]`-generated ones) round-trips through Ktav out of the box.
+//! The root is an Object or an Array, detected from the document's first
+//! content line (spec § 5.0.1) — an empty or comment-only document is an
+//! empty Object. Native `serde` integration: any type implementing
+//! `Serialize` / `Deserialize` (including `#[derive]`-generated ones)
+//! round-trips through Ktav out of the box.
 //!
 //! ## Syntax
 //!
 //! ```text
-//! # comment             — any line starting with '#'
+//! ## comment            — a line whose first non-whitespace chars are '##'
 //! key: value            — scalar; `key` may be a dotted path (a.b.c: 10)
 //! key:: value           — scalar; value is ALWAYS a literal string
 //! key: { ... }          — multi-line object; `}` closes on its own line
@@ -16,6 +18,8 @@
 //! key: {}  /  key: []   — empty compound, inline
 //! :: value              — (inside an array) literal-string item
 //! ```
+//!
+//! A single leading `#` (not `##`) is ordinary content, not a comment.
 //!
 //! ## Structured errors
 //!
