@@ -225,11 +225,15 @@ pub(crate) fn scan_inline_events<'a, S: EventSink<'a>>(
         InlineCloserScan::Found(_) => {}
     }
     let bounds = InlineBounds::over(body, &bounds_pairs);
-    // R10-F1: quote presence is computed ONCE over the root body and
-    // threaded down — every nested slice is a substring of this body,
-    // so a quote byte at the root implies one in every descendant
-    // (false positives are harmless: the fast and quote-aware machines
-    // are byte-identical on quote-free slices, R8-F2).
+    // R10-F1, corrected R11-F1: quote presence is computed ONCE over
+    // the root body and threaded down. The soundness argument is
+    // ASYMMETRIC: every nested slice is a substring of this body, so
+    // root-level ABSENCE guarantees descendant absence and the fast
+    // machine is always safe; root-level PRESENCE implies nothing
+    // about a descendant — a quote-free level may then run the
+    // quote-aware machine, which is safe only because the two
+    // machines agree on quote-free input (R8-F2; the last-segment
+    // divergence R11-F1 closed lives in `split_top_level`).
     let has_quotes = has_quote_bytes(body.as_bytes());
     let mut buf: Vec<Event<'a>> = Vec::new();
     let mut transfers: u64 = 0;

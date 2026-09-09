@@ -3,8 +3,11 @@
 //! dotted-key `.`) sent `skip_segment_ws` to EOF and the scanner
 //! indexed out of bounds — a panic on `{"a": 1, }`. All three public
 //! APIs (`ktav::parse`, `ktav::from_str`, `ktav::thin::parse_events`)
-//! must accept valid trailing-comma forms and raise a structured
-//! `EmptyKey` for the genuinely invalid `b.` + whitespace form.
+//! must accept valid trailing-comma forms; the separator-less `b.` +
+//! whitespace form raises the § 6.12 missing-separator
+//! `MalformedInlineCompound` (R11-F1 corrected the former EmptyKey
+//! category), while a dotted key with an empty final segment that HAS
+//! a separator (`b.: 2`) keeps the structured `EmptyKey`.
 
 use ktav::error::ErrorKind;
 use ktav::thin::{parse_events, ParseEvent};
@@ -134,27 +137,53 @@ fn no_space_trailing_comma_still_fine() {
 }
 
 #[test]
-fn dotted_key_trailing_ws_is_empty_key() {
-    // `{ "a": 1, b. }` — a dotted key whose final segment is empty:
-    // structured EmptyKey, never a panic, never success.
+fn dotted_key_trailing_ws_missing_separator() {
+    // `{ "a": 1, b. }` — a final key segment with NO separator: the
+    // raw segment reaches the caller, the colon search fails, and the
+    // verdict is MalformedInlineCompound (§ 6.12; § 5.8.2 routes to
+    // § 5.3's separator-first rule). Never a panic, never success.
+    // The former EmptyKey expectation was the wrong category (R11-F1):
+    // the genuine dotted key with an empty final segment HAS a
+    // separator, never reaches `EofAfterWsSkip`, and keeps EmptyKey —
+    // pinned at the bottom.
     let src = "{ \"a\": 1, b. }\n";
     match parse(src) {
-        Err(Error::Structured(ErrorKind::EmptyKey { .. })) => {}
-        other => panic!("{src:?}: expected EmptyKey, got {:?}", other.err()),
+        Err(Error::Structured(ErrorKind::MalformedInlineCompound { .. })) => {}
+        other => panic!(
+            "{src:?}: expected MalformedInlineCompound, got {:?}",
+            other.err()
+        ),
     }
     let err = from_str::<serde_json::Value>(src).unwrap_err();
     assert!(
-        matches!(err, Error::Structured(ErrorKind::EmptyKey { .. })),
-        "{src:?}: from_str expected EmptyKey, got {err:?}"
+        matches!(
+            err,
+            Error::Structured(ErrorKind::MalformedInlineCompound { .. })
+        ),
+        "{src:?}: from_str expected MalformedInlineCompound, got {err:?}"
     );
     let thin = parse_events(src, |_| {}).unwrap_err();
     assert!(
-        matches!(thin, Error::Structured(ErrorKind::EmptyKey { .. })),
-        "{src:?}: thin expected EmptyKey, got {thin:?}"
+        matches!(
+            thin,
+            Error::Structured(ErrorKind::MalformedInlineCompound { .. })
+        ),
+        "{src:?}: thin expected MalformedInlineCompound, got {thin:?}"
     );
 
     // Nested invalid form errors via the owned parser too.
     let src = "outer: { \"a\": 1, b. }\n";
+    match parse(src) {
+        Err(Error::Structured(ErrorKind::MalformedInlineCompound { .. })) => {}
+        other => panic!(
+            "{src:?}: expected MalformedInlineCompound, got {:?}",
+            other.err()
+        ),
+    }
+
+    // Positive control: WITH a separator, the empty final dotted
+    // segment stays exactly EmptyKey (§ 6.5 via `insert_value`).
+    let src = "{ \"a\": 1, b.: 2 }\n";
     match parse(src) {
         Err(Error::Structured(ErrorKind::EmptyKey { .. })) => {}
         other => panic!("{src:?}: expected EmptyKey, got {:?}", other.err()),

@@ -32,11 +32,15 @@ pub(crate) fn parse_inline_object(
     strict: bool,
     bounds: InlineBounds<'_>,
 ) -> Result<Value, Error> {
-    // R10-F1: quote presence is computed ONCE over the root body and
-    // threaded down — every nested slice is a substring of this body,
-    // so a quote byte at the root implies one in every descendant
-    // (false positives are harmless: the fast and quote-aware machines
-    // are byte-identical on quote-free slices, R8-F2).
+    // R10-F1, corrected R11-F1: quote presence is computed ONCE over
+    // the root body and threaded down. The soundness argument is
+    // ASYMMETRIC: every nested slice is a substring of this body, so
+    // root-level ABSENCE guarantees descendant absence and the fast
+    // machine is always safe; root-level PRESENCE implies nothing
+    // about a descendant — a quote-free level may then run the
+    // quote-aware machine, which is safe only because the two
+    // machines agree on quote-free input (R8-F2; the last-segment
+    // divergence R11-F1 closed lives in `split_top_level`).
     let has_quotes = has_quote_bytes(input.as_bytes());
     parse_inline_object_inner(input, line_num, span, 0, strict, bounds, has_quotes)
 }
@@ -2312,11 +2316,15 @@ pub(crate) fn split_top_level<'a>(
     has_quotes: bool,
 ) -> Result<Vec<&'a str>, Error> {
     // R10-F1: `has_quotes` is threaded from the parse entry, where it
-    // was computed once over the ROOT body. Every slice split here
-    // descends from that body, so root-level presence implies presence
-    // here; the converse is allowed (a quote-free level may take the
-    // quote-aware machine — byte-identical on quote-free slices,
-    // R8-F2). No per-level `has_quote_bytes` re-scan remains.
+    // was computed once over the ROOT body. The soundness argument is
+    // ASYMMETRIC (R11-F1): every slice split here descends from that
+    // body, so root-level ABSENCE guarantees absence here and the
+    // fast machine is always safe; root-level PRESENCE implies
+    // nothing about this slice — a quote-free level may take the
+    // quote-aware machine, which is safe only because the two
+    // machines agree on quote-free input (R8-F2, including the last
+    // segment: `EofAfterWsSkip` below pushes it exactly like
+    // `Exhausted`). No per-level `has_quote_bytes` re-scan remains.
     if body == InlineBody::Array || !has_quotes {
         return Ok(split_top_level_fast(input, line_num, span, body, bounds));
     }
@@ -2353,14 +2361,26 @@ pub(crate) fn split_top_level<'a>(
                 // callers treat an empty last segment identically).
                 Ok(sc.segments)
             } else {
-                // A `.` armed this segment start and only whitespace
-                // followed: a dotted key whose final segment is empty
-                // (`b.` / `.`) — EmptyKey, the same category
-                // `insert_value` raises for `a.: 1` (spec 0.7 § 6.5).
-                Err(Error::Structured(ErrorKind::EmptyKey {
-                    line: line_num as u32,
-                    span,
-                }))
+                // R11-F1: the remainder is the raw LAST segment — push
+                // it exactly like the `Exhausted` branch (and hence
+                // `split_top_level_fast`) does. Reaching this stop
+                // proves the segment holds no unescaped `:`: the
+                // seg-start block only runs while `in_key`, a
+                // key-position colon clears `in_key`, and only a
+                // body-depth comma can re-arm it (advancing `seg_at`
+                // past itself), so a `.` that armed this segment start
+                // plus a whitespace skip to EOF means the segment
+                // simply has no separator. The callers'
+                // `find_unescaped_colon_inline` then raises the § 6.12
+                // missing-separator error (§ 5.8.2/§ 5.3: separator
+                // finding precedes key validation) — the same verdict
+                // the fast machine reaches for the same bytes. The
+                // former EmptyKey here mis-categorized: the genuine
+                // dotted key with an empty final segment (`a.: 1`) HAS
+                // a separator, never reaches this stop, and stays
+                // EmptyKey via `insert_value` (§ 6.5).
+                sc.segments.push(&input[sc.seg_at..]);
+                Ok(sc.segments)
             }
         }
         ScanStop::Exhausted => {

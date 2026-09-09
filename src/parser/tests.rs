@@ -1556,37 +1556,50 @@ fn r3f1_split_top_level_trailing_ws_after_comma_no_phantom_segment() {
     );
 }
 
+// R3-F1's original catch was the PANIC (`b.` + whitespace to EOF sent
+// `skip_segment_ws` past the end); keeping the no-panic behavior was
+// correct. The Err(EmptyKey) category asserted here since R3 was not
+// (R11-F1) — the review's own words: "the absence of panic was
+// correct, the chosen category was not." Reaching `EofAfterWsSkip`
+// proves the armed segment holds no unescaped separator, so
+// `split_top_level` now pushes the raw remainder exactly like the
+// `Exhausted` branch (and hence `SplitFast`) does; the caller's colon
+// search then resolves the § 6.12 missing-separator category
+// (MalformedInlineCompound), pinned at the full-parse level below.
 #[test]
-fn r3f1_split_top_level_dotted_key_trailing_ws_is_empty_key() {
-    // R3-F1: `b.` + whitespace to EOF armed a key-segment start with
-    // nothing after the dot — a structured EmptyKey (the category
-    // `insert_value` raises for `a.: 1`), not a panic, not success.
+fn r3f1_split_top_level_dotted_key_trailing_ws_raw_last_segment() {
+    // Dotted-key `.` + whitespace to EOF: the raw last segment is
+    // pushed — byte-identical to what the quote-free fast machine
+    // produces for the same shape.
     for tail in [" ", "\t"] {
         let body = format!(" \"a\": 1, b.{tail}");
-        match split_top_level(
-            &body,
+        let seg2 = format!(" b.{tail}");
+        assert_eq!(
+            split_top_level(
+                &body,
+                1,
+                S,
+                InlineBody::Object,
+                InlineBounds::for_input(&body),
+                has_quote_bytes(body.as_bytes()),
+            )
+            .unwrap(),
+            vec![" \"a\": 1", seg2.as_str()]
+        );
+    }
+    // Leading-dot form, same shape (quote bytes present: slow path).
+    assert_eq!(
+        split_top_level(
+            " \"a\". ",
             1,
             S,
             InlineBody::Object,
-            InlineBounds::for_input(&body),
-            has_quote_bytes(body.as_bytes()),
-        ) {
-            Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
-            other => panic!("expected EmptyKey, got: {:?}", other.err()),
-        }
-    }
-    // Leading-dot form, same shape (quote bytes present: slow path).
-    match split_top_level(
-        " \"a\". ",
-        1,
-        S,
-        InlineBody::Object,
-        InlineBounds::for_input(" \"a\". "),
-        has_quote_bytes(" \"a\". ".as_bytes()),
-    ) {
-        Err(crate::Error::Structured(crate::ErrorKind::EmptyKey { .. })) => {}
-        other => panic!("expected EmptyKey, got: {:?}", other.err()),
-    }
+            InlineBounds::for_input(" \"a\". "),
+            has_quote_bytes(" \"a\". ".as_bytes()),
+        )
+        .unwrap(),
+        vec![" \"a\". "]
+    );
     // Dot followed by a real segment still works.
     assert_eq!(
         split_top_level(
@@ -1600,6 +1613,13 @@ fn r3f1_split_top_level_dotted_key_trailing_ws_is_empty_key() {
         .unwrap(),
         vec!["a. b : 1"]
     );
+    // The corrected category, resolved where it belongs: the full
+    // parse finds no separator in the pushed raw segment and raises
+    // MalformedInlineCompound (§ 6.12), not EmptyKey.
+    match crate::parse("{\"a\": 1, b. }") {
+        Err(crate::Error::Structured(crate::ErrorKind::MalformedInlineCompound { .. })) => {}
+        other => panic!("expected MalformedInlineCompound, got {other:?}"),
+    }
 }
 
 #[test]
@@ -2967,6 +2987,112 @@ fn ix_probe_r10f1_quote_prescan_counters() {
                 s.hq_calls,
                 s.hq_bytes,
                 s.hq_max
+            );
+        }
+    }
+}
+
+// R11-F1: the ROOT quote flag (R10-F1) routes quote-free descendants
+// through the quote-aware split machine, so SplitQ's last-segment
+// handling must match SplitFast's on this shape: a `.`-armed segment
+// whose § 3.3 whitespace skip runs to EOF has no separator, and the
+// pushed raw segment must resolve — through the callers' colon search
+// (§ 5.8.2/§ 5.3: separator finding precedes key validation) — to the
+// § 6.12 missing-separator MalformedInlineCompound on every entry
+// point. The pre-fix SplitQ raised EmptyKey here whenever the ROOT
+// carried a quote anywhere (ancestor key, sibling value, sibling
+// array item), while a quote-free root took SplitFast and already
+// said MalformedInlineCompound for the very same nested body.
+#[test]
+fn r11f1_splitq_last_segment_missing_separator_matches_fast_machine() {
+    use crate::ErrorKind;
+
+    let expect_malformed = |input: &str, res: Result<(), crate::Error>| {
+        assert!(
+            matches!(
+                res,
+                Err(crate::Error::Structured(
+                    ErrorKind::MalformedInlineCompound { .. }
+                ))
+            ),
+            "input {input:?}: expected MalformedInlineCompound, got {res:?}"
+        );
+    };
+    let all_entry_points = |input: &str| {
+        expect_malformed(input, crate::parse(input).map(|_| ()));
+        expect_malformed(input, crate::parse_strict(input).map(|_| ()));
+        expect_malformed(
+            input,
+            crate::from_str::<serde_json::Value>(input).map(|_| ()),
+        );
+        expect_malformed(input, crate::parse_events(input, |_| {}).map(|_| ()));
+    };
+
+    // The finding's repro documents (SPACE after the dot). The nested
+    // body `b.  ` is quote-free in every case — only the threaded
+    // flag selects SplitQ for it.
+    for input in [
+        r"{a: {b. }}",       // quote-free root: SplitFast already said Malformed
+        r"{a: {b. }, q: '}", // quote in a SIBLING VALUE after
+        r"{q: ', a: {b. }}", // quote in a SIBLING VALUE before
+        r#"{"a": {b. }}"#,   // quote at an ANCESTOR KEY position
+        r"[{b. }, ']",       // quote in a SIBLING ARRAY ITEM
+    ] {
+        all_entry_points(input);
+    }
+
+    // SPACE, TAB and U+2000 after the dot trigger the identical path
+    // (assembled from pieces so the corpus harvest sees only the
+    // trivial fragments).
+    for tail in [" ", "\t", "\u{2000}"] {
+        let mut doc = String::from("{a: {b.");
+        doc.push_str(tail);
+        doc.push_str("}, q: '}");
+        all_entry_points(&doc);
+    }
+
+    // The sibling quote's SPECIES is irrelevant (§ 5.3.3: value-side
+    // quotes are content).
+    for q in ["'", "\"", "`"] {
+        let doc = format!(r"{{a: {{b. }}, q: {q}}}");
+        all_entry_points(&doc);
+    }
+
+    // Positive controls — unchanged by the fix. No trailing whitespace
+    // after the dot: plain Exhausted path, MalformedInlineCompound
+    // before and after (SplitFast verdict included via the quote-free
+    // root).
+    for input in [r"{a: {b.}, q: '}", r"{a: {b.}}"] {
+        all_entry_points(input);
+    }
+    // Valid trailing comma: Ok everywhere, same tree.
+    let ok_doc = r"{a: {b: 1, }, q: '}";
+    let v = crate::parse(ok_doc).expect("trailing-comma control must parse");
+    let root = v.as_object().unwrap();
+    let a = root.get("a").unwrap().as_object().unwrap();
+    assert_eq!(a.get("b"), Some(&Value::Integer("1".into())));
+    assert_eq!(root.get("q"), Some(&Value::String("'".into())));
+    crate::parse_strict(ok_doc).expect("strict must accept");
+    crate::from_str::<serde_json::Value>(ok_doc).expect("serde must accept");
+    crate::parse_events(ok_doc, |_| {}).expect("events must accept");
+
+    // The GENUINE dotted key with an empty final segment HAS a
+    // separator, never reaches EofAfterWsSkip, and stays EmptyKey
+    // (§ 6.5 via insert_value) — quote-free root and quoted sibling
+    // alike.
+    for input in [r"{a.: 1}", r#"{"a": 1, b.: 2}"#] {
+        for res in [
+            crate::parse(input).map(|_| ()),
+            crate::parse_strict(input).map(|_| ()),
+            crate::from_str::<serde_json::Value>(input).map(|_| ()),
+            crate::parse_events(input, |_| {}).map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    res,
+                    Err(crate::Error::Structured(ErrorKind::EmptyKey { .. }))
+                ),
+                "input {input:?}: expected EmptyKey, got {res:?}"
             );
         }
     }

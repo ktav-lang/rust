@@ -30,15 +30,23 @@ byte" — is computed ONCE per parse entry and threaded down:
    `scan_inline_array_into`, `scan_inline_value`,
    `scan_inline_value_trimmed` to the same `split_top_level` calls.
 
-Soundness: every nested slice is a substring of the root body, so
-root-level quote presence implies descendant presence (monotone under
-substring). The converse is allowed: a quote-free level whose root carries
-quotes runs the quote-aware machine — harmless because R8-F2 made the fast
-and quote-aware machines byte-identical on quote-free slices (R9-F1 closed
-the last divergence). So the flag can over-approximate per level but never
-under-approximate; only speed is affected by false positives, measured
-invisible below. No new scanning strategy was introduced: SplitFast/SplitQ
-and every other config pair are untouched; only the dispatch input changed.
+Soundness (restated per R11-F1; the original wording overstated the
+argument): every nested slice is a substring of the root body, so
+root-level quote ABSENCE guarantees descendant absence, and the fast
+machine is always safe for a quote-free root. Root-level PRESENCE implies
+nothing about a descendant — a quote-free level whose root carries quotes
+runs the quote-aware machine, which is safe only because the fast and
+quote-aware machines agree on quote-free input (R8-F2/R9-F1). R11-F1 found
+the one shape where that agreement failed — SplitQ's `EofAfterWsSkip`
+last-segment handling raised `EmptyKey` where SplitFast pushes the raw
+segment and the caller raises the § 6.12 missing-separator error — and
+fixed it inside SplitQ's own last-segment handling (no re-forked configs,
+no per-level re-scan). So the flag can over-approximate per level but
+never under-approximate; only speed is affected by false positives,
+measured invisible below. No new scanning strategy was introduced:
+SplitFast/SplitQ and every other config pair are untouched; only the
+dispatch input changed (plus, per R11-F1, the last-segment branch in
+`split_top_level`).
 
 `has_quote_bytes` is now `pub(crate)` so both engines share the
 instrumented helper.
