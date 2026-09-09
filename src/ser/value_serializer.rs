@@ -22,18 +22,27 @@ fn int_scalar<I: itoa::Integer>(v: I) -> Scalar {
     buf.format(v).into()
 }
 
-/// WHY: store the raw ryu shortest form — exactly what the parser would
-/// store for this number. The `.0` mantissa padding is a text-literal rule
-/// for writers, not part of the canonical payload; padding here would make
-/// ser::to_value Values unequal to their parsed round-trip (R12-F1).
+/// WHY (R13-F1): normalize through the same path the parser uses — parse the
+/// shortest ryu-f32 decimal string back as f64 (see `parse_float_value` in
+/// `src/parser/inline.rs`), then re-emit with ryu-f64 — so the stored payload
+/// matches `parse()` of this number. ryu format32/format64 pick
+/// decimal-vs-scientific notation at different thresholds, so the raw f32
+/// output can differ. Do NOT use `v as f64` + ryu-f64: widening changes the
+/// shortest digit set (e.g. 0.1_f32). The f64 parse cannot fail: ryu always
+/// yields a valid finite decimal literal within f64 range.
 fn float_scalar_f32(v: f32) -> Result<Scalar> {
     if v.is_nan() || v.is_infinite() {
         return Err(Error::Unrepresentable(
             crate::error::ReasonCode::NonFiniteFloat,
         ));
     }
-    let mut buf = ryu::Buffer::new();
-    Ok(buf.format(v).into())
+    let mut buf32 = ryu::Buffer::new();
+    let short = buf32.format(v);
+    let as_f64: f64 = short
+        .parse()
+        .expect("ryu f32 output is a valid finite f64 literal");
+    let mut buf64 = ryu::Buffer::new();
+    Ok(buf64.format(as_f64).into())
 }
 
 /// Same as [`float_scalar_f32`], for `f64`.

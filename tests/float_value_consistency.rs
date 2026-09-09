@@ -10,12 +10,16 @@
 //! Guards review finding **R12-F1** (payload normalization) and **R12-F2**
 //! (canonical output bytes must not change when the payload is fixed).
 //! The round-trip tests here are the review repro.
+//!
+//! Also guards review finding **R13-F1**: `f32` boundary values where the
+//! `ryu` f32/f64 decimal-vs-scientific thresholds diverge must store the
+//! parser's (ryu-f64) normalized payload.
 
 use std::collections::BTreeMap;
 
 use ktav::render::{emit_canonical, render};
 use ktav::ser::to_value;
-use ktav::{parse, Error, ReasonCode, Value};
+use ktav::{parse, parse_strict, Error, ReasonCode, Value};
 use serde::Serialize;
 
 /// Extract the stored Float payload of the single value in a single-pair
@@ -213,4 +217,177 @@ fn non_finite_floats_still_rejected_in_to_value() {
         Some(ReasonCode::NonFiniteFloat),
         "array root: {err}"
     );
+}
+
+/// R13-F1: expected payloads are the parser's stored forms (ryu-f64 of the
+/// decimal value). f32 ryu switches decimal/scientific at different bounds
+/// (kk<=13 / -6<kk) than f64 (kk<=16 / -5<kk), so to_value currently stores
+/// e.g. "0.000001" where the parser stores "1e-6". Fails until the fix.
+#[test]
+fn to_value_stores_parser_normalized_f32_boundary_payloads() {
+    let cases: &[(f32, &str)] = &[
+        (1e-6, "1e-6"),
+        (2.345678e-6, "2.345678e-6"),
+        (9.999999e-6, "9.999999e-6"),
+        (1e13, "10000000000000.0"),
+        (1e14, "100000000000000.0"),
+        (1e15, "1000000000000000.0"),
+        (1e-5, "0.00001"),
+        (1e-7, "1e-7"),
+        (1e12, "1000000000000.0"),
+        (1e16, "1e16"),
+        (-1e-6, "-1e-6"),
+        (-2.345678e-6, "-2.345678e-6"),
+        (-9.999999e-6, "-9.999999e-6"),
+        (-1e13, "-10000000000000.0"),
+        (-1e14, "-100000000000000.0"),
+        (-1e15, "-1000000000000000.0"),
+        (-1e-5, "-0.00001"),
+        (-1e-7, "-1e-7"),
+        (-1e12, "-1000000000000.0"),
+        (-1e16, "-1e16"),
+    ];
+    for &(value, expected) in cases {
+        let mut map = BTreeMap::new();
+        map.insert("k", value);
+        let got = payload_of(&map);
+        assert_eq!(got, expected, "payload mismatch for f32 {value:?}");
+    }
+}
+
+/// R13-F1 roundtrip repro: boundary f32 values (both signs, plus signed
+/// zero) must survive `to_value -> writer -> parse` `Value` equality for
+/// both writers and Object/Array roots. Fails until the fix.
+#[test]
+fn roundtrip_object_and_array_preserve_f32_boundary_equality() {
+    fn check(v: &ktav::Value) {
+        let canon = emit_canonical(v).unwrap_or_else(|e| panic!("emit_canonical({v:?}): {e}"));
+        let back = parse(&canon).unwrap_or_else(|e| panic!("parse({canon:?}): {e}"));
+        assert_eq!(
+            &back, v,
+            "canonical round-trip broke equality (text {canon:?})"
+        );
+        let plain = render(v).unwrap_or_else(|e| panic!("render({v:?}): {e}"));
+        let back = parse(&plain).unwrap_or_else(|e| panic!("parse({plain:?}): {e}"));
+        assert_eq!(
+            &back, v,
+            "render round-trip broke equality (text {plain:?})"
+        );
+    }
+
+    let cases = [
+        1e-6_f32,
+        2.345678e-6,
+        9.999999e-6,
+        1e13,
+        1e14,
+        1e15,
+        1e-5,
+        1e-7,
+        1e12,
+        1e16,
+        -1e-6,
+        -2.345678e-6,
+        -9.999999e-6,
+        -1e13,
+        -1e14,
+        -1e15,
+        -1e-5,
+        -1e-7,
+        -1e12,
+        -1e16,
+        0.0,
+        -0.0,
+    ];
+    for value in cases {
+        let mut map = BTreeMap::new();
+        map.insert("k", value);
+        let v = to_value(&map).unwrap_or_else(|e| panic!("to_value({value:?}): {e}"));
+        check(&v);
+
+        let v = to_value(&vec![value]).unwrap_or_else(|e| panic!("to_value({value:?}): {e}"));
+        check(&v);
+    }
+}
+
+/// R13-F1, numeric-level guards (IN ADDITION to Value equality): the
+/// canonical payload must parse back to the exact original f32 bits, the
+/// canonical text must be strictly-valid input, and canonical emission is
+/// idempotent. Bits and canonical guards hold before AND after the fix.
+#[test]
+fn f32_roundtrip_preserves_bits_and_canonical_bytes() {
+    fn check(value: f32) {
+        let mut map = BTreeMap::new();
+        map.insert("k", value);
+        let v = to_value(&map).unwrap_or_else(|e| panic!("to_value({value:?}): {e}"));
+        let canon = emit_canonical(&v).unwrap_or_else(|e| panic!("emit_canonical({value:?}): {e}"));
+
+        // (a) payload must parse back to the exact same f32 bits.
+        let back = parse(&canon).unwrap_or_else(|e| panic!("parse({canon:?}): {e}"));
+        let payload = back
+            .as_object()
+            .and_then(|o| o.get("k"))
+            .and_then(Value::as_float)
+            .unwrap_or_else(|| panic!("not a Float 'k': {back:?}"));
+        let round: f32 = payload
+            .to_string()
+            .parse()
+            .unwrap_or_else(|e| panic!("f32 parse of payload {payload:?} for {value:?}: {e}"));
+        assert_eq!(
+            round.to_bits(),
+            value.to_bits(),
+            "bits changed for f32 {value:?} (payload {payload:?})"
+        );
+
+        // (b) canonical text must be strictly-valid.
+        parse_strict(&canon)
+            .unwrap_or_else(|e| panic!("parse_strict({canon:?}) for {value:?}: {e}"));
+
+        // (c) canonical emission is idempotent.
+        let canon2 = emit_canonical(&parse(&canon).unwrap())
+            .unwrap_or_else(|e| panic!("emit_canonical(parse) for {value:?}: {e}"));
+        assert_eq!(canon2, canon, "canonical not idempotent for {value:?}");
+    }
+
+    for value in [
+        1e-6_f32,
+        2.345678e-6,
+        9.999999e-6,
+        1e13,
+        1e14,
+        1e15,
+        1e-5,
+        1e-7,
+        1e12,
+        1e16,
+        -1e-6,
+        -2.345678e-6,
+        -9.999999e-6,
+        -1e13,
+        -1e14,
+        -1e15,
+        -1e-5,
+        -1e-7,
+        -1e12,
+        -1e16,
+        0.0,
+        -0.0,
+    ] {
+        check(value);
+    }
+
+    // R12-F2 guard: canonical bytes are pinned and must not change with the
+    // R13-F1 payload fix.
+    fn pin(value: f32, expected: &str) {
+        let mut map = BTreeMap::new();
+        map.insert("k", value);
+        let v = to_value(&map).unwrap_or_else(|e| panic!("to_value({value:?}): {e}"));
+        let text = emit_canonical(&v).unwrap_or_else(|e| panic!("emit_canonical({value:?}): {e}"));
+        assert_eq!(text, expected, "canonical bytes changed for f32 {value:?}");
+    }
+    pin(1e-6, "k: 1e-6\n");
+    pin(1e13, "k: 1e13\n");
+    pin(-1e13, "k: -1e13\n");
+    pin(1e14, "k: 1e14\n");
+    pin(1e15, "k: 1e15\n");
 }
