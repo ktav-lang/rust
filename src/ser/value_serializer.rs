@@ -22,6 +22,31 @@ fn int_scalar<I: itoa::Integer>(v: I) -> Scalar {
     buf.format(v).into()
 }
 
+/// WHY: store the raw ryu shortest form — exactly what the parser would
+/// store for this number. The `.0` mantissa padding is a text-literal rule
+/// for writers, not part of the canonical payload; padding here would make
+/// ser::to_value Values unequal to their parsed round-trip (R12-F1).
+fn float_scalar_f32(v: f32) -> Result<Scalar> {
+    if v.is_nan() || v.is_infinite() {
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
+        ));
+    }
+    let mut buf = ryu::Buffer::new();
+    Ok(buf.format(v).into())
+}
+
+/// Same as [`float_scalar_f32`], for `f64`.
+fn float_scalar_f64(v: f64) -> Result<Scalar> {
+    if v.is_nan() || v.is_infinite() {
+        return Err(Error::Unrepresentable(
+            crate::error::ReasonCode::NonFiniteFloat,
+        ));
+    }
+    let mut buf = ryu::Buffer::new();
+    Ok(buf.format(v).into())
+}
+
 pub(crate) struct ValueSerializer;
 
 impl serde::Serializer for ValueSerializer {
@@ -71,14 +96,10 @@ impl serde::Serializer for ValueSerializer {
         Ok(Value::Integer(int_scalar(v)))
     }
     fn serialize_f32(self, v: f32) -> Result<Value> {
-        Ok(Value::Float(
-            crate::ser::text_serializer::format_f32(v)?.into(),
-        ))
+        Ok(Value::Float(float_scalar_f32(v)?))
     }
     fn serialize_f64(self, v: f64) -> Result<Value> {
-        Ok(Value::Float(
-            crate::ser::text_serializer::format_f64(v)?.into(),
-        ))
+        Ok(Value::Float(float_scalar_f64(v)?))
     }
 
     fn serialize_char(self, v: char) -> Result<Value> {

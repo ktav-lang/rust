@@ -1,7 +1,10 @@
 //! Direct text serializer: serializes `T: Serialize` straight to a Ktav
 //! text string, skipping the `Value` intermediate that `ser::to_value` +
 //! `render::render` go through. Produces byte-identical output to the
-//! Value-based path.
+//! Value-based path, with one divergence: for scientific-notation Floats
+//! this direct path emits a text literal with a `.0` mantissa (`1.0e100`),
+//! while the Value path stores/renders the parser-normalized payload
+//! (`1e100`); `emit_canonical` normalises both.
 
 use std::cell::Cell;
 use std::fmt::Write as _;
@@ -104,33 +107,6 @@ fn push_float_body(out: &mut String, s: &str) {
             out.push_str(".0");
         }
     }
-}
-
-/// Produce the textual form of an `f64` value suitable for Ktav output:
-/// always contains a decimal point. NaN / ±Infinity return an error.
-pub(crate) fn format_f64(v: f64) -> Result<String> {
-    if v.is_nan() || v.is_infinite() {
-        return Err(Error::Unrepresentable(
-            crate::error::ReasonCode::NonFiniteFloat,
-        ));
-    }
-    let mut buf = ryu::Buffer::new();
-    let mut out = String::with_capacity(24);
-    push_float_body(&mut out, buf.format(v));
-    Ok(out)
-}
-
-/// Produce the textual form of an `f32` value suitable for Ktav output.
-pub(crate) fn format_f32(v: f32) -> Result<String> {
-    if v.is_nan() || v.is_infinite() {
-        return Err(Error::Unrepresentable(
-            crate::error::ReasonCode::NonFiniteFloat,
-        ));
-    }
-    let mut buf = ryu::Buffer::new();
-    let mut out = String::with_capacity(16);
-    push_float_body(&mut out, buf.format(v));
-    Ok(out)
 }
 
 /// Fast path for pair-position integer emission: `: <digits>\n`.

@@ -405,16 +405,21 @@ fn emit_multiline_stripped(s: &str, indent: usize, is_pair: bool, out: &mut Stri
 /// - Otherwise keep the ryu decimal form unchanged.
 /// - Scientific: lowercase `e`, no `+` in exponent, strip trailing `.0`
 ///   in mantissa (so `1.0e9` → `1e9`).
-pub(crate) fn canonical_float(s: &str) -> String {
+///
+/// Returns [`Cow::Borrowed`] whenever the stored form is already canonical
+/// text (zero / decimal region / passthrough); only the scientific branch
+/// allocates. Thresholds, sign of zero, the shortest-roundtrip guarantee,
+/// and the LossyScalar payload are unchanged.
+pub(crate) fn canonical_float(s: &str) -> std::borrow::Cow<'_, str> {
     // Parse the stored ryu string back to f64.
     let val: f64 = match s.parse() {
         Ok(v) => v,
-        Err(_) => return s.to_string(), // shouldn't happen; pass through
+        Err(_) => return std::borrow::Cow::Borrowed(s), // shouldn't happen; pass through
     };
 
     if val == 0.0 {
         // Positive/negative zero in ryu is "0.0" or "-0.0"; keep as-is.
-        return s.to_string();
+        return std::borrow::Cow::Borrowed(s);
     }
 
     let abs = val.abs();
@@ -423,10 +428,10 @@ pub(crate) fn canonical_float(s: &str) -> String {
         // Build scientific form.
         // Use Rust's {:e} formatter then normalise.
         let raw = format!("{:e}", val); // e.g. "1e9", "1.5e9", "-2.5e-10"
-        normalise_scientific(&raw)
+        std::borrow::Cow::Owned(normalise_scientific(&raw))
     } else {
         // Decimal region: ryu's output is already correct.
-        s.to_string()
+        std::borrow::Cow::Borrowed(s)
     }
 }
 
