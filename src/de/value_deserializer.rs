@@ -108,6 +108,10 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
         let s = self.expect_numeric_string("i64")?;
         visitor.visit_i64(Self::parse_scalar(s, "i64")?)
     }
+    fn deserialize_i128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        let s = self.expect_numeric_string("i128")?;
+        visitor.visit_i128(Self::parse_scalar(s, "i128")?)
+    }
 
     fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         let s = self.expect_numeric_string("u8")?;
@@ -124,6 +128,10 @@ impl<'de> Deserializer<'de> for ValueDeserializer {
     fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
         let s = self.expect_numeric_string("u64")?;
         visitor.visit_u64(Self::parse_scalar(s, "u64")?)
+    }
+    fn deserialize_u128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
+        let s = self.expect_numeric_string("u128")?;
+        visitor.visit_u128(Self::parse_scalar(s, "u128")?)
     }
 
     fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {

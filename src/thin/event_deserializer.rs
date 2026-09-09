@@ -212,6 +212,15 @@ impl<'de, 'e, 'c> Deserializer<'de> for EventDeserializer<'de, 'e, 'c> {
         visitor.visit_i64(v)
     }
     #[inline]
+    fn deserialize_i128<V: Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        // Exact 128-bit parse — no 64-bit/f64 hop (would lose range/precision).
+        let s = self.next_numeric_text("i128")?;
+        let v = s
+            .parse::<i128>()
+            .map_err(|_| Self::parse_error(s, "i128"))?;
+        visitor.visit_i128(v)
+    }
+    #[inline]
     fn deserialize_u8<V: Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
         let s = self.next_numeric_text("u8")?;
         let v = fast_num::parse_u_bounded(s, u8::MAX as u64)
@@ -237,6 +246,15 @@ impl<'de, 'e, 'c> Deserializer<'de> for EventDeserializer<'de, 'e, 'c> {
         let s = self.next_numeric_text("u64")?;
         let v = fast_num::parse_u64(s).ok_or_else(|| Self::parse_error(s, "u64"))?;
         visitor.visit_u64(v)
+    }
+    #[inline]
+    fn deserialize_u128<V: Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
+        // Exact 128-bit parse — no 64-bit/f64 hop (would lose range/precision).
+        let s = self.next_numeric_text("u128")?;
+        let v = s
+            .parse::<u128>()
+            .map_err(|_| Self::parse_error(s, "u128"))?;
+        visitor.visit_u128(v)
     }
     fn deserialize_f32<V: Visitor<'de>>(mut self, visitor: V) -> Result<V::Value> {
         let s = self.next_numeric_text("f32")?;

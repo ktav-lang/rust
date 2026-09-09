@@ -280,3 +280,44 @@ fn bool_in_struct_stays_keyword_not_typed() {
     }
     assert_eq!(to_string(&Cfg { on: true }).unwrap(), "on: true\n");
 }
+
+#[test]
+fn i128_max_emits_plain_separator() {
+    #[derive(Serialize)]
+    struct Cfg {
+        x: i128,
+    }
+    assert_eq!(
+        to_string(&Cfg { x: i128::MAX }).unwrap(),
+        format!("x: {}\n", i128::MAX)
+    );
+}
+
+#[test]
+fn array_of_i128_uses_plain_per_item() {
+    #[derive(Serialize)]
+    struct Cfg {
+        xs: Vec<i128>,
+    }
+    let s = to_string(&Cfg {
+        xs: vec![i128::MIN, 0, i128::MAX],
+    })
+    .unwrap();
+    assert_eq!(
+        s,
+        format!("xs: [\n    {}\n    0\n    {}\n]\n", i128::MIN, i128::MAX)
+    );
+}
+
+#[test]
+fn array_of_u128_uses_plain_per_item() {
+    #[derive(Serialize)]
+    struct Cfg {
+        xs: Vec<u128>,
+    }
+    let s = to_string(&Cfg {
+        xs: vec![u128::MAX, 1, 0],
+    })
+    .unwrap();
+    assert_eq!(s, format!("xs: [\n    {}\n    1\n    0\n]\n", u128::MAX));
+}
