@@ -14,10 +14,10 @@
 
 **Песочница:** конвертация JSON / YAML / TOML / INI ⇄ Ktav прямо в браузере — **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Спецификация:** этот crate реализует **Ktav**. Формат версионируется
-и поддерживается независимо от crate-а — см.
-[`ktav-lang/spec`](https://github.com/ktav-lang/spec) для
-канонического документа.
+**Спецификация:** этот crate реализует **Ktav 0.7.0**. Формат
+версионируется и поддерживается независимо от crate-а — см.
+[`ktav-lang/spec`](https://github.com/ktav-lang/spec) для канонического
+документа и [`CHANGELOG.ru.md`](CHANGELOG.ru.md) — что изменилось в 0.7.0.
 
 ---
 

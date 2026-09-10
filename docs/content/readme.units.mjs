@@ -36,39 +36,26 @@ export default [
   },
   {
     id: 'spec-pointer',
-    en: `**Specification:** this crate implements **Ktav**. The format is
+    en: `**Specification:** this crate implements **Ktav 0.7.0**. The format is
 versioned and maintained independently of this crate — see
 [\`ktav-lang/spec\`](https://github.com/ktav-lang/spec) for the formal
-document.`,
-    ru: `**Спецификация:** этот crate реализует **Ktav**. Формат версионируется
-и поддерживается независимо от crate-а — см.
-[\`ktav-lang/spec\`](https://github.com/ktav-lang/spec) для
-канонического документа.`,
-    zh: `**规范:** 本 crate 实现 **Ktav**。格式与 crate 彼此独立地
+document, and [\`CHANGELOG.md\`](CHANGELOG.md) for what 0.7.0 changed.`,
+    ru: `**Спецификация:** этот crate реализует **Ktav 0.7.0**. Формат
+версионируется и поддерживается независимо от crate-а — см.
+[\`ktav-lang/spec\`](https://github.com/ktav-lang/spec) для канонического
+документа и [\`CHANGELOG.ru.md\`](CHANGELOG.ru.md) — что изменилось в 0.7.0.`,
+    zh: `**规范:** 本 crate 实现 **Ktav 0.7.0**。格式与 crate 彼此独立地
 版本化与维护——规范正文见
-[\`ktav-lang/spec\`](https://github.com/ktav-lang/spec)。`,
+[\`ktav-lang/spec\`](https://github.com/ktav-lang/spec),0.7.0 的变更见
+[\`CHANGELOG.zh.md\`](CHANGELOG.zh.md)。`,
   },
-  // R15-F4: merges the English-only "**Spec 0.7 status:** ..." paragraph with
-  // the following `---` rule, because every unit renders into all three
-  // languages and the ru/zh files have no counterpart for that paragraph
-  // (docs parity gap).
-  // TODO: split into a full triple plus a separate common `---` unit once
-  // ru/zh translations are written.
+  // The 0.7 draft-status notice lived here while 0.7 was unreleased and
+  // existed in English only. 0.7.0 shipped, so the version statement moved
+  // into `spec-pointer` and the feature list is the CHANGELOG's job — the
+  // separator is all that remains, and it is identical in every language.
   {
-    id: 'spec-0-7-status-with-rule',
-    en: `**Spec 0.7 status:** the 0.7 draft (still unreleased; see the spec
-repository's \`versions/0.7\`) is implemented in this tree and covered by
-its conformance suite — BOM handling (§ 3.1), \`(...)\` trailing-whitespace
-stripping (§ 5.6), escape-forces-String (§ 3.7 / § 5.2), the Float domain
-floor, \`\\uXXXX\` escapes (§ 3.7.1), quoted keys (§ 5.3.3) with the § 5.9.10
-canonical key rules, writer-side representable-value rejection (§ 5.9.0),
-and the \`UnterminatedQuotedKey\` (§ 6.16) / \`InvalidUtf8\` (§ 6.15) error
-categories. The crate version and its \`spec-version\` metadata remain
-pinned to \`0.6.4\` pending the 0.7 release decision.
-
----`,
-    ru: `---`,
-    zh: `---`,
+    id: 'intro-rule',
+    common: `---`,
   },
   {
     id: 'name-heading',

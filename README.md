@@ -14,20 +14,10 @@
 
 **Playground:** convert JSON / YAML / TOML / INI ⇄ Ktav in your browser at **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Specification:** this crate implements **Ktav**. The format is
+**Specification:** this crate implements **Ktav 0.7.0**. The format is
 versioned and maintained independently of this crate — see
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) for the formal
-document.
-
-**Spec 0.7 status:** the 0.7 draft (still unreleased; see the spec
-repository's `versions/0.7`) is implemented in this tree and covered by
-its conformance suite — BOM handling (§ 3.1), `(...)` trailing-whitespace
-stripping (§ 5.6), escape-forces-String (§ 3.7 / § 5.2), the Float domain
-floor, `\uXXXX` escapes (§ 3.7.1), quoted keys (§ 5.3.3) with the § 5.9.10
-canonical key rules, writer-side representable-value rejection (§ 5.9.0),
-and the `UnterminatedQuotedKey` (§ 6.16) / `InvalidUtf8` (§ 6.15) error
-categories. The crate version and its `spec-version` metadata remain
-pinned to `0.6.4` pending the 0.7 release decision.
+document, and [`CHANGELOG.md`](CHANGELOG.md) for what 0.7.0 changed.
 
 ---
 
