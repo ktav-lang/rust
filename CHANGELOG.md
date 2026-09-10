@@ -134,6 +134,11 @@ driven by source-level analysis and allocation counters, not benchmarks.
 - Seventeen rounds of independent implementation review against spec
   0.7.0 are archived under `docs/reviews/`; every finding is either
   fixed here or explicitly recorded there as a profiling candidate.
+- The published tarball no longer carries the vendored spec
+  corpus, the internal review notes or the documentation generator:
+  1,715 files (1.4 MiB compressed) down to 188 (403 KiB). Nothing that
+  the library needs to build was removed — run the conformance suite
+  from a git checkout, where nothing is excluded.
 
 ## [0.6.4] — 2026-08-23
 

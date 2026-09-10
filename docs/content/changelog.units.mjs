@@ -628,6 +628,24 @@ benchmark。`,
   已在此修复,要么在那里明确记录为待剖析的候选项。`,
   },
   {
+    id: 'v0-7-0-052',
+    join: 'tight',
+    en: `- The published tarball no longer carries the vendored spec
+  corpus, the internal review notes or the documentation generator:
+  1,715 files (1.4 MiB compressed) down to 188 (403 KiB). Nothing that
+  the library needs to build was removed — run the conformance suite
+  from a git checkout, where nothing is excluded.`,
+    ru: `- Публикуемый tarball больше не тащит вендоренный корпус спеки,
+  внутренние отчёты ревью и генератор документации: 1 715 файлов
+  (1,4 MiB в сжатом виде) превратились в 188 (403 KiB). Ничего из
+  того, что нужно для сборки библиотеки, не убрано — conformance-сюиту
+  гоняйте из git-чекаута, где не исключено ничего.`,
+    zh: `- 发布的 tarball 不再携带随仓库附带的规范语料、内部评审记录与文档
+  生成器:文件数从 1,715(压缩后 1.4 MiB)降至 188(403 KiB)。构建库
+  所需的内容一个都没少——conformance 套件请在 git 检出中运行,那里不
+  排除任何文件。`,
+  },
+  {
     id: 'v0-6-4-001',
     join: 'block',
     en: `## [0.6.4] — 2026-08-23`,
