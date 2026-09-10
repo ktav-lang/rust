@@ -11,11 +11,14 @@
 //! never becomes `None`; the writer's rejection of `None`/`Some(None)` keys is
 //! unchanged.
 //!
-//! Owned buffers (R16-F3): in the owned branch the adapter owns the key
-//! Scalar, so the string methods transfer its heap buffer via `visit_string`
-//! while numeric methods keep parsing the borrowed slice; the borrowed event
-//! branch keeps `visit_borrowed_str` and never lends a locally owned buffer as
-//! a long-lived borrow.
+//! Owned buffers (R16-F3, R17-F1): in the owned branch the adapter owns the
+//! key Scalar. `deserialize_string` is an explicit ownership request and
+//! always yields `visit_string`; `deserialize_str` moves an existing heap
+//! buffer through `visit_string` but hands an inline name over as a
+//! `visit_str` slice — no heap round-trip when the target does not need
+//! ownership. Numeric methods keep parsing the borrowed slice; the borrowed
+//! event branch keeps `visit_borrowed_str` and never lends a locally owned
+//! buffer as a long-lived borrow.
 
 use std::str::FromStr;
 
@@ -65,18 +68,6 @@ impl<'de> KeyDeserializer<'de> {
         }
     }
 
-    fn visit_owned_text<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        match self.text {
-            KeyText::Borrowed(s) => visitor.visit_borrowed_str(s),
-            // R16-F3: hand the buffer to the target String — `into_string`
-            // moves a heap-backed Scalar's allocation without copying; an
-            // inline Scalar allocates here, but a String target needed that
-            // allocation anyway. Numeric targets below still parse the
-            // borrowed slice untouched.
-            KeyText::Local(s) => visitor.visit_string(s.into_string()),
-        }
-    }
-
     fn parse<T: FromStr>(&self, type_name: &'static str) -> Result<T> {
         let s = self.text();
         s.parse::<T>().map_err(|_| {
@@ -93,11 +84,32 @@ impl<'de> Deserializer<'de> for KeyDeserializer<'de> {
     }
 
     fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.visit_owned_text(visitor)
+        match self.text {
+            KeyText::Borrowed(s) => visitor.visit_borrowed_str(s),
+            KeyText::Local(s) => {
+                if s.is_heap_allocated() {
+                    // R16-F3: an existing heap buffer moves into the target
+                    // String instead of being copied.
+                    visitor.visit_string(s.into_string())
+                } else {
+                    // R17-F1: an inline name needs no heap round-trip — hand
+                    // over a slice so inline-capable targets (compact_str,
+                    // FromStr visitors) read it allocation-free; `visit_str`
+                    // still copies once when a target truly wants an owned
+                    // buffer.
+                    visitor.visit_str(&s)
+                }
+            }
+        }
     }
 
     fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
-        self.visit_owned_text(visitor)
+        match self.text {
+            KeyText::Borrowed(s) => visitor.visit_borrowed_str(s),
+            // Explicit ownership request (R16-F3): materialize the String
+            // even from an inline Scalar.
+            KeyText::Local(s) => visitor.visit_string(s.into_string()),
+        }
     }
 
     fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value> {
