@@ -9,6 +9,131 @@ For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
 
+## [0.7.0] — 2026-09-10
+
+Implements [Ktav 0.7.0](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.md),
+released the same day. `spec-version` metadata moves to `0.7.0` and the
+pinned `spec` submodule moves to the 0.7.0 release commit, so the
+conformance corpus this crate is tested against is the released one.
+
+### Breaking
+
+- **`( … )` stripped multi-line strings now strip trailing whitespace
+  from every content line** (§ 5.6), matching what the form already did
+  to leading whitespace. Previously trailing whitespace survived
+  byte-for-byte, which meant an editor's "trim on save" could silently
+  change string content. `(( … ))` is unaffected and stays verbatim on
+  both edges — use it when trailing whitespace is significant.
+- **A recognised escape sequence forces String classification**
+  (§ 3.7 / § 5.2). A body written as `\u0031` decodes to `1` but stays a
+  String — the escape is evidence of intent, so the decoded text is no
+  longer re-classified as a number or keyword.
+- **Whitespace is the frozen 25-code-point § 3.3 set everywhere**, with
+  no delegation to a host-language Unicode predicate. Key-segment
+  trimming widens from ASCII-only to that same set (§ 4), so two keys
+  differing only by a non-ASCII whitespace character at a trimmed edge
+  now collide as one key.
+- **Integers outside the i64 domain are String, including through
+  `ser::to_value`.** The parser's Integer domain has always been i64
+  (§ 5, § 5.2 rule 13); the serde bridge used to produce a wider
+  `Value::Integer` that changed variant and canonical bytes on the very
+  next round-trip. `to_value` now yields `Value::String` for a `u64`,
+  `i128` or `u128` outside i64 — the same `Value` parsing that literal
+  would give. In-range values are unchanged.
+
+### Added
+
+- **Leading BOM handling** (§ 3.1): exactly one leading U+FEFF is
+  skipped if it is the document's first code point; the canonical writer
+  never emits one. A U+FEFF anywhere else is ordinary content.
+- **Quoted keys** (§ 5.3.3): quote-aware key and compound scanners, the
+  0.7 escape table with quoted-segment validation and decoding, and the
+  § 5.9.10 canonical key-form selection and re-escape recipes in every
+  writer. The thin event path strips quoted-key delimiters.
+- **`\uXXXX` escapes** decoded in values and in keys (§ 3.7.1), with
+  `BadEscapeSequence` diagnostics for lone and mismatched surrogates.
+- **Root Array documents** across the serde root serializer and both
+  parsers, with the § 5.9.6 / § 5.9.12 Array-root first-item safeguards
+  in every writer.
+- **Writer-side representable-value rejection** (§ 5.9.0) with reason
+  codes on all three writer surfaces.
+- **`InvalidUtf8`** as a distinct error category carrying a byte offset,
+  on the byte-boundary surface (§ 6.15); **`UnterminatedQuotedKey`**
+  (§ 6.16) for an unclosed quoted key.
+- **`i128` / `u128` support in both deserializers.** They serialized
+  correctly before but could not be read back: serde's default methods
+  reject those types outright unless overridden. Both the owned and the
+  thin path now parse the digits exactly, with no 64-bit or `f64` hop.
+- Conformance runner extended to the 0.7 corpus, including its
+  `unrepresentable/` and `parseable-unrepresentable/` categories.
+
+### Fixed
+
+- **`ser::to_value` now stores the payload the parser would store.**
+  Float payloads carried a text-literal `.0` mantissa (`1.0e100` where
+  the parser stores `1e100`), and `f32` went through ryu's f32
+  thresholds rather than the f64 ones the parser uses (`0.000001` vs
+  `1e-6`). A document built with `to_value` therefore stopped comparing
+  equal to itself after `render`/`emit_canonical` + `parse`. Numeric
+  bits and canonical output were always correct; only the stored
+  representation disagreed.
+- **Typed map keys behave identically through both read APIs and both
+  write APIs.** `from_str` and `de::from_value` disagreed about numeric,
+  `bool`, unit-enum and newtype keys; `to_string` and `ser::to_value`
+  produced different key *names* for the same value (`1` vs `1.0`) and
+  accepted different key types. Both sides now share one policy. Keys
+  wrapped in `Some(...)` were accepted by the writers but rejected by
+  both readers — they round-trip now, and a key literally named `null`
+  stays the string `"null"` rather than becoming `None`.
+- **Inline-compound scanning**, across many edge cases surfaced by the
+  0.7 conformance corpus and the review series: quote tracking keyed to
+  the correct scope, quotes in a value no longer shielding a structural
+  closer, mid-scalar openers treated as literal bytes, raw scalars
+  terminating at any unescaped closer, per-scope raw closers and scope
+  restore, comma key-context derived from the active scope, EOF after a
+  whitespace skip, and a bracket in an inline-key position reported as
+  `InvalidKey` rather than a phantom compound error.
+- **§ 5.6 dedent measures the common prefix in § 3.3 code points, not
+  bytes**, through a single shared prefix scan subtracted per non-blank
+  line.
+- **§ 5.3.2 dotted-key re-entry** in the thin event parser, plus
+  compound child-path registration and merge frames for bare compound
+  openers.
+- **`i64::MIN` is represented exactly** from a negative prefixed integer
+  literal.
+- Empty root tuple-variant names are rejected by the serde text
+  serializer.
+
+### Performance
+
+No timing figures are claimed for this release — the work below was
+driven by source-level analysis and allocation counters, not benchmarks.
+
+- Inline compound boundaries are computed once and reused through an
+  `InlineBounds` memo; the three inline scanners are one shared state
+  machine; `ScopeFrame` packs into a single byte.
+- The thin path scans inline compounds straight into events instead of
+  building an owned `Value` detour, stages inline arrays as flat event
+  blocks, and registers child paths in one pass through a shared
+  path-node index.
+- Decoders borrow when there is nothing to unescape.
+- The § 5.6 prefix scan is taken lazily over an iterator, and the
+  canonical multi-line body is no longer split and rejoined.
+- Map key names are written straight into the inline-capable `Scalar`,
+  including through `collect_str` (`Display` and `fmt::Arguments` keys);
+  a short key name no longer allocates a temporary `String`. On the read
+  side an inline key is handed over as a slice, while an existing heap
+  buffer is still moved into the target rather than copied.
+- The i64-domain check for integers is a native range comparison instead
+  of formatting and re-parsing the decimal text.
+
+### Notes
+
+- MSRV stays `1.71`. Dependencies are unchanged.
+- Seventeen rounds of independent implementation review against spec
+  0.7.0 are archived under `docs/reviews/`; every finding is either
+  fixed here or explicitly recorded there as a profiling candidate.
+
 ## [0.6.4] — 2026-08-23
 
 ### Fixed

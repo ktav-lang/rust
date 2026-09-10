@@ -11,6 +11,104 @@
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
 
+## [0.7.0] —— 2026-09-10
+
+实现同日发布的
+[Ktav 0.7.0](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.zh.md)。
+`spec-version` 元数据升至 `0.7.0`,固定的 `spec` submodule 也移至 0.7.0
+发布提交,因此本 crate 所对照的 conformance 语料库正是已发布的那一份。
+
+### 破坏性变更
+
+- **`( … )` 去缩进多行字符串现在会剥除每个内容行的行尾空白**(§ 5.6),
+  与它早已对行首空白所做的一致。此前行尾空白逐字节保留,这意味着编辑器
+  的「保存时去除行尾空白」可能悄然改变字符串内容。`(( … ))` 不受影响,
+  两端仍然完全逐字——当行尾空白有意义时请使用该形式。
+- **被识别的 escape 序列强制归类为 String**(§ 3.7 / § 5.2)。写作
+  `\u0031` 的 body 解码为 `1`,但仍是 String:escape 是意图的证据,因此解码
+  后的文本不再被重新归类为数字或关键字。
+- **空白是各处统一的、冻结的 § 3.3 25 码点集合**,不再委派给宿主语言的
+  Unicode 判定。键段修剪从仅 ASCII 扩展到同一集合(§ 4),因此仅在被修剪
+  边缘相差一个非 ASCII 空白字符的两个键,现在会合并为同一个键。
+- **i64 域之外的整数是 String,通过 `ser::to_value` 也是如此。** 解析器
+  的 Integer 域一直是 i64(§ 5、§ 5.2 规则 13);而 serde 桥接层此前会
+  产生更宽的 `Value::Integer`,它在下一次 roundtrip 就会改变变体与
+  canonical 字节。现在 `to_value` 对超出 i64 的 `u64`、`i128` 或 `u128`
+  返回 `Value::String`——与解析同一字面量所得的 `Value` 完全一致。域内
+  数值不变。
+
+### 新增
+
+- **前导 BOM 处理**(§ 3.1):若 U+FEFF 是文档的首个码点,则恰好跳过一个;
+  canonical writer 永不输出 BOM。位于其他位置的 U+FEFF 是普通内容。
+- **带引号的键**(§ 5.3.3):quote-aware 的键与复合值扫描器、带 quoted
+  段验证与解码的 0.7 escape 表,以及所有 writer 中 § 5.9.10 的
+  canonical 键形式选择与重新转义规则。thin event 路径会剥除 quoted 键的
+  定界符。
+- **`\uXXXX` escape** 在值与键中均可解码(§ 3.7.1),对孤立代理与不匹配
+  代理给出 `BadEscapeSequence` 诊断。
+- **Array 作为根的文档**:serde root 序列化器与两个解析器均支持,并在每个
+  writer 中带有 § 5.9.6 / § 5.9.12 的 Array 根首元素保护。
+- **writer 侧对不可表示值的拒绝**(§ 5.9.0),三个 writer 面上均带
+  reason code。
+- **`InvalidUtf8`** 成为携带字节偏移的独立错误类别,位于字节边界面
+  (§ 6.15);**`UnterminatedQuotedKey`**(§ 6.16)用于未闭合的带引号键。
+- **两个反序列化器都支持 `i128` / `u128`。** 它们此前能够正确序列化却读不
+  回来:除非覆盖,serde 的默认方法会直接拒绝这两个类型。现在 owned 与
+  thin 两条路径都精确解析数字,不经过 64 位或 `f64` 中转。
+- conformance runner 扩展到 0.7 语料库,包含其 `unrepresentable/` 与
+  `parseable-unrepresentable/` 类别。
+
+### 修复
+
+- **`ser::to_value` 现在存放解析器会存放的 payload。** Float payload 曾带
+  有文本字面量式的 `.0` 尾数(解析器存 `1e100` 处它存 `1.0e100`),而
+  `f32` 走的是 ryu 的 f32 阈值而非解析器所用的 f64 阈值(`0.000001` 对
+  `1e-6`)。因此用 `to_value` 构建的文档在 `render`/`emit_canonical` +
+  `parse` 之后不再与自身相等。数值位与 canonical 输出一直是正确的,分歧
+  仅在于存放的表示。
+- **类型化的 map 键在两个读 API 与两个写 API 上行为一致。** `from_str`
+  与 `de::from_value` 在数字、`bool`、unit enum 与 newtype 键上互相分歧;
+  `to_string` 与 `ser::to_value` 对同一个值给出不同的键*名*(`1` 对
+  `1.0`)且接受不同的键类型。现在两侧共用一套策略。被 `Some(...)` 包裹的
+  键此前可被 writer 接受却被两个 reader 拒绝——现在可以完整 roundtrip,
+  而字面名为 `null` 的键保持为字符串 `"null"`,不会变成 `None`。
+- **inline 复合值扫描** 的大量边界情形,由 0.7 语料库与系列评审揭示:引号
+  跟踪绑定到正确的 scope、值中的引号不再遮蔽结构性闭合符、标量中部的开启
+  符视作普通字节、裸标量在任何未转义闭合符处终止、逐 scope 的裸闭合符与
+  scope 恢复、逗号的键上下文取自当前 scope、空白跳过后的 EOF,以及 inline
+  键位置上的方括号报告为 `InvalidKey` 而非幻影复合值错误。
+- **§ 5.6 去缩进以 § 3.3 码点而非字节度量公共前缀**,通过一次共享的前缀
+  扫描,并从每个非空行中扣除。
+- thin event 解析器中的 **§ 5.3.2 点分键重入**,以及复合值子路径注册与裸
+  复合开启符的 merge frame。
+- **`i64::MIN` 由带前缀的负整数字面量精确表示**。
+- serde 文本序列化器拒绝空的根 tuple-variant 名称。
+
+### 性能
+
+本次发布不声称任何计时数据——以下工作基于源码级分析与分配计数器,而非
+benchmark。
+
+- inline 复合值边界只计算一次,并通过 `InlineBounds` memo 复用;三个
+  inline 扫描器合为一个共享状态机;`ScopeFrame` 压缩进单个字节。
+- thin 路径直接把 inline 复合值扫描为事件,不再绕行构建 owned `Value`,
+  把 inline 数组以扁平事件块暂存,并通过共享的 path 节点索引一次性注册
+  子路径。
+- 无需去转义时解码器采用借用。
+- § 5.6 前缀扫描改为在迭代器上惰性进行,canonical 多行 body 不再拆分后
+  再拼接。
+- map 键名直接写入可 inline 的 `Scalar`,包括经由 `collect_str`
+  (`Display` 与 `fmt::Arguments` 键);短键名不再分配临时 `String`。读取
+  侧 inline 键以切片交付,而已有的 heap 缓冲区仍以移动而非复制交给目标。
+- 整数的 i64 域检查改为原生范围比较,不再格式化后重新解析十进制文本。
+
+### 备注
+
+- MSRV 仍为 `1.71`。依赖未变。
+- 针对 spec 0.7.0 的十七轮独立实现评审归档于 `docs/reviews/`;每条发现要么
+  已在此修复,要么在那里明确记录为待剖析的候选项。
+
 ## [0.6.4] —— 2026-08-23
 
 ### 修复
