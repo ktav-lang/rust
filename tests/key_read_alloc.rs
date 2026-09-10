@@ -138,6 +138,14 @@ fn object_key_ptr(value: &Value) -> usize {
 
 #[test]
 fn key_read_allocation_matrix() {
+    // Warm-up, uncounted: on some platforms (observed on macOS CI) the
+    // first heap allocation on a fresh thread pays for one-time runtime
+    // setup (TLS registration, panic machinery, ...) that has nothing to
+    // do with the code under test. Absorb it here, before any window
+    // below is measured, so every count reflects only the operation it
+    // names — see the identical rationale in tests/key_name_alloc.rs.
+    let _ = from_value::<ExtractKey<Scalar>>(one_entry_object("port".into())).unwrap();
+
     // --- short inline keys: the key read must not allocate (R17-F1) ---
 
     // Scalar target: compact_str 0.9.0 deserializes via `deserialize_str` +

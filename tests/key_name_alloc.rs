@@ -96,6 +96,14 @@ fn owned_value<K: Serialize>(key: K) -> (u64, Value) {
 
 #[test]
 fn key_name_writes_directly_into_scalar() {
+    // Warm-up, uncounted: on some platforms (observed on macOS CI) the
+    // first heap allocation on a fresh thread pays for one-time runtime
+    // setup (TLS registration, panic machinery, ...) that has nothing to
+    // do with the code under test. Absorb it here, before any window
+    // below is measured, so every count reflects only the operation it
+    // names.
+    let _ = to_string(&OneEntry("port")).unwrap();
+
     // Direct text writer, short name: the only allocation is the output
     // buffer (`String::with_capacity(2048)` in `to_string`) — the key
     // name lives inline in the Scalar.
