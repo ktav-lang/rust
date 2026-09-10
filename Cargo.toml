@@ -10,6 +10,24 @@ keywords = ["config", "configuration", "serde", "minimal", "plain"]
 categories = ["config", "parsing"]
 rust-version = "1.71"
 
+# Development-only material, kept out of the published tarball: the spec
+# conformance corpus vendored as the `spec/` submodule (~1,470 fixture
+# files, 97% of the package by size), internal review notes and session
+# checkpoints, the markdown generator, and CI configuration. `cargo add
+# ktav` should download the library, not the whole specification
+# repository. The integration tests stay in the package: they are small,
+# and dropping them makes Cargo warn once per auto-discovered test target
+# on every publish. `spec_conformance` is the only one that needs the
+# excluded corpus; run the suite from a git checkout, where nothing is
+# excluded.
+exclude = [
+    "/.github/",
+    "/docs/",
+    "/docs.config.mjs",
+    "/spec/",
+    "/tools/",
+]
+
 # Which version of the Ktav format specification this crate implements.
 # See https://github.com/ktav-lang/spec for the formal document.
 [package.metadata.ktav]
