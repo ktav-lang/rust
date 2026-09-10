@@ -1,0 +1,35 @@
+{
+  "name": "@ktav-lang/docs-gen",
+  "version": "0.1.0",
+  "description": "Generate parallel multilingual markdown from per-meaning source units, and fail when a committed artifact drifts from its source.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "bin": {
+    "docs-gen": "./src/cli.mjs"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test ./test/docs-gen.test.mjs"
+  },
+  "keywords": [
+    "documentation",
+    "i18n",
+    "markdown",
+    "generator",
+    "translation-parity"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ktav-lang/rust",
+    "directory": "tools/docs-gen"
+  }
+}
