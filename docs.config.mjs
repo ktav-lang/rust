@@ -25,5 +25,14 @@ export default {
         zh: 'README.zh.md',
       },
     },
+    {
+      name: 'CHANGELOG',
+      source: 'docs/content/changelog.units.mjs',
+      outputs: {
+        en: 'CHANGELOG.md',
+        ru: 'CHANGELOG.ru.md',
+        zh: 'CHANGELOG.zh.md',
+      },
+    },
   ],
 };

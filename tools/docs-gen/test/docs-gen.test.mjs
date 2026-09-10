@@ -191,6 +191,65 @@ test('the first unit cannot be tight, and join values are checked', () => {
   );
 });
 
+test('flow and none units keep a sentence inside its own paragraph', () => {
+  // This is what takes the granularity below a paragraph: one sentence
+  // is one claim, and a reviewer can see which language moved.
+  const units = [
+    { id: 's1', en: 'First claim.' },
+    { id: 's2', en: 'Second claim.', join: 'flow' },
+    { id: 's3', en: 'Third claim.', join: 'none' },
+  ];
+  validateUnits('DOC', units, ['en']);
+  assert.equal(renderLanguage(units, 'en'), 'First claim. Second claim.Third claim.\n');
+});
+
+test('a per-language join lets each language keep its own line wrapping', () => {
+  // The same boundary between two sentences is a space in one language,
+  // a line break in the next, and nothing at all in a language that does
+  // not separate sentences with a space. One shared mode cannot express
+  // that, and forcing one would rewrite two of the three artifacts.
+  const units = [
+    { id: 's1', en: 'One.', ru: 'Раз.', zh: '一。' },
+    {
+      id: 's2',
+      join: { en: 'flow', ru: 'tight', zh: 'none' },
+      en: 'Two.',
+      ru: 'Два.',
+      zh: '二。',
+    },
+  ];
+  validateUnits('DOC', units, LANGS);
+  assert.equal(renderLanguage(units, 'en'), 'One. Two.\n');
+  assert.equal(renderLanguage(units, 'ru'), 'Раз.\nДва.\n');
+  assert.equal(renderLanguage(units, 'zh'), '一。二。\n');
+});
+
+test('a per-language join must name every language, and only known ones', () => {
+  rejects(
+    [{ id: 'a', en: 'x', ru: 'x', zh: 'x' },
+      { id: 'b', en: 'y', ru: 'y', zh: 'y', join: { en: 'flow', ru: 'flow' } }],
+    /per-language join missing zh/u,
+  );
+  rejects(
+    [{ id: 'a', en: 'x', ru: 'x', zh: 'x' },
+      { id: 'b', en: 'y', ru: 'y', zh: 'y', join: { en: 'flow', ru: 'flow', zh: 'none', de: 'flow' } }],
+    /join for unknown de/u,
+  );
+  rejects(
+    [{ id: 'a', en: 'x', ru: 'x', zh: 'x' },
+      { id: 'b', en: 'y', ru: 'y', zh: 'y', join: { en: 'flow', ru: 'flow', zh: 'sideways' } }],
+    /has join "sideways"/u,
+  );
+  rejects([{ id: 'a', en: 'x' }, { id: 'b', en: 'y', join: 7 }], /neither a mode/u, ['en']);
+});
+
+test('the first unit cannot be joined in any single language either', () => {
+  rejects(
+    [{ id: 'a', en: 'x', ru: 'x', zh: 'x', join: { en: 'block', ru: 'block', zh: 'none' } }],
+    /first unit .* cannot be joined/u,
+  );
+});
+
 // --- structural parity ------------------------------------------------------
 
 test('headingSkeleton ignores headings inside fenced code', () => {

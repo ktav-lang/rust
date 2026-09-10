@@ -92,12 +92,37 @@ export function validateUnits(label, units, langs) {
     seen.add(id);
 
     if (Object.hasOwn(unit, 'join')) {
-      if (!JOIN_MODES.includes(unit.join)) {
-        fail(`${label}: unit "${id}" has join "${unit.join}" `
-          + `(expected one of ${JOIN_MODES.join(', ')})`);
+      const { join } = unit;
+      const perLanguage = join !== null && typeof join === 'object' && !Array.isArray(join);
+
+      if (perLanguage) {
+        const unknown = Object.keys(join).filter((key) => !langs.includes(key));
+        if (unknown.length > 0) {
+          fail(`${label}: unit "${id}" has join for unknown ${unknown.join(', ')} `
+            + `(the configured languages are ${langs.join('/')})`);
+        }
+        // A partial map is always a mistake rather than a shorthand: the
+        // languages left out are exactly the ones whose spacing nobody
+        // checked, and defaulting them to a blank line would split a
+        // paragraph in half in those languages only.
+        const absent = langs.filter((lang) => !Object.hasOwn(join, lang));
+        if (absent.length > 0) {
+          fail(`${label}: unit "${id}" has a per-language join missing ${absent.join(', ')} `
+            + `(list all of ${langs.join('/')}, or use one mode for every language)`);
+        }
+      } else if (typeof join !== 'string') {
+        fail(`${label}: unit "${id}" has a "join" that is neither a mode `
+          + 'nor a per-language map of modes');
       }
-      if (index === 0 && unit.join === 'tight') {
-        fail(`${label}: the first unit ("${id}") cannot be join: "tight" — `
+
+      for (const mode of perLanguage ? Object.values(join) : [join]) {
+        if (!JOIN_MODES.includes(mode)) {
+          fail(`${label}: unit "${id}" has join "${mode}" `
+            + `(expected one of ${JOIN_MODES.join(', ')})`);
+        }
+      }
+      if (index === 0 && langs.some((lang) => joinMode(unit, lang) !== 'block')) {
+        fail(`${label}: the first unit ("${id}") cannot be joined to anything — `
           + 'there is nothing before it to attach to');
       }
     }
@@ -148,7 +173,25 @@ export function validateUnits(label, units, langs) {
 export const DEFAULT_SEPARATOR = '\n\n';
 
 /** How a unit attaches to the one before it. */
-export const JOIN_MODES = ['block', 'tight'];
+export const JOIN_MODES = ['block', 'tight', 'flow', 'none'];
+
+/** Glue inserted before a unit, by join mode. `block` uses `separator`. */
+const JOIN_GLUE = { tight: '\n', flow: ' ', none: '' };
+
+/**
+ * Resolve a unit's join mode for one language.
+ *
+ * `join` is either a mode shared by every language, or a per-language
+ * map. The map is needed because languages wrap differently: the same
+ * boundary between two sentences can be a space in one language, a line
+ * break in the next, and nothing at all in a language that does not put
+ * spaces between sentences.
+ */
+export function joinMode(unit, lang) {
+  const { join } = unit;
+  if (join === undefined) return 'block';
+  return typeof join === 'string' ? join : join[lang] ?? 'block';
+}
 
 /**
  * Render one language of a validated unit array.
@@ -158,18 +201,31 @@ export const JOIN_MODES = ['block', 'tight'];
  * default, which is what markdown wants; a project emitting another
  * format configures its own. The result ends with exactly one newline.
  *
- * A unit marked `join: 'tight'` is glued to the previous one with a
- * single newline instead. That is what makes a list item or a table row
- * a unit in its own right: under the blank-line separator, one bullet
- * per unit would render as a loose list (every item wrapped in its own
- * paragraph) and a table would fall apart entirely.
+ * Two tighter joins exist so that a unit can be smaller than a block:
+ *
+ * - `join: 'tight'` glues the unit to the previous one with a single
+ *   newline. That is what makes a list item or a table row a unit in
+ *   its own right: under the blank-line separator, one bullet per unit
+ *   would render as a loose list (every item wrapped in its own
+ *   paragraph) and a table would fall apart entirely.
+ * - `join: 'flow'` glues it with a single space and `join: 'none'` with
+ *   nothing at all, which keep the unit inside the *same* line of
+ *   prose. That is what makes one sentence — one self-contained claim —
+ *   a unit, instead of a whole paragraph in which a reviewer cannot see
+ *   which translation moved. `'none'` exists for languages that do not
+ *   separate sentences with a space, such as Chinese.
+ *
+ * All of them preserve the artifact byte-for-byte: the join mode records
+ * how the two units were separated in the text to begin with. Since that
+ * differs between languages — they wrap their lines in different places
+ * — `join` may also be a per-language map.
  */
 export function renderLanguage(units, lang, separator = DEFAULT_SEPARATOR) {
   let out = '';
   units.forEach((unit, index) => {
     const text = (Object.hasOwn(unit, 'common') ? unit.common : unit[lang])
       .replace(/\s+$/u, '');
-    if (index > 0) out += unit.join === 'tight' ? '\n' : separator;
+    if (index > 0) out += JOIN_GLUE[joinMode(unit, lang)] ?? separator;
     out += text;
   });
   return `${out}\n`;

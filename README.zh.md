@@ -704,7 +704,8 @@ serde = { version = "1", features = ["derive"] }
 
 ## 许可证
 
-MIT OR Apache-2.0。详见 [LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)。
+双许可：**MIT OR Apache-2.0**，由你选择其一。详见
+[LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)。
 
 ## 其他 Ktav 实现
 

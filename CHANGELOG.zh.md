@@ -10,7 +10,6 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
-
 ## [0.7.0] —— 2026-09-10
 
 实现同日发布的
@@ -226,6 +225,136 @@ benchmark。
 - 键中 `\X`(`X` 不在十条转义之列)现在抛出 `BadEscapeSequence`。
   `\.` 与 `\:` 在任何上下文均不再是 `BadEscapeSequence`。
 
+## [0.5.0] —— 2026-05-28
+
+实现 Ktav 规范 0.5.0。这是一次破坏性发布：解析器、序列化器与 Value
+模型均按新的语言语义重写。
+
+### 破坏性变更
+
+- 移除类型标记 `:i` 与 `:f`。数字、布尔与 `null` 由词法形态推断
+  （规范 §§ 3.6、5.2）。
+- 注释使用 `##`（仅限行首）。单个 `#` 字节属于内容。
+- 裸写的 `port: 8080` 现在是 `Integer(8080)`，不再是 `String("8080")`。
+  若要保留 String，请写 `port:: 8080`。
+- 首个内容行上单独的 `{` / `[` 开启多行的根 Object / Array
+  （规范 § 5.0.1 规则 4–5）。0.1.1 的 JSONL 式语义已移除。
+- `Float` 值不再携带文本形态；改由 `ryu` 规范化。
+- 键段的首尾空白会被裁剪（规范 § 4）。
+- 行终止符为 `LF`、`CR` 或 `CR LF`；`CR` 永远不作为内容字节。
+- `ErrorKind::InlineNonEmptyCompound` 与 `InvalidTypedScalar` 标记为
+  废弃（`#[doc(hidden)]`）；解析器不再产生它们。
+
+### 新增
+
+- **内联复合** `{k: v, …}` / `[i, …]`（规范 § 5.8），支持尾随逗号、
+  值中部的花括号字面量（§ 5.8.5），嵌套深度上限 128。
+- 内联标量中的**八种转义序列**：`\\`、`\,`、`\}`、`\]`、`\{`、`\[`、
+  `\n`、`\r`（规范 § 3.7）。
+- **数字字面量文法** —— `0x`、`0o`、`0b`、十进制、下划线分隔符；
+  i64 溢出回退为 String（规范 § 3.6）。
+- **`emit_canonical()`** —— 规范 § 5.9 规定的 writer 输出，跨实现
+  字节确定。
+- **`src/parser/inline.rs`** —— 内联复合解析器。
+- **`src/render/canonical.rs`** —— 规范化 writer。
+- 新增错误变体：`UnterminatedInlineCompound`、
+  `MalformedInlineCompound`、`BadEscapeSequence`、
+  `OrphanLineAfterTopLevelInline`。
+- 三重 conformance 测试台（`tests/spec_conformance.rs`）：取自
+  `spec/versions/0.5/tests/` 的 93 个有效 + 31 个无效 fixture。
+- 解析器快速路径：纯十进制整数、无下划线浮点、ryu 复用、首字节快速
+  拒绝、仅按 LF 切行、预分配的 Bump arena。
+
+### 变更
+
+- 许可证：`MIT` → `MIT OR Apache-2.0`。
+- 规范 submodule 固定到 `v0.5.0`（`4d0a8aa`）。
+- 关闭 doctest（`[lib] doctest = false`）；示例以 `text` 块形式保留在
+  文档注释中。
+
+## [0.3.1] —— 2026-05-10
+
+向后兼容的功能发布，跟进规范 0.1.1。
+
+### 新增
+
+- **顶层 Array 支持**（规范 § 5.0.1，于规范 0.1.1 加入）——首个内容行
+  具备数组元素形态（裸标量、`:: 文本`、`:i 42`、`:f 3.14`、单独的
+  `{` / `[`，或多行开启符 `(` / `((`）的文档，现在解析为根级
+  `Value::Array`。此前根始终是 `Value::Object`，因此第 1 行的裸标量
+  会以 `MissingSeparator` 报错。空文档与仅含注释的文档仍默认为空
+  Object（保持 0.3.0 行为）。
+- **`ktav::to_string_force_strings(value)`** —— 渲染任意 `Value`，并将
+  每个标量强制为 String。类型化整数（`:i`）、类型化浮点（`:f`）、
+  布尔与 null 会被展平为其文本形态；复合结构保持不变。输出经解析器
+  round-trip 后仍是同一组 String 标量。适用于面向不理解类型标记的
+  下游消费者的「一切皆字符串」转储，或便于 diff 的规范化文本。
+- 新的 `Render` 出口：`render` 在顶层同时接受 Object 与 Array
+  （顶层 Array 渲染为每行一个裸元素，不带 `[...]` 方括号）。
+
+### 兼容性
+
+严格增量。凡在 0.3.0 下有效的文档，在 0.3.1 下依然有效并产生相同的
+`Value`。只有此前被 0.3.0 以 `MissingSeparator` 拒绝的输入（首行为
+裸标量）现在被接受为 Array。Object 路径上的错误变体及其 span 未变。
+
+解析器、render、thin 事件解析器与 thin 事件反序列化器一致遵循规范
+§ 5.0.1 —— 对任意给定输入，`parse`、`parse_events` 与 `from_str` 对根
+的种类判断一致。
+
+## [0.3.0] —— 2026-05-08
+
+次要发布，含一项破坏性的解析器严格化、一处诊断范围修复，以及类型化
+反序列化热路径上的微优化。
+
+### 修复
+
+- `ErrorKind::DuplicateKey` 与 `ErrorKind::KeyPathConflict` 现在携带
+  **出错键**自身的 span，而不是本应赋给它的那个复合结构的收尾
+  `}` / `]`。此前，当冲突在 `attach_child_value` 处被发现时
+  （例如 `value: { ... }` 与更早的 `value: ...` 重复），保存的 span
+  指向收尾括号——那是解析器在发现冲突的那一刻手头持有的位置。
+
+  现在解析器在打开复合结构时把键自身的 span（`pending_key_span`）
+  存入父帧，并在复合结构收尾、值被挂接时复用它。依据 `Span` 绘制
+  诊断下划线的编辑器 / IDE 现在会指向键。
+
+  这是对 span 取值的修复，不是 API 变更 —— `ErrorKind` 的形态未变。
+
+### 变更（breaking —— 解析器严格化）
+
+- `key: (value)` 与 `key: ((value))` 现在以
+  `ErrorKind::InlineNonEmptyCompound { body: "paren-string" }` 报错。
+  这些形态过去被当作普通字符串标量 `(value)` 接受，但它们与多行开启符
+  在视觉上无法区分，会让读者困惑。带 raw 标记的形式 `key:: (value)`
+  仍然有效，并且是编码此类字面量的规范写法。ktav-lsp 的格式化器会在
+  保存时自动改写旧形式。
+
+### 优化（无 API 变更）
+
+- `render::render` 通过递归的 `estimate_size(value)` 预设输出 `String`
+  的容量，从而跳过 `push_str` 链在数 KiB 输出上本会触发的倍增式
+  重分配。
+- `EventCursor::peek` / `next` 使用 `unsafe get_unchecked` 以消除热
+  路径上的边界检查；解析器的良构流不变式保证每次调用时
+  `pos < len()`。不变式被破坏时回退为 `None`，因此畸形输入依然安全
+  —— 这里的 unsafe 路径纯粹是省去一次分支判断的收益。
+- `MapAccess::next_key_seed` 将冗余的 `peek + next` 合并为单次 `next`
+  （两个分支反正都会消费游标）。
+- 事件 `BumpVec` 的容量提示从 `text.len() / 8 + 16` 提高到
+  `text.len() / 4 + 64`。旧提示低估了 synth fixture 上约每 5 字节
+  1 个事件的密度，在 500 KiB 文档上会在 bump arena 内触发 8–10 次
+  realloc-copy。
+
+### 实验（已回退）
+
+- 一次流式反序列化器重构（按需解析，不保留整份文档的 `Vec<Event>`）
+  已实现并测试 —— 全部 404 个测试通过，但在本机硬件上
+  parse_to_struct 相对既有游标回退了 15–60 %。原因：游标沿连续切片
+  行进，只有一条单调分支，预测器命中率 100 %；而流式方案把解析器状态
+  机的工作与反序列化器的工作交错，打乱了预测器。流式代码已删除；为该
+  实验引入的 `EventSink<'a>` trait 作为无害的泛型基础设施保留在
+  `event.rs` 中（仅与 `BumpVec` 搭配使用时零开销）。
 
 ## [0.2.0] —— 2026-05-07
 
@@ -238,6 +367,18 @@ benchmark。
   仅为 `)` 的行(会提前关闭 stripped)时,fallback 到 verbatim。逐字节
   比较 `to_string` / `render` 输出与硬编码 `((...))` 的代码需要更新。
   Round-trip(`parse(to_string(v)) == v`)未受影响。
+
+      // 之前 (0.1.5):
+      // body: ((
+      // line1
+      // line2
+      // ))
+      //
+      // 之后 (0.2.0):
+      // body: (
+      //     line1
+      //     line2
+      // )
 
   序列化双路径(`Value` → `render::render(&value)` 与
   `T: Serialize` → `ser::to_string(&t)`)同步更新,行为一致。
@@ -254,7 +395,6 @@ benchmark。
   从 `invalid/` 移到 `valid/typed_float_integer_body`,以反映新语义。
   spec submodule 已同步。
 
-
 ## [0.1.5] —— 2026-05-01
 
 主要发布:带字节偏移 span 的结构化错误、公开的事件式解析器 API、
@@ -264,7 +404,22 @@ benchmark。
 
 - `ErrorKind` 枚举(10 个规范定义变体 + `Other`),每个变体携带
   字节偏移 `span: Span`,直接向下游消费者暴露 `(line, column, kind)`,
-  无需通过正则解析格式化消息。完整变体清单见英文版。
+  无需通过正则解析格式化消息。
+
+      pub enum ErrorKind {
+          MissingSeparatorSpace { line, column, marker, span },
+          InvalidTypedScalar    { line, marker, body, span },
+          DuplicateKey          { line, key, span },
+          KeyPathConflict       { line, path, kind: ConflictKind, span },
+          EmptyKey              { line, span },
+          InvalidKey            { line, key, span },
+          UnclosedCompound      { kind: CompoundKind, span },
+          UnbalancedBracket     { line, expected: CompoundKind, found: char, span },
+          InlineNonEmptyCompound{ line, body, span },
+          MissingSeparator      { line, span },
+          Other                 { line: Option<u32>, message, span },
+      }
+
 - 现有 `Error` 枚举上的 `Error::Structured(ErrorKind)` 变体。
 - `pub struct Span { start: u32, end: u32 }`,提供 `Span::new`、
   `Span::EMPTY`、`slice(input)` 与 `line_col(input)`(line 从 1 起,
@@ -278,10 +433,19 @@ benchmark。
   保持私有 —— 公共 API 不泄露 arena 类型。
 - `src/lib.rs` 的 crate 级可运行 doctest,演示 `Error::Structured`
   匹配配合 `Span::slice` 以及 `parse_events` 回调形态。
-- 六个新顶层测试文件:`tests/error_format.rs`、
-  `tests/structured_errors.rs`、`tests/error_spans.rs`、
-  `tests/error_accessors.rs`、`tests/non_exhaustive.rs`、
-  `tests/thin_public.rs` —— 详见英文版。
+- 六个新顶层测试文件:
+  `tests/error_format.rs` —— Display 字符串的回归网(为 LSP 与绑定所
+  依赖的 7 个类别做规范化钉定);
+  `tests/structured_errors.rs` —— 按规范的每个无效 fixture 校验变体
+  身份以及 (line, span) 字节范围;
+  `tests/error_spans.rs` —— span 字节范围语义,以及 `Span::slice` 与
+  `Span::line_col` 的边界情形(多字节 UTF-8、按字符边界取整);
+  `tests/error_accessors.rs` —— 逐一验证每个 `Error` 变体的
+  `line()` / `span()` 是否如文档所述返回 `Some` / `None`;
+  `tests/non_exhaustive.rs` —— `Error` 与 `ErrorKind` 的 wildcard 分支
+  可达性证明;
+  `tests/thin_public.rs` —— 事件序列、嵌套复合、marker 元素、错误传播、
+  借用契约。
 - `benches/` 下的合成 Criterion 基准,覆盖 small_1k / medium_50k /
   large_500k 负载在成功路径和错误路径上的解析性能。baseline 数字
   位于 `bench-baseline.md`。
@@ -312,9 +476,21 @@ benchmark。
 
 ### 性能
 
-`cargo bench --bench parse -- --quick` 与 0.1.4 baseline 对比:成功
-路径零回归,错误路径略快(惰性 Display 取代了即时 `format!`)。
-完整表格见英文版。
+`cargo bench --bench parse -- --quick` 与 0.1.4 baseline 对比:
+
+|                                | 0.1.4 baseline | 0.1.5  | Δ      |
+|--------------------------------|----------------|--------|--------|
+| `parse_synth/small_1k`         | 16.1 µs        | 16.0 µs| −0.6 % |
+| `parse_synth/medium_50k`       | 896 µs         | 663 µs | −26 %  |
+| `parse_synth/large_500k`       | 9.49 ms        | 9.27 ms| −2.3 % |
+| `parse_synth_error/small_1k`   | 7.5 µs         | 7.2 µs | −4.0 % |
+| `parse_synth_error/medium_50k` | 340 µs         | 346 µs | +1.8 % |
+| `parse_synth_error/large_500k` | 4.47 ms        | 4.50 ms| +0.7 % |
+
+结论:成功路径零回归。错误路径略快——新的 `Display` 实现在调用
+`.to_string()` 时才惰性构造格式化字符串,而此前的 `format!(...)` 会在
+每一处错误点即时分配一个 `String`。支撑 span 的累积字节计数器在统计上
+是免费的。
 
 ### 备注
 

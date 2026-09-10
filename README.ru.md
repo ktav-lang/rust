@@ -746,7 +746,8 @@ serde = { version = "1", features = ["derive"] }
 
 ## Лицензия
 
-MIT OR Apache-2.0. См. [LICENSE-MIT](LICENSE-MIT) и [LICENSE-APACHE](LICENSE-APACHE).
+Двойное лицензирование: **MIT OR Apache-2.0** — на ваш выбор. См.
+[LICENSE-MIT](LICENSE-MIT) и [LICENSE-APACHE](LICENSE-APACHE).
 
 ## Другие реализации Ktav
 

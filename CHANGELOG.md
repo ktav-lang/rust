@@ -1,5 +1,7 @@
 # Changelog — `ktav` crate
 
+**Languages:** **English** · [Русский](CHANGELOG.ru.md) · [简体中文](CHANGELOG.zh.md)
+
 All notable changes to the `ktav` crate are documented here. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this crate adheres to [Semantic Versioning](https://semver.org/) with
@@ -7,7 +9,6 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
-
 
 ## [0.7.0] — 2026-09-10
 
@@ -275,7 +276,6 @@ allow literal dot/colon characters inside a key segment.
   `BadEscapeSequence`. `\.` and `\:` are no longer `BadEscapeSequence`
   in any context.
 
-
 ## [0.5.0] — 2026-05-28
 
 Implements Ktav specification 0.5.0. This is a breaking release:
@@ -367,7 +367,6 @@ The parser, render, thin event-parser, and thin event-deserializer
 all honour spec § 5.0.1 consistently — `parse`, `parse_events`, and
 `from_str` agree on the root kind for any given input.
 
-
 ## [0.3.0] — 2026-05-08
 
 Minor release with one breaking parser strictness change, a
@@ -432,7 +431,6 @@ typed-deserialize path.
   `event.rs` as harmless generic infrastructure (zero cost when
   used only with `BumpVec`).
 
-
 ## [0.2.0] — 2026-05-07
 
 Minor release with two breaking output / validation changes:
@@ -474,7 +472,6 @@ Minor release with two breaking output / validation changes:
 - `spec/versions/0.1/tests` fixture `typed_float_without_decimal` moved
   from `invalid/` to `valid/typed_float_integer_body` to reflect the new
   semantics. Spec submodule synced.
-
 
 ## [0.1.5] — 2026-05-01
 
@@ -519,7 +516,7 @@ the error enums for forward-compatibility.
 - Crate-level runnable doctest in `src/lib.rs` demonstrating both
   `Error::Structured` matching with `Span::slice` and the
   `parse_events` callback shape.
-- Three new top-level test files:
+- Six new top-level test files:
   `tests/error_format.rs` — Display-string regression net (canonical
   pinning for the 7 categories that LSP / bindings rely on);
   `tests/structured_errors.rs` — variant identity + (line, span) byte
