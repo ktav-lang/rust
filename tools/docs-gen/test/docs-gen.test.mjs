@@ -16,8 +16,10 @@ import {
   DocsGenError,
   checkDocuments,
   firstDifference,
+  headingSkeleton,
   loadConfig,
   renderLanguage,
+  structuralProblems,
   validateUnits,
   writeDocuments,
 } from '../src/index.mjs';
@@ -152,6 +154,96 @@ test('firstDifference reports the first differing byte, or -1', () => {
   assert.equal(firstDifference(Buffer.from('abc'), Buffer.from('abd')), 2);
   // A pure truncation differs at the point where the shorter one ends.
   assert.equal(firstDifference(Buffer.from('ab'), Buffer.from('abc')), 2);
+});
+
+// --- tight joining ----------------------------------------------------------
+
+test('tight units make a list item a unit of its own', () => {
+  // Under the blank-line separator one bullet per unit renders as a
+  // loose list; `join: "tight"` is what makes per-bullet granularity
+  // possible at all.
+  const units = [
+    { id: 'h', en: '### Rules' },
+    { id: 'b1', en: '- first' },
+    { id: 'b2', en: '- second', join: 'tight' },
+    { id: 'b3', en: '- third', join: 'tight' },
+  ];
+  validateUnits('DOC', units, ['en']);
+  assert.equal(renderLanguage(units, 'en'), '### Rules\n\n- first\n- second\n- third\n');
+});
+
+test('tight units keep a table intact one row at a time', () => {
+  const units = [
+    { id: 'head', common: '| a | b |' },
+    { id: 'sep', common: '|---|---|', join: 'tight' },
+    { id: 'r1', en: '| one | two |', join: 'tight' },
+  ];
+  validateUnits('DOC', units, ['en']);
+  assert.equal(renderLanguage(units, 'en'), '| a | b |\n|---|---|\n| one | two |\n');
+});
+
+test('the first unit cannot be tight, and join values are checked', () => {
+  rejects([{ id: 'a', en: 'x', join: 'tight' }], /first unit .* cannot be join/u, ['en']);
+  rejects(
+    [{ id: 'a', en: 'x' }, { id: 'b', en: 'y', join: 'snug' }],
+    /has join "snug"/u,
+    ['en'],
+  );
+});
+
+// --- structural parity ------------------------------------------------------
+
+test('headingSkeleton ignores headings inside fenced code', () => {
+  // This project's own documents embed Ktav samples whose `##` comment
+  // lines would otherwise be counted as document headings.
+  const md = [
+    '# Title',
+    '',
+    '```text',
+    '## not a heading, it is a Ktav comment',
+    '### neither is this',
+    '```',
+    '',
+    '## Real section',
+    '',
+    '~~~',
+    '# also fenced',
+    '~~~',
+  ].join('\n');
+  assert.deepEqual(headingSkeleton(md), [1, 2]);
+});
+
+test('headingSkeleton closes a fence only on its own marker', () => {
+  const md = ['```', '~~~', '# still inside the backtick fence', '```', '# real'].join('\n');
+  assert.deepEqual(headingSkeleton(md), [1]);
+});
+
+test('structural parity catches a demoted heading', () => {
+  const rendered = new Map([
+    ['en', '# T\n\n## Section\n'],
+    ['ru', '# T\n\n### Раздел\n'],
+  ]);
+  const problems = structuralProblems('DOC', rendered, ['en', 'ru']);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /heading #2 is level 3 in ru but level 2 in en/u);
+});
+
+test('structural parity catches a missing or extra heading', () => {
+  const rendered = new Map([
+    ['en', '# T\n\n## A\n\n## B\n'],
+    ['ru', '# T\n\n## A\n'],
+  ]);
+  const problems = structuralProblems('DOC', rendered, ['en', 'ru']);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /ru has 2 heading\(s\) but en has 3/u);
+});
+
+test('structural parity is silent when the languages agree', () => {
+  const rendered = new Map([
+    ['en', '# T\n\n## A\n'],
+    ['ru', '# Т\n\n## А\n'],
+  ]);
+  assert.deepEqual(structuralProblems('DOC', rendered, ['en', 'ru']), []);
 });
 
 // --- end to end -------------------------------------------------------------

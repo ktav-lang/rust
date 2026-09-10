@@ -91,6 +91,17 @@ export function validateUnits(label, units, langs) {
     }
     seen.add(id);
 
+    if (Object.hasOwn(unit, 'join')) {
+      if (!JOIN_MODES.includes(unit.join)) {
+        fail(`${label}: unit "${id}" has join "${unit.join}" `
+          + `(expected one of ${JOIN_MODES.join(', ')})`);
+      }
+      if (index === 0 && unit.join === 'tight') {
+        fail(`${label}: the first unit ("${id}") cannot be join: "tight" — `
+          + 'there is nothing before it to attach to');
+      }
+    }
+
     const hasCommon = Object.hasOwn(unit, 'common');
     const present = langs.filter((lang) => Object.hasOwn(unit, lang));
 
@@ -136,6 +147,9 @@ export function validateUnits(label, units, langs) {
 /** Markdown's block separator; overridable for other output formats. */
 export const DEFAULT_SEPARATOR = '\n\n';
 
+/** How a unit attaches to the one before it. */
+export const JOIN_MODES = ['block', 'tight'];
+
 /**
  * Render one language of a validated unit array.
  *
@@ -143,11 +157,22 @@ export const DEFAULT_SEPARATOR = '\n\n';
  * change the artifact. Units are joined by `separator` — a blank line by
  * default, which is what markdown wants; a project emitting another
  * format configures its own. The result ends with exactly one newline.
+ *
+ * A unit marked `join: 'tight'` is glued to the previous one with a
+ * single newline instead. That is what makes a list item or a table row
+ * a unit in its own right: under the blank-line separator, one bullet
+ * per unit would render as a loose list (every item wrapped in its own
+ * paragraph) and a table would fall apart entirely.
  */
 export function renderLanguage(units, lang, separator = DEFAULT_SEPARATOR) {
-  const blocks = units.map((unit) =>
-    (Object.hasOwn(unit, 'common') ? unit.common : unit[lang]).replace(/\s+$/u, ''));
-  return `${blocks.join(separator)}\n`;
+  let out = '';
+  units.forEach((unit, index) => {
+    const text = (Object.hasOwn(unit, 'common') ? unit.common : unit[lang])
+      .replace(/\s+$/u, '');
+    if (index > 0) out += unit.join === 'tight' ? '\n' : separator;
+    out += text;
+  });
+  return `${out}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +203,9 @@ async function loadUnits(doc, langs, rootDir) {
  *
  * @returns {Promise<Map<string,string>>} language -> rendered markdown
  */
-export async function buildDocument(doc, langs, rootDir, separator = DEFAULT_SEPARATOR) {
+export async function buildDocument(
+  doc, langs, rootDir, separator = DEFAULT_SEPARATOR, structuralParity = true,
+) {
   for (const lang of langs) {
     if (!doc.outputs || typeof doc.outputs[lang] !== 'string') {
       fail(`${doc.name}: no output path configured for language "${lang}"`);
@@ -189,7 +216,86 @@ export async function buildDocument(doc, langs, rootDir, separator = DEFAULT_SEP
   for (const lang of langs) {
     rendered.set(lang, renderLanguage(units, lang, separator));
   }
+
+  if (structuralParity && langs.length > 1) {
+    const problems = structuralProblems(doc.name, rendered, langs);
+    if (problems.length > 0) fail(problems.join('\n'));
+  }
+
   return rendered;
+}
+
+// ---------------------------------------------------------------------------
+// Structural parity
+//
+// Per-unit validation proves every meaning has every language. It does
+// NOT prove the languages describe the same DOCUMENT: a heading demoted
+// from ## to ### in one translation, or an extra heading in another,
+// passes unit validation untouched. Comparing the rendered heading
+// skeletons catches that class, which is why the specification in this
+// ecosystem runs a separate parity checker over its translations.
+// ---------------------------------------------------------------------------
+
+/**
+ * Levels of the ATX headings in a markdown document, in order.
+ *
+ * Fenced code is skipped: this project's own documents contain Ktav
+ * samples whose `##` comment lines would otherwise be counted as
+ * headings. Both fence markers are honoured, and a fence only closes on
+ * the same marker character.
+ */
+export function headingSkeleton(markdown) {
+  const levels = [];
+  let fenceChar = null;
+  let fenceLen = 0;
+
+  for (const line of markdown.split('\n')) {
+    const fence = line.match(/^\s{0,3}(`{3,}|~{3,})/u);
+    if (fence) {
+      const char = fence[1][0];
+      const len = fence[1].length;
+      if (fenceChar === null) {
+        fenceChar = char;
+        fenceLen = len;
+      } else if (char === fenceChar && len >= fenceLen) {
+        fenceChar = null;
+      }
+      continue;
+    }
+    if (fenceChar !== null) continue;
+
+    const heading = line.match(/^(#{1,6})\s+\S/u);
+    if (heading) levels.push(heading[1].length);
+  }
+  return levels;
+}
+
+/**
+ * Compare heading skeletons across languages.
+ *
+ * @returns {string[]} human-readable problems; empty when they agree
+ */
+export function structuralProblems(label, rendered, langs) {
+  const [reference, ...others] = langs;
+  const base = headingSkeleton(rendered.get(reference));
+  const problems = [];
+
+  for (const lang of others) {
+    const other = headingSkeleton(rendered.get(lang));
+    if (other.length !== base.length) {
+      problems.push(
+        `${label}: ${lang} has ${other.length} heading(s) but ${reference} has `
+        + `${base.length} — the translations describe different documents`);
+      continue;
+    }
+    const at = base.findIndex((level, i) => level !== other[i]);
+    if (at !== -1) {
+      problems.push(
+        `${label}: heading #${at + 1} is level ${other[at]} in ${lang} but `
+        + `level ${base[at]} in ${reference}`);
+    }
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,10 +324,10 @@ export function lineAtByte(buf, offset) {
  * @returns {Promise<{written: string[]}>}
  */
 export async function writeDocuments(config) {
-  const { rootDir, languages, documents, separator } = config;
+  const { rootDir, languages, documents, separator, structuralParity } = config;
   const written = [];
   for (const doc of documents) {
-    const rendered = await buildDocument(doc, languages, rootDir, separator);
+    const rendered = await buildDocument(doc, languages, rootDir, separator, structuralParity);
     for (const lang of languages) {
       const outPath = path.resolve(rootDir, doc.outputs[lang]);
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -239,10 +345,10 @@ export async function writeDocuments(config) {
  * @returns {Promise<{stale: {file: string, source: string, reason: string}[]}>}
  */
 export async function checkDocuments(config) {
-  const { rootDir, languages, documents, separator } = config;
+  const { rootDir, languages, documents, separator, structuralParity } = config;
   const stale = [];
   for (const doc of documents) {
-    const rendered = await buildDocument(doc, languages, rootDir, separator);
+    const rendered = await buildDocument(doc, languages, rootDir, separator, structuralParity);
     for (const lang of languages) {
       const file = doc.outputs[lang];
       const outPath = path.resolve(rootDir, file);
@@ -318,9 +424,16 @@ export async function loadConfig(configPath) {
   if (config.separator !== undefined && typeof config.separator !== 'string') {
     fail(`config ${configPath}: "separator" must be a string`);
   }
+  if (config.structuralParity !== undefined
+      && typeof config.structuralParity !== 'boolean') {
+    fail(`config ${configPath}: "structuralParity" must be a boolean`);
+  }
 
   return {
     separator: config.separator ?? DEFAULT_SEPARATOR,
+    // On by default: a project that genuinely wants divergent heading
+    // structure per language has to say so, rather than drift into it.
+    structuralParity: config.structuralParity ?? true,
     rootDir: config.rootDir
       ? path.resolve(path.dirname(resolved), config.rootDir)
       : path.dirname(resolved),
