@@ -7,7 +7,7 @@
 //! (`1e100`); `emit_canonical` normalises both.
 
 use std::cell::Cell;
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::rc::Rc;
 
 use serde::ser::{
@@ -467,10 +467,14 @@ impl<'a> SerializeMap for ObjectCompound<'a> {
 // `ser::to_value` (`MapSerializer::serialize_key`), so one key value always
 // produces byte-identical name text regardless of which writer API is used.
 //
-// The name is written directly into the inline-capable `Scalar` (R16-F2):
-// `CompactString` implements `fmt::Write`, so a short name (up to the
-// 24-byte inline capacity on 64-bit) never materializes an intermediate
-// heap `String`.
+// The name is written directly into the inline-capable `Scalar`
+// (R16-F2), and `collect_str` is overridden to format `Display` names
+// (and `fmt::Arguments`, which serde routes through it) into the same
+// `Scalar` (R17-F2): serde's default `collect_str` materializes the
+// formatted name as a temporary heap `String` before `serialize_str`
+// runs. With the override, a short name (up to the 24-byte inline
+// capacity on 64-bit) never allocates a heap `String`, and a long name
+// pays only its single `Scalar` spill.
 //
 // Accepted scalar-like key types: `str`; `bool` (`true`/`false`); all
 // native ints i8–i64 plus i128/u128 (plain decimal); `f32`/`f64`; `char`;
@@ -511,6 +515,13 @@ impl<'a> ser::Serializer for KeyOnlySer<'a> {
     fn serialize_str(self, v: &str) -> Result<()> {
         self.out.push_str(v);
         Ok(())
+    }
+
+    fn collect_str<T>(self, value: &T) -> Result<()>
+    where
+        T: ?Sized + fmt::Display,
+    {
+        write!(self.out, "{value}").map_err(|_| Error::Message("fmt error".into()))
     }
 
     fn serialize_bool(self, v: bool) -> Result<()> {
