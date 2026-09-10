@@ -6,6 +6,26 @@ on:
   pull_request:
 
 jobs:
+  # README.md/.ru.md/.zh.md are generated from docs/content/readme.units.mjs.
+  # This job fails when a committed artifact drifts from its source —
+  # which is what a hand-edit of the artifact looks like. Fix the source
+  # and re-run `node scripts/build_docs.mjs`; never patch the artifact.
+  docs:
+    name: Docs (generated markdown)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Generated docs are byte-identical to their source units
+        run: node scripts/build_docs.mjs --check
+
+      - name: Generator's own tests
+        run: node --test scripts/test_build_docs.mjs
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
