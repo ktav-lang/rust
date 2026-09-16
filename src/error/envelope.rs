@@ -11,9 +11,10 @@
 //! the remaining fields positionally.
 //!
 //! ```text
-//! // A parse-time LossyScalar on the input "a: 1.10\n" (spec §3.6/§5.2):
+//! // A parse-time LossyScalar on the input "a: 1.10\n" (spec §3.6/§5.2);
+//! // the span is whatever the parser reports — here the whole pair line:
 //! {"error":"LossyScalar","reason":null,"line":1,"line_text":"a: 1.10",
-//!  "span":{"start":3,"end":7},"path":null,"body":"1.10",
+//!  "span":{"start":0,"end":7},"path":null,"body":"1.10",
 //!  "canonical":"1.1","spec_section":"§3.6/§5.2"}
 //! ```
 
