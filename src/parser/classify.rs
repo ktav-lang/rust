@@ -661,8 +661,9 @@ pub(crate) fn is_pair_shape(trimmed: &str) -> bool {
     if after.starts_with(':') {
         return true;
     }
-    // Plain `key: ` separator — body must start with whitespace or be
-    // empty. Anything else (e.g. `http://...`) means the `:` is part of
-    // a value and there's no real pair.
-    after.is_empty() || after.starts_with([' ', '\t'])
+    // Plain `key: ` separator — body must start with whitespace (§ 3.3's
+    // full set, per § 4 `<sep-end> ::= 1*ws | &line-end`, not just SPACE/TAB)
+    // or be empty. Anything else (e.g. `http://...`) means the `:` is part
+    // of a value and there's no real pair.
+    after.is_empty() || after.starts_with(is_ktav_whitespace)
 }
