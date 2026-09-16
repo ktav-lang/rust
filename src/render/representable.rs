@@ -4,6 +4,11 @@
 //! rejection leaves no partial output, and so the root Object-or-Array
 //! constraint is evaluated BEFORE node-representability is checked
 //! recursively (the one fixed precedence § 5.9.0 mandates).
+//!
+//! All rejections emerge as [`Error::UnrepresentableAt`] carrying the
+//! decoded key path from the document root to the offending pair's key
+//! (empty path = root-level offense), per the § 5.9.0 structured-error
+//! contract (issue rust#12).
 
 use crate::error::{Error, ReasonCode, Result};
 use crate::value::Value;
@@ -11,35 +16,46 @@ use crate::value::Value;
 use super::helpers::{choose_multiline_form, string_needs_multiline};
 
 /// Reject a non-representable Value (§ 5.9.0) with the matching
-/// [`ReasonCode`]. Runs the root-kind check first, then recurses.
+/// [`ReasonCode`], reported as [`Error::UnrepresentableAt`] carrying
+/// the key path to the offending pair. Runs the root-kind check first,
+/// then recurses.
 pub(crate) fn check_representable(value: &Value) -> Result<()> {
     match value {
-        Value::Object(_) | Value::Array(_) => check_node(value),
-        _ => Err(Error::Unrepresentable(ReasonCode::ScalarRoot)),
+        Value::Object(_) | Value::Array(_) => check_node(value, &mut Vec::new()),
+        _ => Err(Error::UnrepresentableAt {
+            code: ReasonCode::ScalarRoot,
+            path: Vec::new(),
+        }),
     }
 }
 
-fn check_node(value: &Value) -> Result<()> {
+fn check_node<'k>(value: &'k Value, path: &mut Vec<&'k str>) -> Result<()> {
     match value {
         Value::Object(pairs) => {
             for (k, v) in pairs {
+                path.push(k);
                 if k.is_empty() {
-                    return Err(Error::Unrepresentable(ReasonCode::EmptyKeyName));
+                    return Err(at_path(
+                        Error::Unrepresentable(ReasonCode::EmptyKeyName),
+                        path,
+                    ));
                 }
-                check_node(v)?;
+                check_node(v, path)?;
+                path.pop();
             }
             Ok(())
         }
         Value::Array(items) => {
             for item in items {
-                check_node(item)?;
+                check_node(item, path)?;
             }
             Ok(())
         }
         Value::Float(s) => match s.parse::<f64>() {
-            Ok(v) if v.is_nan() || v.is_infinite() => {
-                Err(Error::Unrepresentable(ReasonCode::NonFiniteFloat))
-            }
+            Ok(v) if v.is_nan() || v.is_infinite() => Err(at_path(
+                Error::Unrepresentable(ReasonCode::NonFiniteFloat),
+                path,
+            )),
             // A stored payload that is not an f64 lexical form at all
             // is outside the Float domain but not one of the seven
             // § 5.9.0 reason codes; emission keeps its historical
@@ -48,7 +64,7 @@ fn check_node(value: &Value) -> Result<()> {
         },
         Value::String(s) => {
             if s.contains('\r') {
-                return Err(Error::Unrepresentable(ReasonCode::CRByte));
+                return Err(at_path(Error::Unrepresentable(ReasonCode::CRByte), path));
             }
             if string_needs_multiline(s) {
                 // The chooser's error paths ARE the three § 5.9.7
@@ -57,12 +73,27 @@ fn check_node(value: &Value) -> Result<()> {
                 // pretty writers' `true` (the error condition
                 // `!verbatim_ok && !stripped_lossless` is independent
                 // of the preference).
-                choose_multiline_form(s, false).map(|_| ())
+                choose_multiline_form(s, false)
+                    .map(|_| ())
+                    .map_err(|e| at_path(e, path))
             } else {
                 Ok(())
             }
         }
         Value::Null | Value::Bool(_) | Value::Integer(_) => Ok(()),
+    }
+}
+
+/// Convert a path-less writer rejection into the path-carrying
+/// `Error::UnrepresentableAt`, materializing the borrowed segments only
+/// on the error path.
+fn at_path(err: Error, path: &[&str]) -> Error {
+    match err {
+        Error::Unrepresentable(code) => Error::UnrepresentableAt {
+            code,
+            path: path.iter().map(|s| (*s).to_string()).collect(),
+        },
+        other => other,
     }
 }
 

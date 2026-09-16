@@ -38,6 +38,15 @@ use std::io;
 /// is half-open (Rust convention). `start == end` denotes an
 /// insertion-point span (no bytes covered).
 ///
+/// `start` and `end` are **byte offsets into the UTF-8 source text**
+/// (0-based, `end` exclusive) — not UTF-16 code units, not code
+/// points, and not line/column pairs. Consumers speaking LSP: the LSP
+/// protocol's default position encoding is UTF-16 code units, so an
+/// LSP server must convert (or negotiate `positionEncoding: "utf-8"`);
+/// this crate deliberately does not convert, because byte offsets are
+/// the lossless, conversion-capable form and the crate's spans are
+/// defined against UTF-8 source.
+///
 /// For convenience, [`Span::slice`] returns the substring covered by
 /// the span and [`Span::line_col`] returns the 1-based line and
 /// 0-based column at the span's start.
@@ -79,6 +88,9 @@ impl Span {
     /// this span's `start` offset within `input`. Counts `\n` as a
     /// line break; `\r` is treated as part of the previous line.
     /// Out-of-range start clamps to `input.len()`.
+    ///
+    /// The returned column is a **0-based byte column** (bytes since
+    /// the last line break), not a character or UTF-16 column.
     pub fn line_col(&self, input: &str) -> (u32, u32) {
         let start = (self.start as usize).min(input.len());
         let bytes = input.as_bytes();
@@ -120,6 +132,37 @@ pub enum Error {
     /// nothing was serialised — partial output followed by failure is
     /// never permitted.
     Unrepresentable(ReasonCode),
+    /// Like [`Error::Unrepresentable`], this reports a § 5.9.0
+    /// non-representability case (a writer rejected the Value and
+    /// nothing was serialised), plus the decoded key path of the
+    /// offending node.
+    ///
+    /// `path` is a sequence of decoded key segments from the document
+    /// root to the offending pair's KEY. For `EmptyKeyName` the
+    /// offending (empty) segment is itself the last element; for
+    /// `ScalarRoot` the path is empty (the root has no key). Array
+    /// items do NOT extend the path: the path identifies the nearest
+    /// enclosing keyed pair, and an offense inside an array item is
+    /// reported at that item's nearest keyed ancestor (or the root).
+    /// Segments are exact decoded key strings — a key containing
+    /// `->`, `.`, or any other character is one segment, never split.
+    /// The path is never rendered as a joined string anywhere in this
+    /// API's data (only in `Display`, via `Debug` quoting).
+    ///
+    /// Emitted by the Value-walking writers (`emit_canonical`,
+    /// `render` / `to_string_force_strings`); the streaming serde
+    /// writers keep returning the path-less [`Error::Unrepresentable`],
+    /// which stays public for backward compatibility and for callers
+    /// constructing it directly.
+    ///
+    /// Version note: additive variant on a `#[non_exhaustive]` enum —
+    /// not a breaking change.
+    UnrepresentableAt {
+        /// The § 5.9.0 reason code for the rejection.
+        code: ReasonCode,
+        /// Decoded key path from the root to the offending pair's key.
+        path: Vec<String>,
+    },
     /// A byte-level input (currently only [`crate::from_file`]) is not
     /// valid UTF-8 (spec 0.7 § 6.15). This is a top-level variant rather
     /// than an [`ErrorKind`] case because the check runs before any
@@ -520,6 +563,13 @@ impl Display for Error {
             Error::Syntax(m) => write!(f, "Syntax error: {}", m),
             Error::Message(m) => write!(f, "{}", m),
             Error::Unrepresentable(code) => write!(f, "{}", code),
+            Error::UnrepresentableAt { code, path } => {
+                write!(f, "{}", code)?;
+                if !path.is_empty() {
+                    write!(f, " at {:?}", path)?;
+                }
+                Ok(())
+            }
             Error::InvalidUtf8 { valid_up_to } => write!(
                 f,
                 "InvalidUtf8: input is not valid UTF-8; first invalid byte sequence at byte offset {}",
@@ -557,7 +607,8 @@ impl Error {
     /// Returns the 1-based line number associated with the error, if
     /// available. `None` for [`Error::Io`], [`Error::Message`], free-
     /// form [`Error::Syntax`], [`Error::Unrepresentable`],
-    /// [`Error::InvalidUtf8`], EOF-detected `UnclosedCompound`, and
+    /// [`Error::UnrepresentableAt`], [`Error::InvalidUtf8`],
+    /// EOF-detected `UnclosedCompound`, and
     /// the parser-internal `Other` variants that lack a line number.
     pub fn line(&self) -> Option<u32> {
         match self {
@@ -567,8 +618,9 @@ impl Error {
     }
 
     /// Returns the byte-offset span associated with the error, if
-    /// available. `None` for [`Error::Io`], [`Error::Message`] and
-    /// [`Error::Syntax`]. [`Error::InvalidUtf8`] returns an
+    /// available. `None` for [`Error::Io`], [`Error::Message`],
+    /// [`Error::Syntax`], [`Error::Unrepresentable`] and
+    /// [`Error::UnrepresentableAt`]. [`Error::InvalidUtf8`] returns an
     /// insertion-point span at the byte offset of the first invalid
     /// UTF-8 sequence. May return `Some(Span::EMPTY)` for an
     /// internal-state structured error that has no meaningful source
@@ -587,10 +639,12 @@ impl Error {
     }
 
     /// Returns the § 5.9.0 reason code if this is an
-    /// [`Error::Unrepresentable`] writer rejection, else `None`.
+    /// [`Error::Unrepresentable`] or [`Error::UnrepresentableAt`]
+    /// writer rejection, else `None`.
     pub fn reason_code(&self) -> Option<ReasonCode> {
         match self {
             Error::Unrepresentable(code) => Some(*code),
+            Error::UnrepresentableAt { code, .. } => Some(*code),
             _ => None,
         }
     }
