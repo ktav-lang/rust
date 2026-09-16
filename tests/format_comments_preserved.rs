@@ -203,17 +203,22 @@ fn corpus_commented_fixtures_preserve_comments() {
         tests_dir.join("valid/top_level_inline/with_comments.ktav"),
     ];
 
-    let mut checked = 0;
+    // Every listed fixture must be present. A `continue`-on-missing
+    // loop guarded only by "checked > 0" would let five of the six
+    // silently disappear — a rename in the corpus would quietly shrink
+    // this test's coverage instead of failing it.
+    let mut missing: Vec<&PathBuf> = Vec::new();
     for path in &candidates {
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
-        };
-        assert_comments_preserved(&text);
-        checked += 1;
+        match fs::read_to_string(path) {
+            Ok(text) => {
+                assert_comments_preserved(&text);
+            }
+            Err(_) => missing.push(path),
+        }
     }
     assert!(
-        checked > 0,
-        "expected at least one comment fixture to exist under {}",
-        tests_dir.display()
+        missing.is_empty(),
+        "comment fixtures named here are absent from the corpus \
+         (renamed or removed? update this list deliberately): {missing:#?}"
     );
 }
