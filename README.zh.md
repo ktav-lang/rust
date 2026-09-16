@@ -13,9 +13,11 @@
 
 **演练场：** 在浏览器中互转 JSON / YAML / TOML / INI ⇄ Ktav — **[ktav-lang.github.io](https://ktav-lang.github.io/)**。
 
-**规范:** 本 crate 实现 **Ktav 0.7.0**。格式与 crate 彼此独立地
-版本化与维护——规范正文见
-[`ktav-lang/spec`](https://github.com/ktav-lang/spec),0.7.0 的变更见
+**规范:** 本 crate 实现 **Ktav 0.7.1**,即 `Cargo.toml` 中
+`[package.metadata.ktav] spec-version` 所指定的版本。格式与 crate 彼此
+独立地版本化与维护,两个号码会有意分开——不改变格式行为的 crate 发布会
+让 `spec-version` 保持原样。规范正文见
+[`ktav-lang/spec`](https://github.com/ktav-lang/spec),crate 的历史见
 [`CHANGELOG.zh.md`](CHANGELOG.zh.md)。
 
 ---
@@ -177,6 +179,58 @@ tags: [
 ]
 ```
 
+## 值得知道的边角
+
+以上示例未触及的四条规则。每一条都由规范而非本实现决定,因此任何
+符合规范的解析器行为都一致。
+
+### 引号键 —— 当键里有点号或空格时
+
+裸键中的点号表示嵌套:`db.host: primary` 会构建 `db` → `host`。
+给键加引号会关闭这一解读,点号因此成为名字的一部分(§ 5.3.3):
+
+```ktav
+db.host: primary
+"db.host": literal
+"a b": spaces are fine too
+```
+
+第一行产生嵌套。第二行是一个字面名为 `db.host` 的键。这正是错误
+信封把 `path` 表示为段数组而非拼接字符串的原因 —— 拼接字符串无法区分
+这两者。
+
+### 转义在行内复合值与引号键中生效
+
+`\uXXXX` 与具名转义(§ 3.7、§ 3.7.1)在分隔符本应具有结构含义的
+位置被解读 —— 即 `{ }` 与 `[ ]` 内部,以及引号键内部。裸的块级值没有
+需要转义的分隔符,因此其中的反斜杠是普通文本:
+
+```ktav
+inline: {greek: \u03b1, csv: a\,b}
+"\u00e9": 1
+literal: \u0041
+```
+
+`greek` 是 `α`,`csv` 是单个字符串 `a,b`(被转义的逗号不是
+分隔符),引号键是 `é`。但 `literal` 是原封不动的八个字符
+`\u0041`。被识别的转义还会强制归类为字符串:写作 `\u0031` 的值是
+字符串 `1`,而不是整数。
+
+### 恰好跳过一个前导 BOM
+
+文档最开头的 U+FEFF 会在检查任何其他字节之前被跳过(§ 3.1)。出现
+在其他位置时它是普通内容 —— 包括后续行的开头,在那里它会成为该键名字的
+一部分。因此保存时添加 BOM 的编辑器不会破坏文档,而中间位置的多余 BOM
+也不会悄然消失。
+
+### 非法 UTF-8 是独立的错误,而非 I/O 失败
+
+[`from_file`](https://docs.rs/ktav) 在解析前校验文件字节是否为
+UTF-8,并以首个非法序列的字节偏移报告 [`Error::InvalidUtf8`](§ 6.15)。
+文件缺失或权限问题仍然是 [`Error::Io`] —— 二者值得区分,因为一个意味着
+「修文件」,另一个意味着「修路径」。字节在解析器看到之前绝不会被修复或
+替换。
+
 ## 在 Rust 中使用
 
 Ktav 原生支持 serde。任何实现了 `Serialize` / `Deserialize` 的类型
@@ -321,6 +375,11 @@ if let Err(e) = ktav::parse_strict(src) {
 
 缺失的信息是显式的 `null`,而不是省略键,因此使用方无需事先协商模式
 即可按位置读取每个字段。
+
+`span` 是 `{"start":N,"end":M}`,单位为 **UTF-8 源文本中的字节
+偏移**,而不是 UTF-16 code unit —— 与 [`Span`](https://docs.rs/ktav)
+本身一致。LSP 使用方要么自行转换,要么协商
+`positionEncoding: "utf-8"`。
 
 `path` 是**精确解码后的键段数组,绝不是拼接字符串**。字面名为
 `a.b` 的键是一个段,不会与两段路径混淆 —— 传输契约里根本没有可供

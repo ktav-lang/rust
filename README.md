@@ -14,10 +14,13 @@
 
 **Playground:** convert JSON / YAML / TOML / INI ⇄ Ktav in your browser at **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Specification:** this crate implements **Ktav 0.7.0**. The format is
-versioned and maintained independently of this crate — see
+**Specification:** this crate implements **Ktav 0.7.1**, the version
+named by `[package.metadata.ktav] spec-version` in `Cargo.toml`. The
+format is versioned and maintained independently of this crate — the two
+numbers move apart on purpose, since a crate release that changes no
+format behaviour leaves `spec-version` where it was. See
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) for the formal
-document, and [`CHANGELOG.md`](CHANGELOG.md) for what 0.7.0 changed.
+document, and [`CHANGELOG.md`](CHANGELOG.md) for this crate's history.
 
 ---
 
@@ -191,6 +194,66 @@ tags: [
 ]
 ```
 
+## Corners worth knowing
+
+Four rules the examples above never reach. Each one is settled by the
+specification rather than by this implementation, so every conforming
+parser behaves the same way.
+
+### Quoted keys — when a key contains a dot or a space
+
+A dot in a bare key means nesting: `db.host: primary` builds
+`db` → `host`. Quoting the key turns off that reading, so the dot is
+part of the name (spec § 5.3.3):
+
+```ktav
+db.host: primary
+"db.host": literal
+"a b": spaces are fine too
+```
+
+The first line nests. The second is a single key literally named
+`db.host`. This is why the error envelope reports `path` as an array
+of segments rather than a joined string — a joined string could not tell
+those two apart.
+
+### Escapes apply inside inline compounds and quoted keys
+
+`\uXXXX` and the named escapes (spec § 3.7, § 3.7.1) are read where
+a delimiter would otherwise be structural — inside `{ }` and `[ ]`,
+and inside a quoted key. A bare block-level value has no delimiters to
+escape, so a backslash there is ordinary text:
+
+```ktav
+inline: {greek: \u03b1, csv: a\,b}
+"\u00e9": 1
+literal: \u0041
+```
+
+`greek` is `α`, `csv` is the single string `a,b` — the escaped
+comma is not a separator — and the quoted key is `é`. But `literal` is
+the eight characters `\u0041`, unchanged. A recognised escape also
+forces String classification: a value written `\u0031` is the string
+`1`, not the integer.
+
+### Exactly one leading byte-order mark is skipped
+
+A U+FEFF at the very start of the document is skipped before any
+other byte is examined (spec § 3.1). Anywhere else it is ordinary
+content — including the start of a later line, where it becomes part of
+that key's name. Editors that add a BOM on save therefore do not break
+a document, and a stray one further in does not silently disappear.
+
+### Invalid UTF-8 is its own error, not an I/O failure
+
+[`from_file`](https://docs.rs/ktav) validates the file's bytes as
+UTF-8 before parsing and reports [`Error::InvalidUtf8`] with the byte
+offset of the first bad sequence (spec § 6.15). A missing file or a
+permission problem stays [`Error::Io`] — the two are worth
+distinguishing, because one means "fix the file" and the other means
+"fix the path". The bytes are never repaired or replaced before the
+parser sees them.
+
 ## Using it from Rust
 
 Ktav is serde-native. Any type implementing `Serialize` / `Deserialize`
@@ -337,6 +400,11 @@ if let Err(e) = ktav::parse_strict(src) {
 Absent information is an explicit `null`, never an omitted key, so a
 consumer can read every field positionally without negotiating a
 schema first.
+
+`span` is `{"start":N,"end":M}` in **byte offsets into the UTF-8
+source**, not UTF-16 code units — the same unit [`Span`](https://docs.rs/ktav)
+itself uses. An LSP consumer either converts, or negotiates
+`positionEncoding: "utf-8"`.
 
 `path` is an **array of exact decoded key segments, never a joined
 string**. A key literally named `a.b` is one segment and cannot be
