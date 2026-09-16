@@ -111,6 +111,16 @@ fn key_name_writes_directly_into_scalar() {
     assert_eq!(n, 1, "short name took {n} allocations, output: {text:?}");
     assert_eq!(text, "port: v\n");
 
+    // Warm-up, uncounted, for the same reason as above but for a
+    // different entry point: `ser::to_value` is reached for the first
+    // time here, and whichever of the two windows below runs first would
+    // otherwise absorb any one-time setup that first reach pays for.
+    // Observed on the MSRV (1.71) CI job, where the struct window read 6
+    // allocations against the map window's 2 while every stable
+    // toolchain reported them equal — a difference in one-time cost, not
+    // in the per-call cost this oracle is about.
+    let _ = ser::to_value(&SameField { port: "v" }).unwrap();
+
     // Owned path, differential oracle: struct fields insert the
     // `&'static str` name directly (src/ser/struct_serializer.rs), a map
     // with the same short key must allocate the same amount (the entry
@@ -120,7 +130,8 @@ fn key_name_writes_directly_into_scalar() {
     assert_eq!(struct_v, map_v);
     assert_eq!(
         map_n, struct_n,
-        "map path allocated more than the struct path for the same short key name"
+        "the map and struct paths must allocate the same for one short key \
+         name (map={map_n}, struct={struct_n})"
     );
 
     // Long name (> inline capacity): the heap branch stays behaviorally
