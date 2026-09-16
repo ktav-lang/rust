@@ -238,7 +238,7 @@ fn emit_array_item(
 /// - `key:: body` (one-line raw — would reclassify)
 /// - `key: ((\n...\n))` (verbatim multi-line)
 /// - `key: (\n...\n)` (stripped multi-line, fallback)
-fn emit_string_in_pair(s: &str, indent: usize, out: &mut String) -> Result<()> {
+pub(crate) fn emit_string_in_pair(s: &str, indent: usize, out: &mut String) -> Result<()> {
     if s.is_empty() {
         // § 5.9.7: empty String → `key:` with no body.
         out.push_str(":\n");
@@ -281,7 +281,7 @@ fn emit_string_in_pair(s: &str, indent: usize, out: &mut String) -> Result<()> {
 /// - `:: body` (one-line raw — would reclassify)
 /// - `((\n...\n))` (verbatim multi-line)
 /// - `(\n...\n)` (stripped multi-line, fallback)
-fn emit_string_as_item(
+pub(crate) fn emit_string_as_item(
     s: &str,
     indent: usize,
     is_root_array_first: bool,

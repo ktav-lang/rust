@@ -2,6 +2,7 @@
 
 mod array_item;
 pub mod canonical;
+pub(crate) mod formatted;
 pub(crate) mod helpers;
 mod object;
 mod pair;

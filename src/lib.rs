@@ -232,3 +232,68 @@ pub fn to_string_force_strings(value: &Value) -> Result<String> {
 pub fn emit_canonical(value: &Value) -> Result<String> {
     render::emit_canonical(value)
 }
+
+/// Format a Ktav document: `text -> text`, normalising structure to
+/// § 5.9 canonical form (issue rust#13) while preserving every comment
+/// line and blank-line grouping from the source. Idempotent:
+/// `format_str(&format_str(text)?)? == format_str(text)?`. Suitable for
+/// a `pre-commit` hook or a `--check` gate in CI — the point is that a
+/// diff no longer depends on whether someone wrote an object inline or
+/// as a block.
+///
+/// [`emit_canonical`] cannot be that formatter directly: comments are
+/// not part of the [`Value`] model at all (§ 5.9.2 — "Comments … are
+/// never emitted"), so round-tripping through `Value` silently deletes
+/// every comment in the document. `format_str` instead parses straight
+/// from text into a trivia-carrying tree (never through `Value`) and
+/// writes it back out with the same § 5.9 structural rules
+/// `emit_canonical` uses, interleaved with the preserved trivia.
+///
+/// Every comment in the input is preserved verbatim (spec § 3.4: a
+/// comment is a whole line, so it always attaches unambiguously to the
+/// content line that follows it, or — with nothing left to follow — to
+/// the end of the enclosing compound / the document). Four points from
+/// that design are worth calling out explicitly:
+///
+/// - **Blank lines** are preserved as a grouping hint (a blank line
+///   between two keys survives), but a run of two or more collapses to
+///   exactly one, and leading/trailing blank padding right after an
+///   opening bracket or right before a closing one (or at end of file)
+///   is dropped. This keeps the transform a fixed point: reformatting
+///   already-formatted output never changes it.
+/// - **Trivia representation.** Comments and blanks are captured by a
+///   dedicated parser fork (`parser::fmt_parser`) that mirrors the
+///   `Value`-tree parser's line dispatch line for line — same root
+///   detection, same pair/array-item grammar, same dotted-key
+///   insertion — and threads a `Vec` of trivia lines through the exact
+///   points where the real parser already decides "this line starts a
+///   new key/item" or "this line closes a compound". A comment can
+///   never appear inside an inline compound or a dotted-key expansion
+///   (both are confined to one physical source line, spec § 3.4), so
+///   this needs no separate lossless syntax tree and no changes to the
+///   hot parsing/serialization paths at all.
+/// - **`format_str` of a comment-free document equals [`emit_canonical`]
+///   of its parse, *provided the document also has no blank lines.* A
+///   comment-free document can still contain grouping blank lines,
+///   which `emit_canonical` always drops (blank lines are no more part
+///   of the `Value` model than comments are, § 3.5) but `format_str`
+///   preserves per the point above — so equality needs the stronger
+///   condition "no comments and no blank lines", not just "no
+///   comments".
+/// - **Key order is never changed.** Canonical form does not reorder
+///   keys (§ 5.9 has no sorting rule), and neither does `format_str` —
+///   it is a structural-spelling normaliser, not a refactoring tool;
+///   reordering keys would make review diffs worse, not better.
+///
+/// One documented simplification: for a dotted key (`a.b.c: 1`), a
+/// preceding comment attaches to the deepest segment (`c`) rather than
+/// to the outermost one synthesized for it (`a`) — the two syntheses
+/// are otherwise indistinguishable once the key is split, and comments
+/// immediately preceding a dotted-key line are rare enough that this
+/// corner is not worth extra bookkeeping. The comment is never lost,
+/// only nested one level deeper than a literal reading of "attaches to
+/// the line below" might expect.
+pub fn format_str(text: &str) -> Result<String> {
+    let doc = parser::fmt_parser::parse_with_trivia(text)?;
+    render::formatted::emit_formatted(&doc)
+}
