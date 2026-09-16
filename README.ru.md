@@ -314,6 +314,49 @@ match parse(src) {
 Полный запускаемый пример проходит по всем вариантам:
 [`examples/errors.rs`](examples/errors.rs) — `cargo run --example errors`.
 
+### Один JSON-конверт для любой структурированной ошибки
+
+Аксессоры выше существуют только в Rust. `ErrorEnvelope` — контракт
+для всех остальных: один JSON-объект, девять полей, всегда все
+девять, в фиксированном порядке — `error`, `reason`, `line`,
+`line_text`, `span`, `path`, `body`, `canonical`,
+`spec_section`.
+
+```rust
+use ktav::{parse, ErrorEnvelope};
+
+let src = "a: 1.10\n";
+if let Err(e) = ktav::parse_strict(src) {
+    println!("{}", ErrorEnvelope::from_error(&e, src).to_json());
+}
+```
+
+```json
+{"error":"LossyScalar","reason":null,"line":1,"line_text":"a: 1.10",
+ "span":{"start":0,"end":7},"path":null,"body":"1.10",
+ "canonical":"1.1","spec_section":"§3.6/§5.2"}
+```
+
+Отсутствующие сведения — явный `null`, а не пропущенный ключ, поэтому
+потребитель читает каждое поле позиционно, без предварительного
+согласования схемы.
+
+`path` — **массив точных декодированных сегментов ключа, а не
+склеенная строка**. Ключ, буквально названный `a.b`, — это один
+сегмент, и спутать его с путём из двух нельзя: в контракте просто нет
+разделителя, вокруг которого возникла бы двусмысленность.
+
+Отказы писателя используют тот же конверт: `reason` несёт код причины
+из § 5.9.0 (`NonFiniteFloat`, `EmptyKeyName`, …), а сами отказы
+названы раздельно — `UnrepresentableAt`, когда писатель может указать
+узел (тогда он заполняет и `path`), и `Unrepresentable`, когда не
+может.
+
+Печать — `to_json()` (или `push_json(&mut String)`, чтобы дописать в
+собственный буфер). Результат — валидный JSON для любого содержимого:
+каждая строка экранируется по RFC 8259, зависимость от serde не
+задействована.
+
 ### Строгий режим — ловим молча канонизированные числа
 
 Типы выводятся по лексической форме скаляра, а выведенные числа
@@ -701,17 +744,77 @@ assert_eq!(cfg, again);
 - **Поля `None`** — пропускаются на выходе; восстанавливаются как
   `None` на входе (через обработку `Option` в serde).
 
+## Форматирование — каноническое написание, комментарии на месте
+
+`ktav::format_str` переписывает документ в то структурное написание,
+которое выдаёт `emit_canonical`, но сохраняет оформление, выбрасываемое
+каноническим писателем. Каждый комментарий сохраняется дословно.
+
+```rust
+let tidied = ktav::format_str("## the server\nserver: {host: a, port: 80}\n")?;
+assert_eq!(tidied, "## the server\nserver: {\n    host: a\n    port: 80\n}\n");
+```
+
+То есть inline-компаунд разворачивается в каноническую многострочную
+форму, а комментарий остаётся ровно там, где был:
+
+```ktav
+## the server
+server: {
+    host: a
+    port: 80
+}
+```
+
+Пустые строки сохраняются как подсказка группировки, но серия из двух
+и более схлопывается ровно в одну, а пустой отступ сразу внутри скобки
+выбрасывается. Именно это делает преобразование неподвижной точкой:
+форматирование уже отформатированного вывода больше ничего не меняет.
+
+Порядок ключей не меняется никогда. У канонической формы нет правила
+сортировки (§ 5.9), а перестановка ключей ухудшила бы диффы на ревью,
+а не улучшила: это нормализатор написания, а не инструмент
+рефакторинга.
+
+Для документа без комментариев **и без пустых строк** `format_str`
+совпадает с `emit_canonical` его разбора. Условие намеренно сильнее
+очевидного: пустые строки входят в модель `Value` ровно настолько же,
+насколько комментарии, — то есть никак, поэтому `emit_canonical` их
+выбрасывает, а `format_str` нет.
+
+### `ktav-fmt` — необязательный форматтер командной строки
+
+Живёт за feature-флагом `cli` и по умолчанию выключен. В проекте, где
+тулчейн уже есть, библиотечный вызов выше плюс хук сборки обычно
+уместнее, а редакторы форматируют через `ktav-lsp`; бинарь — для
+случая, когда ни того, ни другого под рукой нет.
+
+```text
+cargo install ktav --features cli
+
+ktav-fmt <file>...           format each file in place
+ktav-fmt --stdout <file>     print the result, leave the file alone
+ktav-fmt --check <file>...   exit non-zero if a file is not formatted
+ktav-fmt -                   read one document from stdin
+```
+
+`--check` ничего не пишет и печатает путь каждого файла, который ещё
+не отформатирован, — так что он встаёт в CI прямо рядом с
+`cargo fmt --check`.
+
 ## Архитектура
 
 ```
 ktav/
 ├── value/            — the Value enum, ObjectMap
 ├── parser/           — line-by-line parser (text → Value)
-├── render/           — pretty-printer (Value → text)
+├── thin/             — arena-backed borrowed parse (parse_events)
+├── render/           — pretty-printer, canonical writer, formatter
 ├── ser/              — serde::Serializer (T: Serialize → Value)
 ├── de/               — serde::Deserializer (Value → T: Deserialize)
-├── error/            — Error + serde::Error impls
-└── lib.rs            — glue: from_str / from_file / to_string / to_file
+├── error/            — Error, ErrorKind, ErrorEnvelope, serde::Error
+├── bin/ktav-fmt.rs   — the ktav-fmt command-line formatter
+└── lib.rs            — glue: from_str / to_string / format_str / …
 ```
 
 В каждом файле — один экспортируемый элемент; детали реализации
@@ -734,8 +837,16 @@ ktav/
 
 ```toml
 [dependencies]
-ktav = "0.6"
+ktav = "0.7.1"
 serde = { version = "1", features = ["derive"] }
+```
+
+Форматтер доступен и как исполняемый файл — за выключенным по
+умолчанию feature-флагом:
+
+```sh
+cargo install ktav --locked --features cli
+ktav-fmt --check config.ktav
 ```
 
 ## Поддержите проект

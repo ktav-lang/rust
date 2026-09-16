@@ -312,6 +312,47 @@ working.
 A complete runnable example walks all variants:
 [`examples/errors.rs`](examples/errors.rs) — `cargo run --example errors`.
 
+### One JSON envelope for every structured error
+
+The accessors above are Rust-only. `ErrorEnvelope` is the wire
+contract for everyone else: one JSON object, nine fields, always all
+nine, in a fixed order — `error`, `reason`, `line`, `line_text`,
+`span`, `path`, `body`, `canonical`, `spec_section`.
+
+```rust
+use ktav::{parse, ErrorEnvelope};
+
+let src = "a: 1.10\n";
+if let Err(e) = ktav::parse_strict(src) {
+    println!("{}", ErrorEnvelope::from_error(&e, src).to_json());
+}
+```
+
+```json
+{"error":"LossyScalar","reason":null,"line":1,"line_text":"a: 1.10",
+ "span":{"start":0,"end":7},"path":null,"body":"1.10",
+ "canonical":"1.1","spec_section":"§3.6/§5.2"}
+```
+
+Absent information is an explicit `null`, never an omitted key, so a
+consumer can read every field positionally without negotiating a
+schema first.
+
+`path` is an **array of exact decoded key segments, never a joined
+string**. A key literally named `a.b` is one segment and cannot be
+confused with a two-segment path — there is no separator in the wire
+contract to be ambiguous about.
+
+Writer rejections use the same envelope: `reason` carries the § 5.9.0
+reason code (`NonFiniteFloat`, `EmptyKeyName`, …) and the two
+rejections are named apart — `UnrepresentableAt` when the writer can
+say where the offending node is (it fills `path` too),
+`Unrepresentable` when it cannot.
+
+Rendering is `to_json()` (or `push_json(&mut String)` to append into
+a buffer you own). It is valid JSON for any payload — every string is
+escaped per RFC 8259 — and no serde dependency is involved.
+
 ### Strict mode — catch silently canonicalised numbers
 
 Types are inferred from a scalar's lexical form, and inferred numbers
@@ -694,17 +735,76 @@ Serialization preserves:
 - **`None` fields** — skipped on output; reappear as `None` on input
   (via serde's `Option` handling).
 
+## Formatting — canonical spelling, comments kept
+
+`ktav::format_str` rewrites a document into the structural spelling
+`emit_canonical` produces, but keeps the trivia the canonical writer
+drops. Every comment survives verbatim.
+
+```rust
+let tidied = ktav::format_str("## the server\nserver: {host: a, port: 80}\n")?;
+assert_eq!(tidied, "## the server\nserver: {\n    host: a\n    port: 80\n}\n");
+```
+
+That is, the inline compound expands to the canonical multi-line
+form and the comment stays exactly where it was:
+
+```ktav
+## the server
+server: {
+    host: a
+    port: 80
+}
+```
+
+Blank lines survive as a grouping hint, but a run of two or more
+collapses to exactly one, and blank padding just inside a bracket is
+dropped. That is what makes the transform a fixed point: formatting
+already-formatted output never changes it again.
+
+Key order is never changed. Canonical form has no sorting rule
+(§ 5.9), and reordering keys would make review diffs worse, not
+better — this is a spelling normaliser, not a refactoring tool.
+
+For a document with no comments **and no blank lines**,
+`format_str` equals `emit_canonical` of its parse. The stronger
+condition is deliberate: blank lines are no more part of the `Value`
+model than comments are, so `emit_canonical` drops them and
+`format_str` does not.
+
+### `ktav-fmt` — the optional command-line formatter
+
+Behind the `cli` feature, off by default. In a project that already
+has a toolchain the library call above plus a build hook is usually the
+better answer, and editors format through `ktav-lsp`; the binary is
+for the case where neither is at hand.
+
+```text
+cargo install ktav --features cli
+
+ktav-fmt <file>...           format each file in place
+ktav-fmt --stdout <file>     print the result, leave the file alone
+ktav-fmt --check <file>...   exit non-zero if a file is not formatted
+ktav-fmt -                   read one document from stdin
+```
+
+`--check` writes nothing and prints the path of every file that is
+not already formatted, so it drops straight into CI next to
+`cargo fmt --check`.
+
 ## Architecture
 
 ```
 ktav/
 ├── value/            — the Value enum, ObjectMap
 ├── parser/           — line-by-line parser (text → Value)
-├── render/           — pretty-printer (Value → text)
+├── thin/             — arena-backed borrowed parse (parse_events)
+├── render/           — pretty-printer, canonical writer, formatter
 ├── ser/              — serde::Serializer (T: Serialize → Value)
 ├── de/               — serde::Deserializer (Value → T: Deserialize)
-├── error/            — Error + serde::Error impls
-└── lib.rs            — glue: from_str / from_file / to_string / to_file
+├── error/            — Error, ErrorKind, ErrorEnvelope, serde::Error
+├── bin/ktav-fmt.rs   — the ktav-fmt command-line formatter
+└── lib.rs            — glue: from_str / to_string / format_str / …
 ```
 
 Each file holds one exported item; implementation details are private to
@@ -726,8 +826,16 @@ their parent module.
 
 ```toml
 [dependencies]
-ktav = "0.6"
+ktav = "0.7.1"
 serde = { version = "1", features = ["derive"] }
+```
+
+The formatter is also available as a binary, behind an off-by-default
+feature:
+
+```sh
+cargo install ktav --locked --features cli
+ktav-fmt --check config.ktav
 ```
 
 ## Support the project

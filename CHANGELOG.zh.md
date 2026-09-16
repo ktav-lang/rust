@@ -10,6 +10,67 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+## [0.7.1] —— 未发布
+
+实现于 2026-09-16 发布的
+[Ktav 0.7.1](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.zh.md)。
+该规范变更是编辑性的 —— § 8.5 与一份机器可读的语料库清单 —— 对解析器
+或写入器并无新要求:每一份 0.7.0 文档解析所得的 Value 不变,每一次
+规范化输出也逐字节不变。本次发布新增的是那套验证所依赖的
+工具,以及一处一致性修复。
+
+### 新增
+
+- **`ErrorEnvelope` —— 任何结构化错误都对应一个 JSON 对象**,解析期与
+  写入期一视同仁。九个字段,永远是全部九个,顺序固定:`error`、
+  `reason`、`line`、`line_text`、`span`、`path`、`body`、
+  `canonical`、`spec_section`。缺失的信息是显式的 `null`,而不是省略
+  键,因此任何语言的使用方都能按位置读取每个字段,无需事先协商模式。`path` 是精确解码后的键段数组,而非拼接
+  字符串:字面名为 `a.b` 的键是一个段,不会与两段路径混淆。用
+  `ErrorEnvelope::from_error(&err, source)` 构建,用 `to_json()` 或
+  `push_json()` 渲染。不涉及 serde 依赖,每个字符串都按 RFC 8259
+  转义。
+
+- **`format_str` —— 保留注释的格式化器。** 它把文档的结构写法规范到
+  `emit_canonical` 的产物,并穿插保留规范写入器会丢弃的附属内容。每条注释都逐字保留。空行作为分组提示保留,但连续
+  两行及以上会折叠为一行,紧贴括号内侧的空行填充会被丢弃 —— 正是这一点
+  让该变换成为不动点。键序永不改变:规范形式没有排序规则(§ 5.9),
+  而重排键只会让评审差异更糟,而非更好。对于既无注释*也无空行*的文档,`format_str`
+  等于其解析结果的 `emit_canonical`。
+
+- **`ktav-fmt` —— 可选的命令行格式化器**,位于 `cli` feature 之后。
+  在此版本之前,本仓库不提供任何可执行文件。
+
+  ```text
+  cargo install ktav --features cli
+
+  ktav-fmt <file>...           format each file in place
+  ktav-fmt --stdout <file>     print the result, leave the file alone
+  ktav-fmt --check <file>...   exit non-zero if a file is not formatted
+  ktav-fmt -                   read one document from stdin
+  ```
+
+  三个选项,手工解析:命令行参数库是唯一一处新增运行时依赖尚可辩护的
+  地方,而只有三个选项时并不成立。
+
+  默认关闭是刻意的。本仓库只发布到 crates.io,不附带预编译二进制,
+  因此无条件的 bin 目标会把默认安装面绑定到一个只有 Rust 工具链持有者
+  才能取用的工具 —— 而每个绑定都原生提供同一个格式化器,编辑器则经由
+  `ktav-lsp`。
+
+### 修复
+
+- **根类型判定使用了比 § 3.3 更窄的空白集合。** 首行键值对的 `:`
+  分隔符之后若跟随 space 与 tab 以外的 § 3.3 空白码位 —— 例如
+  U+00A0 —— 不会被识别为开启对象根。§ 3.3 冻结了二十五个码位,并明确指出不存在另一套更窄的
+  「结构性」空白概念;而该谓词只用了两个。这一谓词为全部三个解析器
+  所共用,因此修复对每一个都生效。
+
+- **原始键校验把转义序列当作两个字节。** `\uXXXX`(§ 3.7.1)是
+  六个字节,代理对则是十二个;`is_valid_key` 与 `check_quoted_key`
+  现在按转义的真实长度前进,而不是盲目地 `i += 2`。可观察行为未变 —— `u` 与十六进制数字从不是结构性
+  字节 —— 但正确性不再依赖于这一巧合。
+
 ## [0.7.0] —— 2026-09-10
 
 实现同日发布的

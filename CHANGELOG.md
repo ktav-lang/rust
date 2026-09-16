@@ -10,6 +10,84 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+## [0.7.1] — unreleased
+
+Implements [Ktav 0.7.1](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.md),
+released 2026-09-16. That specification change is
+editorial — § 8.5 and a machine-readable corpus manifest — and asks
+nothing new of a parser or a writer: every 0.7.0 document parses to the
+same Value and every canonical rendering is unchanged byte for
+byte. What this release adds is the tooling that
+verification story leans on, plus one conformance fix.
+
+### Added
+
+- **`ErrorEnvelope` — one JSON object for every structured error**,
+  parse-time and writer-time alike. Nine fields, always all nine, in a
+  fixed order: `error`, `reason`, `line`, `line_text`, `span`,
+  `path`, `body`, `canonical`, `spec_section`. Absent information is
+  an explicit `null`, never an omitted key, so a consumer in any
+  language can read every field positionally without negotiating a
+  schema first. `path` is an
+  array of exact decoded key segments, never a joined string: a key
+  literally named `a.b` is one segment and cannot be confused with a
+  two-segment path. Build it with
+  `ErrorEnvelope::from_error(&err, source)`, render it with
+  `to_json()` or `push_json()`. No serde dependency is involved and
+  every string is escaped per RFC 8259.
+
+- **`format_str` — a comment-preserving formatter.** It normalises a
+  document's structural spelling to what `emit_canonical` produces,
+  interleaved with the trivia the canonical writer drops. Every comment
+  survives verbatim. Blank lines survive as a grouping hint, but a run
+  of two or more collapses to one and blank padding just inside a
+  bracket is dropped — which is what makes the transform a fixed
+  point. Key order is never changed: canonical form has no
+  sorting rule (§ 5.9), and reordering keys would make review diffs
+  worse, not better. For a document with no comments *and no
+  blank lines*, `format_str` equals `emit_canonical` of its parse.
+
+- **`ktav-fmt` — an optional command-line formatter**, behind the
+  `cli` feature. The repository shipped no binary at all before this
+  release.
+
+  ```text
+  cargo install ktav --features cli
+
+  ktav-fmt <file>...           format each file in place
+  ktav-fmt --stdout <file>     print the result, leave the file alone
+  ktav-fmt --check <file>...   exit non-zero if a file is not formatted
+  ktav-fmt -                   read one document from stdin
+  ```
+
+  Three flags, parsed by hand: a CLI argument crate is the one place a
+  new runtime dependency might have been defensible, and with three
+  flags it is not.
+
+  It is off by default deliberately. This repository publishes to
+  crates.io and attaches no prebuilt binaries, so an unconditional bin
+  target would commit the default install surface to a tool only
+  Rust-toolchain owners can reach — while every binding exposes the same
+  formatter natively and editors go through `ktav-lsp`.
+
+### Fixed
+
+- **Root-kind detection used a narrower whitespace set than § 3.3.** A
+  first-line pair whose `:` separator was followed by a § 3.3
+  whitespace code point other than space or tab — U+00A0, for
+  instance — was not recognised as opening an Object root. § 3.3 freezes
+  twenty-five code points and states outright that there is no separate,
+  narrower "structural" whitespace concept; the predicate used two. One
+  predicate feeds all three parsers, so the fix reaches every one of
+  them.
+
+- **Raw key validation measured escape sequences as two bytes.**
+  `\uXXXX` (§ 3.7.1) is six bytes and a surrogate pair twelve;
+  `is_valid_key` and `check_quoted_key` now advance by the real
+  escape length instead of a blind `i += 2`. Observable behavior is
+  unchanged — `u` and the hex digits are never structural bytes — but
+  the correctness no longer rests on that coincidence.
+
 ## [0.7.0] — 2026-09-10
 
 Implements [Ktav 0.7.0](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.md),
