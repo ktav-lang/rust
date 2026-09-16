@@ -3,6 +3,7 @@
 mod bracket;
 pub(crate) mod classify;
 mod collecting;
+pub(crate) mod fmt_parser;
 mod frame;
 pub(crate) mod inline;
 pub(crate) mod insert;

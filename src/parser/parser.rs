@@ -593,7 +593,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn bracket_to_compound(b: Bracket) -> CompoundKind {
+pub(super) fn bracket_to_compound(b: Bracket) -> CompoundKind {
     match b {
         Bracket::Object => CompoundKind::Object,
         Bracket::Array => CompoundKind::Array,
@@ -603,7 +603,7 @@ fn bracket_to_compound(b: Bracket) -> CompoundKind {
 /// Compute a span for the trimmed line content given the raw line and
 /// its start offset. `raw` may have leading/trailing whitespace; `trimmed`
 /// is its `trim_matches(is_ktav_whitespace)` view.
-fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span {
+pub(super) fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span {
     if trimmed.is_empty() {
         return Span::new(line_start, line_start);
     }
@@ -628,7 +628,7 @@ fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span {
 // The old `:i`/`:f` typed markers are removed in 0.5.0.
 // ---------------------------------------------------------------------------
 
-enum Separator<'a> {
+pub(super) enum Separator<'a> {
     /// `::` followed by the body (leading whitespace not yet trimmed).
     Raw(&'a str),
     /// Plain `:` — body already lacks the leading separator char.
@@ -639,7 +639,7 @@ enum Separator<'a> {
 /// from spec § 5.3 / § 5.4. Returns `Err(MissingSeparatorSpace)` for the
 /// `key:value` / `key::value` / `port:i42` / `ratio:f0.5` shapes where
 /// the body is glued to the separator.
-fn require_sep_end(
+pub(super) fn require_sep_end(
     rest: &str,
     line_num: usize,
     line_start: u32,
@@ -666,7 +666,7 @@ fn require_sep_end(
 }
 
 /// Result of top-level kind detection (§ 5.0.1).
-enum RootResult {
+pub(super) enum RootResult {
     /// § 5.0.1 rule 2: first content line is a closed inline object.
     InlineObject(Value),
     /// § 5.0.1 rule 3: first content line is a closed inline array.
@@ -685,7 +685,7 @@ enum RootResult {
 ///
 /// Applies all 8 rules in order. Rules 1 (no content lines) and 8
 /// (bare `}` / `]`) are handled by the caller.
-fn classify_root_kind_050(
+pub(super) fn classify_root_kind_050(
     trimmed: &str,
     line_num: usize,
     trimmed_span: Span,
@@ -773,7 +773,7 @@ fn diagnose_root_inline(
     }
 }
 
-fn classify_separator(after_colon: &str) -> Separator<'_> {
+pub(super) fn classify_separator(after_colon: &str) -> Separator<'_> {
     if let Some(rest) = after_colon.strip_prefix(':') {
         return Separator::Raw(rest);
     }
