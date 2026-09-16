@@ -60,13 +60,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy --release --all-targets -- -D warnings
+        run: cargo clippy --release --all-features --all-targets -- -D warnings
 
       - name: cargo test (release)
-        run: cargo test --release
+        run: cargo test --release --all-features
 
       - name: cargo build (release)
-        run: cargo build --release
+        run: cargo build --release --all-features
 
   publish:
     name: cargo publish

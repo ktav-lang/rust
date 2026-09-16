@@ -1,6 +1,14 @@
 //! CLI surface tests for the `ktav-fmt` binary (issue rust#13): format
 //! in place, format to stdout, and `--check` exiting non-zero on
 //! unformatted input with nothing written.
+//!
+//! The binary is behind the `cli` feature (see Cargo.toml), so this file
+//! compiles to nothing without it — `CARGO_BIN_EXE_ktav-fmt` only exists
+//! when the bin target is built. CI runs the suite with
+//! `--all-features`, so these tests do run on every push; a plain
+//! `cargo test` skips them silently, which is the one thing to remember
+//! when running the suite by hand.
+#![cfg(feature = "cli")]
 
 use std::fs;
 use std::io::Write;

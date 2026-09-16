@@ -43,7 +43,7 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-features --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -62,7 +62,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --all-features
 
   msrv:
     name: MSRV (1.71)
@@ -88,4 +88,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo test
-        run: cargo test --locked
+        run: cargo test --locked --all-features

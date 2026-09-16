@@ -43,6 +43,21 @@ compact_str = { version = "0.9", features = ["serde"] }
 bumpalo = { version = "3", features = ["collections"] }
 memchr = "2"
 
+[features]
+# The `ktav-fmt` binary. Off by default on purpose: this repository
+# publishes to crates.io only and attaches no prebuilt binaries, so an
+# unconditional bin target would commit the default install surface to a
+# tool reachable solely by people who already have a Rust toolchain —
+# while every binding exposes the same formatter natively and editors go
+# through `ktav-lsp`. Enabling it is one flag:
+#   cargo install ktav --features cli
+cli = []
+
+[[bin]]
+name = "ktav-fmt"
+path = "src/bin/ktav-fmt.rs"
+required-features = ["cli"]
+
 [lib]
 doctest = false
 
