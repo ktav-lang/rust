@@ -29,4 +29,6 @@ pub(crate) fn leading_bom_len(text: &str) -> usize {
 }
 
 #[cfg(test)]
+mod fmt_differential_tests;
+#[cfg(test)]
 mod tests;
