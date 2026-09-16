@@ -30,10 +30,13 @@
 //!   have no § 3.7 escape at all, so they are forbidden even when the
 //!   caller tries to escape them (`decode_key_segment` rejects
 //!   `\(` / `\)` as an unrecognised escape before this distinction
-//!   would matter). A byte immediately following an unescaped `\` is
-//!   always skipped here — validating that it is one of the fourteen
-//!   recognised escapes is `decode_key_segment`'s job, not this
-//!   function's.
+//!   would matter). After an unescaped `\`, the scanner skips the
+//!   escape's FULL byte length (2 for the thirteen named forms, 6 for
+//!   `\uXXXX`, 12 for a `\uD800`..`\uDBFF` + `\uDC00`..`\uDFFF`
+//!   surrogate pair — see [`escaped_len`]); for an unrecognized form
+//!   it falls back to skipping 2 bytes. Validating that an escape is
+//!   actually one of the recognised sequences is `decode_key_segment`'s
+//!   job, not this module's.
 //! - Empty (or empty-after-trim, by the caller) → `EmptyKey`.
 
 /// Raw control byte / DEL forbidden by spec 0.7 § 4 `<key-char>` /
@@ -43,6 +46,47 @@
 #[inline]
 fn is_forbidden_raw_control_byte(b: u8) -> bool {
     (b < 0x20 && b != b'\t' && b != 0x0B && b != 0x0C) || b == 0x7F
+}
+
+/// Byte length of the escape sequence starting at `bytes[i]`
+/// (precondition: `bytes[i] == b'\\'`): 2 for a named form, 6 for
+/// `\uXXXX`, 12 for a surrogate pair, 1 for a dangling backslash, and
+/// 2 as the fallback for any unrecognized/malformed form (decoding
+/// reports those; skipping 2 keeps the old scan behavior). Sequence
+/// VALIDITY is `decode_key_segment`'s job — this only measures length.
+#[inline]
+fn escaped_len(bytes: &[u8], i: usize) -> usize {
+    if i + 1 >= bytes.len() {
+        // Dangling backslash; decoding reports it.
+        return 1;
+    }
+    if bytes[i + 1] != b'u' || i + 6 > bytes.len() {
+        return 2;
+    }
+    let hex = &bytes[i + 2..i + 6];
+    if !hex.iter().all(u8::is_ascii_hexdigit) {
+        return 2;
+    }
+    // All four bytes are verified ASCII hex, so `from_utf8` cannot fail.
+    let value = u32::from_str_radix(std::str::from_utf8(hex).expect("ASCII hex"), 16)
+        .expect("4 ASCII hex digits");
+    if !(0xD800..=0xDBFF).contains(&value) {
+        return 6;
+    }
+    if i + 12 > bytes.len() || bytes[i + 6] != b'\\' || bytes[i + 7] != b'u' {
+        return 6;
+    }
+    let low_hex = &bytes[i + 8..i + 12];
+    if !low_hex.iter().all(u8::is_ascii_hexdigit) {
+        return 6;
+    }
+    let low = u32::from_str_radix(std::str::from_utf8(low_hex).expect("ASCII hex"), 16)
+        .expect("4 ASCII hex digits");
+    if (0xDC00..=0xDFFF).contains(&low) {
+        12
+    } else {
+        6
+    }
 }
 
 #[inline]
@@ -62,11 +106,10 @@ pub(crate) fn is_valid_key(raw: &str) -> bool {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'\\' {
-            // Skip the escape marker and whatever follows it (even if
-            // that byte would itself be forbidden raw) — decoding
-            // separately validates it is one of the fourteen recognised
-            // escapes and errors on anything else.
-            i += 2;
+            // Skip the escape's full byte length (even if the escaped
+            // byte would itself be forbidden raw) — decoding separately
+            // validates it is a recognised escape.
+            i += escaped_len(bytes, i);
             continue;
         }
         if is_forbidden_raw_key_byte(bytes[i]) {
@@ -125,12 +168,12 @@ fn check_quoted_key(raw: &str) -> KeyValidity {
     // Interior: raw control bytes / DEL are InvalidKey (§ 6.4); every
     // structural byte other than the segment's own delimiter — `.` `:`
     // `,` `{` `}` `[` `]` `(` `)` and the two other quote chars — is
-    // ordinary content. `\` skips the escaped byte; escape SEQUENCE
-    // validity is decode_key_segment's job, as for bare segments.
+    // ordinary content. `\` skips the escape's full byte length; escape
+    // SEQUENCE validity is decode_key_segment's job, as for bare segments.
     let mut i = 1;
     while i < closer {
         if bytes[i] == b'\\' {
-            i += 2;
+            i += escaped_len(bytes, i);
             continue;
         }
         if is_forbidden_raw_control_byte(bytes[i]) {
