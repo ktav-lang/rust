@@ -112,7 +112,9 @@ extern crate self as ktav;
 
 mod whitespace;
 
-pub use error::{CompoundKind, ConflictKind, Error, ErrorKind, ReasonCode, Result, Span};
+pub use error::{
+    CompoundKind, ConflictKind, Error, ErrorEnvelope, ErrorKind, ReasonCode, Result, Span,
+};
 pub use thin::{parse_events, ParseEvent};
 pub use value::{ObjectMap, Value};
 
