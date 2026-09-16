@@ -119,7 +119,7 @@ fn writer_empty_key_name_envelope_shape() {
     let root = obj(&[("a", obj(&[("", n(1))]))]);
     let err = emit_canonical(&root).unwrap_err();
     let e = env(&err, "irrelevant source");
-    assert_eq!(e.error, "Unrepresentable");
+    assert_eq!(e.error, "UnrepresentableAt");
     assert_eq!(e.reason, Some("EmptyKeyName".to_string()));
     assert_eq!(e.path, Some(vec!["a".to_string(), "".to_string()]));
     assert_eq!(e.line, None);
@@ -132,7 +132,7 @@ fn writer_empty_key_name_envelope_shape() {
     let json = e.to_json();
     nine_keys_present(&json);
     let v: Json = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["error"], "Unrepresentable");
+    assert_eq!(v["error"], "UnrepresentableAt");
     assert_eq!(v["reason"], "EmptyKeyName");
     assert_eq!(v["path"], serde_json::json!(["a", ""]));
     assert_eq!(v["line"], Json::Null);
@@ -196,7 +196,7 @@ fn writer_paths_per_reason_code() {
             other => panic!("expected UnrepresentableAt for {code:?}, got {other:?}"),
         }
         let e = env(&err, "");
-        assert_eq!(e.error, "Unrepresentable");
+        assert_eq!(e.error, "UnrepresentableAt");
         assert_eq!(e.reason, Some(code.code_name().to_string()));
         assert_eq!(e.line, None);
         assert_eq!(e.line_text, None);
@@ -674,4 +674,43 @@ fn push_json_matches_to_json() {
     writer_time.push_json(&mut out);
     assert_eq!(out, writer_time.to_json());
     nine_keys_present(&out);
+}
+
+// ---------------------------------------------------------------------------
+// The two writer rejections are named apart
+// ---------------------------------------------------------------------------
+
+/// Both writer surfaces refuse the same document for the same reason, but
+/// only the Value-walking one knows which key is at fault. The envelope
+/// names them apart — `"Unrepresentable"` versus `"UnrepresentableAt"` —
+/// mirroring [`Error::Unrepresentable`] and [`Error::UnrepresentableAt`],
+/// so a consumer can tell "refused" from "refused, and here is where"
+/// without having to probe whether `path` happens to be null.
+///
+/// Pinned in one test on purpose: the two names were identical before the
+/// envelope shipped, and collapsing them back would be a silent wire-format
+/// regression that no other assertion here would catch.
+#[test]
+fn writer_rejections_are_named_apart() {
+    let doc = obj(&[("a", obj(&[("", n(1))]))]);
+
+    // Value-walking writer: knows the offending key path.
+    let walking = env(&emit_canonical(&doc).unwrap_err(), "");
+    assert_eq!(walking.error, "UnrepresentableAt");
+    assert_eq!(walking.path, Some(vec!["a".to_string(), String::new()]));
+
+    // Streaming serde writer: same refusal, no position to report.
+    let streaming_value: BTreeMap<String, BTreeMap<String, i32>> =
+        [("a".to_string(), [(String::new(), 1)].into_iter().collect())]
+            .into_iter()
+            .collect();
+    let streaming = env(&to_string(&streaming_value).unwrap_err(), "");
+    assert_eq!(streaming.error, "Unrepresentable");
+    assert_eq!(streaming.path, None);
+
+    // The distinction is in `error` and `path` only — the reason a consumer
+    // switches on to decide "was this refused?" is identical.
+    assert_ne!(walking.error, streaming.error);
+    assert_eq!(walking.reason, streaming.reason);
+    assert_eq!(walking.reason, Some("EmptyKeyName".to_string()));
 }

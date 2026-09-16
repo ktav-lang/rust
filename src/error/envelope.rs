@@ -37,9 +37,14 @@ use crate::parser::inline::{decode_key_segment, split_key_path};
 /// ## Field semantics
 ///
 /// * `error` — the class name: [`ErrorKind::code_name`] for parse-time
-///   errors; `"Unrepresentable"` for both writer variants;
-///   `"InvalidUtf8"`, `"Syntax"`, `"Message"`, `"Io"` for the
-///   top-level variants.
+///   errors; `"InvalidUtf8"`, `"Syntax"`, `"Message"`, `"Io"` for the
+///   top-level variants. The two writer rejections are named apart,
+///   matching their [`Error`] variants: `"Unrepresentable"` when the
+///   writer could not say where the offending node is (the streaming
+///   serde writers), and `"UnrepresentableAt"` when it could (the
+///   Value-walking writers, which also populate `path`). A consumer
+///   that only cares that a write was refused can match the
+///   `reason` code, which is identical in both cases.
 /// * `reason` — writer-time only: the § 5.9.0 reason code
 ///   ([`ReasonCode::code_name`]), e.g. `"NonFiniteFloat"`. `null` for
 ///   parse-time errors.
@@ -147,7 +152,7 @@ impl ErrorEnvelope {
                 code_spec_section(code).map(str::to_string),
             ),
             Error::UnrepresentableAt { code, path } => (
-                "Unrepresentable".to_string(),
+                "UnrepresentableAt".to_string(),
                 Some(code.code_name().to_string()),
                 Some(path.clone()),
                 None,
