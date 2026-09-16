@@ -10,15 +10,19 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
-## [0.7.1] — unreleased
+## [0.7.1] — 2026-09-16
 
 Implements [Ktav 0.7.1](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.md),
 released 2026-09-16. That specification change is
 editorial — § 8.5 and a machine-readable corpus manifest — and asks
 nothing new of a parser or a writer: every 0.7.0 document parses to the
 same Value and every canonical rendering is unchanged byte for
-byte. What this release adds is the tooling that
-verification story leans on, plus one conformance fix.
+byte. What this release adds is the tooling that verification story leans
+on, plus one conformance fix.
+
+`spec-version` metadata moves to `0.7.1` and the pinned `spec`
+submodule moves to the 0.7.1 release commit, so the conformance corpus
+this crate is tested against is the released one.
 
 ### Added
 

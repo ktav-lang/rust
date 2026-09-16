@@ -10,7 +10,7 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
-## [0.7.1] —— 未发布
+## [0.7.1] —— 2026-09-16
 
 实现于 2026-09-16 发布的
 [Ktav 0.7.1](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.zh.md)。
@@ -18,6 +18,10 @@
 或写入器并无新要求:每一份 0.7.0 文档解析所得的 Value 不变,每一次
 规范化输出也逐字节不变。本次发布新增的是那套验证所依赖的
 工具,以及一处一致性修复。
+
+`spec-version` 元数据升至 `0.7.1`,固定的 `spec` submodule 也移至
+0.7.1 发布提交,因此本 crate 所对照的 conformance 语料库正是已发布的
+那一份。
 
 ### 新增
 

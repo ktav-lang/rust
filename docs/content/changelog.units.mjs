@@ -63,9 +63,9 @@ Cargo-конвенцией: до 1.0 bump MINOR считается ломающ�
   {
     id: 'v0-7-1-001',
     join: 'block',
-    en: `## [0.7.1] — unreleased`,
-    ru: `## [0.7.1] — не выпущено`,
-    zh: `## [0.7.1] —— 未发布`,
+    en: `## [0.7.1] — 2026-09-16`,
+    ru: `## [0.7.1] — 2026-09-16`,
+    zh: `## [0.7.1] —— 2026-09-16`,
   },
   {
     id: 'v0-7-1-002',
@@ -96,12 +96,25 @@ byte.`,
   {
     id: 'v0-7-1-004',
     join: { en: 'flow', ru: 'flow', zh: 'none' },
-    en: `What this release adds is the tooling that
-verification story leans on, plus one conformance fix.`,
+    en: `What this release adds is the tooling that verification story leans
+on, plus one conformance fix.`,
     ru: `Этот выпуск добавляет инструментарий, на который
 опирается такая проверка, и одно исправление соответствия.`,
     zh: `本次发布新增的是那套验证所依赖的
 工具,以及一处一致性修复。`,
+  },
+  {
+    id: 'v0-7-1-004b',
+    join: 'block',
+    en: `\`spec-version\` metadata moves to \`0.7.1\` and the pinned \`spec\`
+submodule moves to the 0.7.1 release commit, so the conformance corpus
+this crate is tested against is the released one.`,
+    ru: `Метаданные \`spec-version\` переходят на \`0.7.1\`, а закреплённый
+submodule \`spec\` — на релизный коммит 0.7.1, так что conformance-корпус,
+против которого проверяется crate, — именно выпущенный.`,
+    zh: `\`spec-version\` 元数据升至 \`0.7.1\`,固定的 \`spec\` submodule 也移至
+0.7.1 发布提交,因此本 crate 所对照的 conformance 语料库正是已发布的
+那一份。`,
   },
   {
     id: 'v0-7-1-005',
