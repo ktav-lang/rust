@@ -10,6 +10,49 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+## [0.7.2] —— unreleased
+
+`cabi` feature 把六个语言绑定各自私有的 C ABI 垫片副本收敛为对本
+crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉取
+`serde_json`——本次发布对公开 API 是纯增量的。
+
+### 新增
+
+- **`ktav::cabi` 与 `declare_cabi!` 宏** —— C ABI 垫片中可共享的
+  一半:带标签的 `WireValue` 解码(有序映射、任意大小整数无损),六项
+  文档操作 `loads`、`loads_strict`、`dumps`、
+  `dumps_force_strings`、`emit_canonical` 与新增的 `format`,以及
+  把每一个错误——包括非 ktav 的错误——编码进信封。模块本身不含任何 `extern "C"`:依赖 rlib
+  中定义的符号不保证能存活到下游的 cdylib。宏改为把九个
+  `#[no_mangle]` 符号展开进调用方的 crate,在那里导出由构造方式
+  保证。
+
+- **`ktav_abi_version()` 与 `ktav::cabi::ABI_VERSION`** —— 导出
+  ABI *形态* 的版本(从 1 开始):拿到过期原生库的宿主会拒绝加载而不是
+  破坏内存。crate 版本每次发布都变,ABI 形态几乎从不变。
+
+- **`ktav::cabi::library_file_name` 与 `docs/CABI.md`** ——
+  `php`、`csharp` 与 `golang` 的加载器各自独立推导的产物命名约定
+  (`ktav_cabi-windows-amd64.dll`、
+  `libktav_cabi-darwin-arm64.dylib`、……、`$KTAV_LIB_PATH` 覆盖),
+  如今一次性写下来、可执行、并由测试钉死。
+
+- **整个表面的加载测试** —— 一份 body 仅有一行 `declare_cabi!()`
+  调用的 fixture cdylib;测试套件构建它、以 dlopen 打开、经
+  `libloading` 解析出全部九个导出符号,并真实调用
+  `ktav_abi_version`、`ktav_loads` 与 `ktav_format`。wire 往返
+  覆盖一致性语料库:221 个 `valid/` fixture 在 `loads` ->
+  `dumps` 之间保持 `Value` 不变,221 个规范字节预言机与经 wire 的
+  `emit_canonical` 逐字节一致。
+
+### 修复
+
+- **`ErrorEnvelope.body` 现在携带 `Error::Message` 与
+  `Error::Syntax` 的载荷。** 这两个类此前恒为 `null`。在 C ABI 的
+  统一性规则下这会坏掉:非 ktav 的失败以 `Message` 形态传递,调用方将
+  只会看到 `{"error":"Message"}` 和八个 null,而不是诊断信息。已发布
+  的消费方不会回归——错误信封从未随任何绑定发布过。
+
 ## [0.7.1] —— 2026-09-16
 
 实现于 2026-09-16 发布的

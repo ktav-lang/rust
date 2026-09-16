@@ -1,0 +1,1 @@
+ktav::declare_cabi!();

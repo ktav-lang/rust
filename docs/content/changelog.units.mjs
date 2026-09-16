@@ -61,6 +61,170 @@ Cargo-конвенцией: до 1.0 bump MINOR считается ломающ�
 [\`ktav-lang/spec\`](https://github.com/ktav-lang/spec) 仓库。`,
   },
   {
+    id: 'v0-7-2-001',
+    join: 'block',
+    en: `## [0.7.2] — unreleased`,
+    ru: `## [0.7.2] — unreleased`,
+    zh: `## [0.7.2] —— unreleased`,
+  },
+  {
+    id: 'v0-7-2-002',
+    join: 'block',
+    en: `The \`cabi\` feature turns the six language bindings' private
+copies of the C ABI shim into one macro invocation against this crate.
+The feature is off by default — a default build pulls no
+\`serde_json\` — and the release is purely additive to the public
+API.`,
+    ru: `Фича \`cabi\` превращает шесть приватных копий C ABI-шима из шести
+языковых биндингов в один макровызов к этому crate. Фича по умолчанию
+выключена — обычная сборка не тянет \`serde_json\` — а сам выпуск чисто
+аддитивен к публичному API.`,
+    zh: `\`cabi\` feature 把六个语言绑定各自私有的 C ABI 垫片副本收敛为对本
+crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉取
+\`serde_json\`——本次发布对公开 API 是纯增量的。`,
+  },
+  {
+    id: 'v0-7-2-003',
+    join: 'block',
+    en: `### Added`,
+    ru: `### Added`,
+    zh: `### 新增`,
+  },
+  {
+    id: 'v0-7-2-004',
+    join: 'block',
+    en: `- **\`ktav::cabi\` and the \`declare_cabi!\` macro** — the shareable
+  half of the C ABI shim: the tagged \`WireValue\` decode (ordered
+  maps, lossless integers of any size), the six document operations
+  \`loads\`, \`loads_strict\`, \`dumps\`, \`dumps_force_strings\`,
+  \`emit_canonical\` and the new \`format\`, and envelope encoding for
+  every failure, including the non-\`ktav\` ones.`,
+    ru: `- **\`ktav::cabi\` и макрос \`declare_cabi!\`** — разделяемая половина
+  C ABI-шима: тегированное декодирование \`WireValue\` (упорядоченные
+  карты, целые любой величины без потерь), шесть операций над
+  документами \`loads\`, \`loads_strict\`, \`dumps\`,
+  \`dumps_force_strings\`, \`emit_canonical\` и новая \`format\`, и
+  кодирование любого сбоя — включая не-ktav-овские — в конверт.`,
+    zh: `- **\`ktav::cabi\` 与 \`declare_cabi!\` 宏** —— C ABI 垫片中可共享的
+  一半:带标签的 \`WireValue\` 解码(有序映射、任意大小整数无损),六项
+  文档操作 \`loads\`、\`loads_strict\`、\`dumps\`、
+  \`dumps_force_strings\`、\`emit_canonical\` 与新增的 \`format\`,以及
+  把每一个错误——包括非 ktav 的错误——编码进信封。`,
+  },
+  {
+    id: 'v0-7-2-005',
+    join: { en: 'flow', ru: 'flow', zh: 'none' },
+    en: `The module contains no
+  \`extern "C"\`: symbols defined in a dependency rlib are not
+  guaranteed to survive into a downstream cdylib. The macro expands the
+  nine \`#[no_mangle]\` symbols into the calling crate instead, where
+  export is guaranteed by construction.`,
+    ru: `В модуле нет ни одного \`extern "C"\`:
+  символы, определённые в rlib-зависимости, не гарантированно
+  выживают в cdylib потребителя. Макрос вместо этого разворачивает
+  девять символов \`#[no_mangle]\` в вызывающий crate, где экспорт
+  гарантирован по построению.`,
+    zh: `模块本身不含任何 \`extern "C"\`:依赖 rlib
+  中定义的符号不保证能存活到下游的 cdylib。宏改为把九个
+  \`#[no_mangle]\` 符号展开进调用方的 crate,在那里导出由构造方式
+  保证。`,
+  },
+  {
+    id: 'v0-7-2-006',
+    join: 'block',
+    en: `- **\`ktav_abi_version()\` and \`ktav::cabi::ABI_VERSION\`** — the
+  version of the exported ABI *shape* (starts at 1), so a host that
+  picks up a stale native library refuses to load instead of corrupting
+  memory. The crate version changes every release; the ABI shape almost
+  never.`,
+    ru: `- **\`ktav_abi_version()\` и \`ktav::cabi::ABI_VERSION\`** — версия
+  *формы* экспортируемого ABI (начинается с 1): хост, получивший
+  устаревшую нативную библиотеку, откажется от загрузки вместо порчи
+  памяти. Версия crate меняется в каждом выпуске, форма ABI — почти
+  никогда.`,
+    zh: `- **\`ktav_abi_version()\` 与 \`ktav::cabi::ABI_VERSION\`** —— 导出
+  ABI *形态* 的版本(从 1 开始):拿到过期原生库的宿主会拒绝加载而不是
+  破坏内存。crate 版本每次发布都变,ABI 形态几乎从不变。`,
+  },
+  {
+    id: 'v0-7-2-007',
+    join: 'block',
+    en: `- **\`ktav::cabi::library_file_name\` and \`docs/CABI.md\`** — the
+  artifact naming convention that the \`php\`, \`csharp\` and
+  \`golang\` loaders each derived independently
+  (\`ktav_cabi-windows-amd64.dll\`,
+  \`libktav_cabi-darwin-arm64.dylib\`, …, the \`$KTAV_LIB_PATH\`
+  override), written down once, executable, and pinned by tests.`,
+    ru: `- **\`ktav::cabi::library_file_name\` и \`docs/CABI.md\`** — конвенция
+  имён артефактов, которую загрузчики \`php\`, \`csharp\` и \`golang\`
+  выводили каждый по-своему (\`ktav_cabi-windows-amd64.dll\`,
+  \`libktav_cabi-darwin-arm64.dylib\`, …, переопределение через
+  \`$KTAV_LIB_PATH\`), записанная один раз, исполнимая и закреплённая
+  тестами.`,
+    zh: `- **\`ktav::cabi::library_file_name\` 与 \`docs/CABI.md\`** ——
+  \`php\`、\`csharp\` 与 \`golang\` 的加载器各自独立推导的产物命名约定
+  (\`ktav_cabi-windows-amd64.dll\`、
+  \`libktav_cabi-darwin-arm64.dylib\`、……、\`$KTAV_LIB_PATH\` 覆盖),
+  如今一次性写下来、可执行、并由测试钉死。`,
+  },
+  {
+    id: 'v0-7-2-008',
+    join: 'block',
+    en: `- **A load test for the whole surface** — a fixture cdylib whose
+  body is one \`declare_cabi!()\` invocation, built and dlopened by the
+  suite; all nine exported symbols resolve through \`libloading\`, and
+  \`ktav_abi_version\`, \`ktav_loads\` and \`ktav_format\` are called
+  for real. The wire round-trip runs over the conformance corpus: 221
+  \`valid/\` fixtures keep their \`Value\` across \`loads\` ->
+  \`dumps\`, and 221 canonical byte oracles match \`emit_canonical\`
+  through the wire.`,
+    ru: `- **Загрузочный тест всей поверхности** — cdylib-фикстура, чьё тело —
+  один вызов \`declare_cabi!()\`; тест собирает её, открывает через
+  dlopen, разрешает все девять экспортированных символов через
+  \`libloading\` и по-настоящему вызывает \`ktav_abi_version\`,
+  \`ktav_loads\` и \`ktav_format\`. Wire-проверка идёт по
+  конформанс-корпусу: 221 фикстура из \`valid/\` сохраняет \`Value\`
+  через \`loads\` -> \`dumps\`, и 221 канонический байтовый оракул
+  совпадает с \`emit_canonical\` через wire.`,
+    zh: `- **整个表面的加载测试** —— 一份 body 仅有一行 \`declare_cabi!()\`
+  调用的 fixture cdylib;测试套件构建它、以 dlopen 打开、经
+  \`libloading\` 解析出全部九个导出符号,并真实调用
+  \`ktav_abi_version\`、\`ktav_loads\` 与 \`ktav_format\`。wire 往返
+  覆盖一致性语料库:221 个 \`valid/\` fixture 在 \`loads\` ->
+  \`dumps\` 之间保持 \`Value\` 不变,221 个规范字节预言机与经 wire 的
+  \`emit_canonical\` 逐字节一致。`,
+  },
+  {
+    id: 'v0-7-2-009',
+    join: 'block',
+    en: `### Fixed`,
+    ru: `### Fixed`,
+    zh: `### 修复`,
+  },
+  {
+    id: 'v0-7-2-010',
+    join: 'block',
+    en: `- **\`ErrorEnvelope.body\` now carries the payload of
+  \`Error::Message\` and \`Error::Syntax\`.** It was always \`null\`
+  for these two classes. That broke under the C ABI's uniformity rule:
+  non-\`ktav\` failures travel as \`Message\`, and a caller would have
+  received \`{"error":"Message"}\` plus eight nulls instead of the
+  diagnostic. No shipped consumer can regress — the envelope has never
+  shipped in any binding.`,
+    ru: `- **\`ErrorEnvelope.body\` теперь несёт полезную нагрузку
+  \`Error::Message\` и \`Error::Syntax\`.** Раньше для этих двух
+  классов там всегда был \`null\`. Это ломалось на правиле
+  единообразия C ABI: сбои вне \`ktav\` путешествуют как \`Message\`, и
+  вместо диагностики вызывающий получил бы \`{"error":"Message"}\` и
+  восемь null. Регресса у выпущенных потребителей нет — конверт ещё не
+  выходил ни в одном биндинге.`,
+    zh: `- **\`ErrorEnvelope.body\` 现在携带 \`Error::Message\` 与
+  \`Error::Syntax\` 的载荷。** 这两个类此前恒为 \`null\`。在 C ABI 的
+  统一性规则下这会坏掉:非 ktav 的失败以 \`Message\` 形态传递,调用方将
+  只会看到 \`{"error":"Message"}\` 和八个 null,而不是诊断信息。已发布
+  的消费方不会回归——错误信封从未随任何绑定发布过。`,
+  },
+  {
     id: 'v0-7-1-001',
     join: 'block',
     en: `## [0.7.1] — 2026-09-16`,

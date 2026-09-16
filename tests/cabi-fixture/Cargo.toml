@@ -1,0 +1,15 @@
+# Build-only fixture for tests/cabi_load.rs: a cdylib whose whole body
+# is one `ktav::declare_cabi!()` invocation. Excluded from the published
+# package (see the parent Cargo.toml exclude list) because of its path
+# dependency.
+[package]
+name = "ktav-cabi-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ktav = { path = "../..", features = ["cabi"] }

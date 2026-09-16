@@ -47,6 +47,14 @@
 //! ```
 //! (See `tests/error_accessors.rs` for the executed test.)
 //!
+//! ## C ABI for language bindings
+//!
+//! Behind the off-by-default `cabi` feature: [`cabi`] carries the shareable
+//! half of the native shim — wire values, the six document operations,
+//! envelope-encoded errors, the ABI version, the library naming convention —
+//! and [`declare_cabi!`] expands the `#[no_mangle]` symbols inside a
+//! binding's cdylib. See `docs/CABI.md`.
+//!
 //! ## Example
 //!
 //! See [`tests/doc_example.rs`](../tests/doc_example.rs) for the executed
@@ -94,6 +102,8 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(feature = "cabi")]
+pub mod cabi;
 pub mod de;
 pub mod error;
 pub mod parser;

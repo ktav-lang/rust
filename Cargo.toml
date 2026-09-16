@@ -20,11 +20,15 @@ rust-version = "1.71"
 # on every publish. `spec_conformance` is the only one that needs the
 # excluded corpus; run the suite from a git checkout, where nothing is
 # excluded.
+#
+# `/tests/cabi-fixture/` is a separate crate that path-depends on this
+# one, which `cargo package` cannot ship.
 exclude = [
     "/.github/",
     "/docs/",
     "/docs.config.mjs",
     "/spec/",
+    "/tests/cabi-fixture/",
     "/tools/",
 ]
 
@@ -35,6 +39,11 @@ spec-version = "0.7.1"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# Built only when the `cabi` feature is on. `preserve_order` keeps JSON
+# object key order stable on the ABI wire; `arbitrary_precision` keeps
+# integers beyond 64 bits lossless. The dev-dependency entry below stays:
+# the test suite needs serde_json regardless of the feature.
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"], optional = true }
 indexmap = { version = "2", features = ["serde"] }
 rustc-hash = "2"
 itoa = "1"
@@ -53,6 +62,11 @@ memchr = "2"
 #   cargo install ktav --features cli
 cli = []
 
+# The C ABI support surface for the language bindings: the `ktav::cabi`
+# module and the `declare_cabi!` macro. Off by default — a default build
+# of this crate must not pull serde_json at all.
+cabi = ["dep:serde_json"]
+
 [[bin]]
 name = "ktav-fmt"
 path = "src/bin/ktav-fmt.rs"
@@ -65,6 +79,7 @@ doctest = false
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
 criterion = { version = "0.5", features = ["html_reports"] }
+libloading = "0.8"
 
 [package.metadata.docs.rs]
 all-features = true

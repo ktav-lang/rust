@@ -68,8 +68,12 @@ use crate::parser::inline::{decode_key_segment, split_key_path};
 /// * `body` — the class-specific text payload: `LossyScalar`'s source
 ///   form, `BadEscapeSequence`'s offending sequence,
 ///   `MalformedInlineCompound`'s detail, legacy `InvalidTypedScalar`'s
-///   body. `Other`'s parser-internal `message` is deliberately **not**
-///   mapped here — it is a diagnostic, not source text — and stays on
+///   body. The top-level [`Error::Message`] and [`Error::Syntax`]
+///   variants carry their text here verbatim — it is the only carrier
+///   of that diagnostic on the wire (the uniform C ABI error channel
+///   wraps non-ktav errors as `Message` and depends on it). `Other`'s
+///   parser-internal `message` is deliberately **not** mapped here —
+///   it is a diagnostic, not source text — and stays on
 ///   `Debug`/`Display` only.
 /// * `canonical` — `LossyScalar`'s canonical form.
 /// * `spec_section` — the real spec section governing the class (e.g.
@@ -141,8 +145,22 @@ impl ErrorEnvelope {
                 kind_canonical(kind),
                 kind_spec_section(kind).map(str::to_string),
             ),
-            Error::Syntax(_) => ("Syntax".to_string(), None, None, None, None, None),
-            Error::Message(_) => ("Message".to_string(), None, None, None, None, None),
+            Error::Syntax(m) => (
+                "Syntax".to_string(),
+                None,
+                None,
+                Some(m.clone()),
+                None,
+                None,
+            ),
+            Error::Message(m) => (
+                "Message".to_string(),
+                None,
+                None,
+                Some(m.clone()),
+                None,
+                None,
+            ),
             Error::Unrepresentable(code) => (
                 "Unrepresentable".to_string(),
                 Some(code.code_name().to_string()),

@@ -10,6 +10,59 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+## [0.7.2] — unreleased
+
+The `cabi` feature turns the six language bindings' private
+copies of the C ABI shim into one macro invocation against this crate.
+The feature is off by default — a default build pulls no
+`serde_json` — and the release is purely additive to the public
+API.
+
+### Added
+
+- **`ktav::cabi` and the `declare_cabi!` macro** — the shareable
+  half of the C ABI shim: the tagged `WireValue` decode (ordered
+  maps, lossless integers of any size), the six document operations
+  `loads`, `loads_strict`, `dumps`, `dumps_force_strings`,
+  `emit_canonical` and the new `format`, and envelope encoding for
+  every failure, including the non-`ktav` ones. The module contains no
+  `extern "C"`: symbols defined in a dependency rlib are not
+  guaranteed to survive into a downstream cdylib. The macro expands the
+  nine `#[no_mangle]` symbols into the calling crate instead, where
+  export is guaranteed by construction.
+
+- **`ktav_abi_version()` and `ktav::cabi::ABI_VERSION`** — the
+  version of the exported ABI *shape* (starts at 1), so a host that
+  picks up a stale native library refuses to load instead of corrupting
+  memory. The crate version changes every release; the ABI shape almost
+  never.
+
+- **`ktav::cabi::library_file_name` and `docs/CABI.md`** — the
+  artifact naming convention that the `php`, `csharp` and
+  `golang` loaders each derived independently
+  (`ktav_cabi-windows-amd64.dll`,
+  `libktav_cabi-darwin-arm64.dylib`, …, the `$KTAV_LIB_PATH`
+  override), written down once, executable, and pinned by tests.
+
+- **A load test for the whole surface** — a fixture cdylib whose
+  body is one `declare_cabi!()` invocation, built and dlopened by the
+  suite; all nine exported symbols resolve through `libloading`, and
+  `ktav_abi_version`, `ktav_loads` and `ktav_format` are called
+  for real. The wire round-trip runs over the conformance corpus: 221
+  `valid/` fixtures keep their `Value` across `loads` ->
+  `dumps`, and 221 canonical byte oracles match `emit_canonical`
+  through the wire.
+
+### Fixed
+
+- **`ErrorEnvelope.body` now carries the payload of
+  `Error::Message` and `Error::Syntax`.** It was always `null`
+  for these two classes. That broke under the C ABI's uniformity rule:
+  non-`ktav` failures travel as `Message`, and a caller would have
+  received `{"error":"Message"}` plus eight nulls instead of the
+  diagnostic. No shipped consumer can regress — the envelope has never
+  shipped in any binding.
+
 ## [0.7.1] — 2026-09-16
 
 Implements [Ktav 0.7.1](https://github.com/ktav-lang/spec/blob/main/versions/0.7/spec.md),

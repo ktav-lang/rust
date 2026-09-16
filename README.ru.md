@@ -802,6 +802,33 @@ ktav-fmt -                   read one document from stdin
 не отформатирован, — так что он встаёт в CI прямо рядом с
 `cargo fmt --check`.
 
+## C ABI для других языков
+
+Шесть языковых биндингов — Go, Java, PHP, C#, JS и Python — загружают
+небольшую нативную библиотеку, собранную на этом crate. Разделяемая
+половина шима живёт за выключенной по умолчанию фичей `cabi`: модуль
+`ktav::cabi` несёт декодирование wire-формата, шесть операций над
+документами и кодирование ошибок, а один макровызов в `cdylib`
+биндинга разворачивает экспортируемые символы.
+
+```text
+// crates/cabi/src/lib.rs of a binding — the whole body:
+ktav::declare_cabi!();
+```
+
+Развёртка экспортирует девять символов: шесть функций-операций
+(`ktav_loads`, `ktav_loads_strict`, `ktav_dumps`,
+`ktav_dumps_force_strings`, `ktav_emit_canonical`,
+`ktav_format`), `ktav_free`, `ktav_version` и
+`ktav_abi_version`. Каждая ошибка уходит девятиполевым
+JSON-конвертом, поэтому хосту не приходится гадать, текст перед ним
+или JSON, а `ktav_abi_version()` позволяет хосту отказаться от
+устаревшей нативной библиотеки вместо порчи памяти. Полный контракт —
+сигнатуры, владение, кодирование ошибок, конвенция имён артефактов
+(`ktav_cabi-windows-amd64.dll`, `libktav_cabi-darwin-arm64.dylib`,
+`libktav_cabi-linux-amd64.so`, переопределение `$KTAV_LIB_PATH`) —
+описан в [docs/CABI.md](docs/CABI.md).
+
 ## Архитектура
 
 ```
