@@ -1,14 +1,28 @@
-//! Walks every invalid fixture in `spec/versions/0.6/tests/invalid/` and
+//! Walks every invalid fixture in `spec/versions/0.7/tests/invalid/` and
 //! asserts the parser returns `Error::Structured(kind)` (never the legacy
 //! `Error::Syntax(_)` variant) and that the kind matches the expected
 //! category from the sibling `.json` oracle.
+//!
+//! The version constant below must track the released specification. It
+//! read `0.6` until 2026-09-16, long after the crate moved to 0.7 — so
+//! this suite was walking the previous generation's corpus (35 fixtures
+//! instead of 74) and never saw the categories 0.7 added, including
+//! `unterminated_quoted_key`, `key_escaping` and `invalid_utf8`. The
+//! floor assertion at the end of the walk exists so that silently
+//! running a smaller corpus fails instead of reporting success.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use ktav::{CompoundKind, Error, ErrorKind, Span};
 
-const SPEC_VERSION: &str = "0.6";
+const SPEC_VERSION: &str = "0.7";
+
+/// Floor on the number of fixtures the walk must reach. The 0.7 corpus
+/// holds 74; this is deliberately exact-ish rather than "> 0", because
+/// the failure mode being guarded against is running a *smaller* corpus
+/// than intended and calling it a pass.
+const MIN_INVALID_FIXTURES: usize = 74;
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -57,10 +71,20 @@ fn invalid_fixtures_return_structured_errors() {
     let mut failures: Vec<String> = Vec::new();
     let mut total = 0usize;
 
+    let mut skipped_non_utf8 = 0usize;
+
     for path in &files {
         total += 1;
         let rel = path.strip_prefix(&invalid_dir).unwrap_or(path).display();
-        let text = fs::read_to_string(path).unwrap_or_default();
+        // § 6.15 fixtures are deliberately not valid UTF-8, so they are
+        // outside `parse`'s `&str` domain entirely — reading them with
+        // `unwrap_or_default()` would hand the parser an empty document
+        // that parses fine and report a bogus failure. They are covered
+        // by `tests/invalid_utf8.rs`, which works on bytes.
+        let Ok(text) = fs::read_to_string(path) else {
+            skipped_non_utf8 += 1;
+            continue;
+        };
 
         let err = match ktav::parse(&text) {
             Ok(_) => {
@@ -91,7 +115,19 @@ fn invalid_fixtures_return_structured_errors() {
             failures.join("\n")
         );
     }
-    eprintln!("structured_errors: {total}/{total} fixtures return Structured(_)");
+    assert!(
+        total >= MIN_INVALID_FIXTURES,
+        "walked only {total} invalid fixtures under {} — expected at least \
+         {MIN_INVALID_FIXTURES}. A smaller corpus than intended (wrong spec \
+         version, stale submodule, truncated checkout) must fail here, not \
+         report success.",
+        invalid_dir.display()
+    );
+    eprintln!(
+        "structured_errors: {} of {total} fixtures return Structured(_) \
+         ({skipped_non_utf8} non-UTF-8 fixtures covered by invalid_utf8.rs)",
+        total - skipped_non_utf8
+    );
 }
 
 // ---------------------------------------------------------------------------
