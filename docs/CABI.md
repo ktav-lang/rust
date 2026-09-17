@@ -96,16 +96,26 @@ wrapper.
 ## Error encoding
 
 On error, `out_err` holds the JSON envelope produced by
-`ErrorEnvelope::from_error(...).to_json()`: nine fields, always all
-nine, in the fixed order
+`ErrorEnvelope::from_error(...).to_json()`: ten fields, always all
+ten, in the fixed order
 
 ```text
-error, reason, line, line_text, span, path, body, canonical, spec_section
+error, reason, line, line_text, span, path, body, canonical, spec_section,
+message
 ```
 
 Absent information is an explicit `null`, never an omitted key.
 `path` is an array of exact decoded key segments, never a joined
 string.
+
+`message` is the error's `Display` rendering, verbatim, and is the
+only field that is never `null`. **A host surfaces this as its
+exception text instead of assembling prose from the other nine
+fields.** Before it existed the envelope carried structured data and
+no message, so each binding invented a rendering — and the five that
+did all disagreed, with each other and with what the crate itself
+printed for the same input. It is appended last, so the nine original
+fields keep the positions they shipped with.
 
 Uniformity rule: *every* error leaves as an envelope, including
 serde_json failures and the top-level check, which are wrapped as
@@ -149,9 +159,12 @@ the value they were built against and refuse to load on mismatch.
 
 A bump is obliged by: adding, removing, or changing the signature or
 ownership contract of an exported function; changing the error
-encoding. Adding a *field* to the error envelope does **not** oblige a
-bump — the contract is "nine fields, absent means null". The crate
-version is a different axis and never stands in for the ABI version.
+encoding. Appending a *field* to the end of the error envelope does
+**not** oblige a bump: absent information is already an explicit
+`null`, and a host that reads fields by name is unaffected by a longer
+object. Inserting or reordering a field would, because it moves every
+field after it. The crate version is a different axis and never stands
+in for the ABI version.
 
 ## Artifact naming and search
 

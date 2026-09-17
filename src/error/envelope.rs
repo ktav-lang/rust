@@ -6,7 +6,7 @@
 //! diagnostics had to pick between [`Error::line`] / [`Error::span`]
 //! accessors (Rust-only) and free-form `Display` strings (everything
 //! else). The envelope is the single wire contract: every error that
-//! has a class renders as exactly one nine-field JSON object, so a
+//! has a class renders as exactly one ten-field JSON object, so a
 //! consumer of any language can switch on `error` / `reason` and read
 //! the remaining fields positionally.
 //!
@@ -15,24 +15,26 @@
 //! // the span is whatever the parser reports — here the whole pair line:
 //! {"error":"LossyScalar","reason":null,"line":1,"line_text":"a: 1.10",
 //!  "span":{"start":0,"end":7},"path":null,"body":"1.10",
-//!  "canonical":"1.1","spec_section":"§3.6/§5.2"}
+//!  "canonical":"1.1","spec_section":"§3.6/§5.2",
+//!  "message":"Syntax error: Line 1: LossyScalar: '1.10' would be …"}
 //! ```
 
 use super::error::{Error, ErrorKind, ReasonCode, Span};
 use crate::parser::inline::{decode_key_segment, split_key_path};
 
-/// The unified structured-error envelope: one nine-field JSON object
+/// The unified structured-error envelope: one ten-field JSON object
 /// for every structured error, whether it was produced at parse time
 /// or at writer time (issue rust#12 decision record).
 ///
 /// ## The wire contract
 ///
-/// [`to_json`](ErrorEnvelope::to_json) always emits all nine fields,
+/// [`to_json`](ErrorEnvelope::to_json) always emits all ten fields,
 /// in this exact order: `error`, `reason`, `line`, `line_text`,
-/// `span`, `path`, `body`, `canonical`, `spec_section`. Absent
-/// information is an explicit JSON `null`, never an omitted key —
-/// consumers can index every field positionally without a schema
-/// negotiation step.
+/// `span`, `path`, `body`, `canonical`, `spec_section`, `message`.
+/// Absent information is an explicit JSON `null`, never an omitted
+/// key — consumers can index every field positionally without a schema
+/// negotiation step. `message` is appended last precisely so that the
+/// nine original positions keep the indices they shipped with.
 ///
 /// ## Field semantics
 ///
@@ -79,6 +81,15 @@ use crate::parser::inline::{decode_key_segment, split_key_path};
 /// * `spec_section` — the real spec section governing the class (e.g.
 ///   `"§6.2"`); `null` for classes with none (`Io`, `Message`, legacy
 ///   `Syntax`, parser-internal `Other`).
+/// * `message` — the human-readable rendering, verbatim from
+///   [`Error`]'s [`Display`](std::fmt::Display). Never `null`: every
+///   error renders. **This is the field a binding must surface as its
+///   exception/error text.** It exists because the other nine fields
+///   are structured data, not prose, so a binding that wanted a
+///   message had to invent its own rendering — and five of them did,
+///   each differently, none matching what Rust and PyO3 already
+///   produced for the same input. Sourcing it here is what makes the
+///   error text identical across languages.
 ///
 /// ## Rendering
 ///
@@ -109,6 +120,10 @@ pub struct ErrorEnvelope {
     pub canonical: Option<String>,
     /// Governing spec section, e.g. `"§6.2"`.
     pub spec_section: Option<String>,
+    /// The human-readable rendering, verbatim from [`Error`]'s
+    /// `Display`. Always present — bindings surface this as their
+    /// error text instead of rendering their own.
+    pub message: String,
 }
 
 impl ErrorEnvelope {
@@ -196,6 +211,7 @@ impl ErrorEnvelope {
             body,
             canonical,
             spec_section,
+            message: error.to_string(),
         }
     }
 
@@ -252,6 +268,8 @@ impl ErrorEnvelope {
         push_json_opt_string(out, self.canonical.as_deref());
         out.push_str(",\"spec_section\":");
         push_json_opt_string(out, self.spec_section.as_deref());
+        out.push_str(",\"message\":");
+        push_json_string(out, &self.message);
         out.push('}');
     }
 }

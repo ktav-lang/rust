@@ -354,9 +354,9 @@ match parse(src) {
 ### 任何结构化错误共用一个 JSON 信封
 
 上面的访问器只存在于 Rust。`ErrorEnvelope` 是给其余各方的传输契约:
-一个 JSON 对象,九个字段,永远是全部九个,顺序固定 —— `error`、
+一个 JSON 对象,十个字段,永远是全部十个,顺序固定 —— `error`、
 `reason`、`line`、`line_text`、`span`、`path`、`body`、
-`canonical`、`spec_section`。
+`canonical`、`spec_section`、`message`。
 
 ```rust
 use ktav::{parse, ErrorEnvelope};
@@ -370,8 +370,14 @@ if let Err(e) = ktav::parse_strict(src) {
 ```json
 {"error":"LossyScalar","reason":null,"line":1,"line_text":"a: 1.10",
  "span":{"start":0,"end":7},"path":null,"body":"1.10",
- "canonical":"1.1","spec_section":"§3.6/§5.2"}
+ "canonical":"1.1","spec_section":"§3.6/§5.2",
+ "message":"Syntax error: Line 1: LossyScalar: '1.10' would be …"}
 ```
+
+`message` 是最后一个字段,也是唯一永远不为 `null` 的字段:它逐字
+携带该错误的 `Display` 渲染结果。绑定层直接把它展示给用户,而不是自己
+从结构化字段拼装文字,因此同一份文档在任何语言下都会给出相同的错误文本。
+原有的九个字段保持各自的位置 —— `message` 是追加的,而非插入的。
 
 缺失的信息是显式的 `null`,而不是省略键,因此使用方无需事先协商模式
 即可按位置读取每个字段。

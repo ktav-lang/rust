@@ -378,9 +378,10 @@ A complete runnable example walks all variants:
 ### One JSON envelope for every structured error
 
 The accessors above are Rust-only. `ErrorEnvelope` is the wire
-contract for everyone else: one JSON object, nine fields, always all
-nine, in a fixed order — `error`, `reason`, `line`, `line_text`,
-`span`, `path`, `body`, `canonical`, `spec_section`.
+contract for everyone else: one JSON object, ten fields, always all
+ten, in a fixed order — `error`, `reason`, `line`, `line_text`,
+`span`, `path`, `body`, `canonical`, `spec_section`,
+`message`.
 
 ```rust
 use ktav::{parse, ErrorEnvelope};
@@ -394,8 +395,16 @@ if let Err(e) = ktav::parse_strict(src) {
 ```json
 {"error":"LossyScalar","reason":null,"line":1,"line_text":"a: 1.10",
  "span":{"start":0,"end":7},"path":null,"body":"1.10",
- "canonical":"1.1","spec_section":"§3.6/§5.2"}
+ "canonical":"1.1","spec_section":"§3.6/§5.2",
+ "message":"Syntax error: Line 1: LossyScalar: '1.10' would be …"}
 ```
+
+`message` is the last field and the only one that is never
+`null`: it carries this error's `Display` rendering verbatim. A
+binding shows it to the user as-is rather than assembling prose from
+the structured fields, so the same document produces the same error
+text in every language. The nine older fields keep the positions they
+shipped with — `message` was appended, not inserted.
 
 Absent information is an explicit `null`, never an omitted key, so a
 consumer can read every field positionally without negotiating a

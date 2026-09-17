@@ -45,14 +45,32 @@ fn readme_envelope_snippet() {
     let err = ktav::parse_strict(src).unwrap_err();
     let json = ErrorEnvelope::from_error(&err, src).to_json();
 
-    assert_eq!(
-        json,
-        concat!(
-            r#"{"error":"LossyScalar","reason":null,"line":1,"#,
-            r#""line_text":"a: 1.10","span":{"start":0,"end":7},"#,
-            r#""path":null,"body":"1.10","canonical":"1.1","#,
-            r#""spec_section":"§3.6/§5.2"}"#
-        ),
-        "README envelope snippet drifted from ErrorEnvelope::to_json"
+    // The nine structured fields are shown in full, so they are pinned
+    // in full. `message` is the tenth and is elided in the README with
+    // an ellipsis — it is one long sentence and printing it whole would
+    // bury the shape the snippet exists to show.
+    let shown = concat!(
+        r#"{"error":"LossyScalar","reason":null,"line":1,"#,
+        r#""line_text":"a: 1.10","span":{"start":0,"end":7},"#,
+        r#""path":null,"body":"1.10","canonical":"1.1","#,
+        r#""spec_section":"§3.6/§5.2","message":"#,
     );
+    assert!(
+        json.starts_with(shown),
+        "README envelope snippet drifted from ErrorEnvelope::to_json:\n{json}"
+    );
+
+    // The elided part is pinned too, just by its prefix — the README
+    // prints `"Syntax error: Line 1: LossyScalar: '1.10' would be …"`.
+    let elided = r#""Syntax error: Line 1: LossyScalar: '1.10' would be "#;
+    assert!(
+        json[shown.len()..].starts_with(elided),
+        "README elided the wrong message text:\n{}",
+        &json[shown.len()..]
+    );
+
+    // And the elision really is only an elision: the full field is the
+    // Display rendering, nothing added or reworded.
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["message"], err.to_string());
 }

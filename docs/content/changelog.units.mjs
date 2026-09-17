@@ -200,6 +200,36 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
   \`emit_canonical\` 逐字节一致。`,
   },
   {
+    id: 'v0-7-2-008d',
+    join: 'block',
+    en: `- **\`ErrorEnvelope.message\` — the error's \`Display\` rendering,
+  verbatim.** The envelope now has ten fields; \`message\` is appended
+  last, so the nine that shipped in 0.7.1 keep their positions, and it
+  is the only field that is never \`null\`. It exists because the other
+  nine are structured data and none of them is prose: a binding that
+  wanted an exception message had to assemble one itself, and five of
+  them did — Go, Java, PHP, C# and JavaScript each invented a different
+  layout, and none matched what the crate and the PyO3 binding already
+  printed for the same input. Hosts surface this field as-is.`,
+    ru: `- **\`ErrorEnvelope.message\` — дословное \`Display\`-представление
+  ошибки.** В конверте теперь десять полей; \`message\` дописано в
+  конец, поэтому девять полей из 0.7.1 сохранили свои позиции, и это
+  единственное поле, которое никогда не \`null\`. Оно понадобилось
+  потому, что остальные девять — структурированные данные, и ни одно из
+  них не является текстом: биндингу, которому нужен текст исключения,
+  приходилось собирать его самому — и пятеро так и сделали. Go, Java,
+  PHP, C# и JavaScript изобрели пять разных раскладок, и ни одна не
+  совпадала с тем, что для того же ввода уже печатали сам crate и
+  биндинг на PyO3. Host показывает это поле как есть.`,
+    zh: `- **\`ErrorEnvelope.message\` —— 错误的 \`Display\` 渲染结果,逐字
+  携带。** 信封现在有十个字段;\`message\` 追加在最后,因此 0.7.1 中
+  发布的九个字段位置不变,而它是唯一永不为 \`null\` 的字段。之所以需要
+  它,是因为其余九个都是结构化数据,没有一个是文字:想要异常消息的
+  绑定只能自己拼装 —— 而且有五个确实这么做了。Go、Java、PHP、C# 与
+  JavaScript 各自发明了一种不同的排版,没有一种与 crate 本身和 PyO3
+  绑定对同一输入已经打印的内容一致。host 直接原样呈现该字段。`,
+  },
+  {
     id: 'v0-7-2-008b',
     join: 'block',
     en: `### Changed`,

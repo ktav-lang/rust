@@ -172,7 +172,7 @@ fn loads_fixture_and_exercises_the_abi() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys.len(), 9, "expected nine envelope keys, got {keys:?}");
+    assert_eq!(keys.len(), 10, "expected ten envelope keys, got {keys:?}");
     for key in [
         "error",
         "reason",
@@ -183,6 +183,7 @@ fn loads_fixture_and_exercises_the_abi() {
         "body",
         "canonical",
         "spec_section",
+        "message",
     ] {
         assert!(envelope.get(key).is_some(), "missing envelope key {key}");
     }
@@ -195,14 +196,21 @@ fn loads_fixture_and_exercises_the_abi() {
     let envelope: serde_json::Value = serde_json::from_str(&err).unwrap();
     assert_eq!(
         envelope.as_object().unwrap().len(),
-        9,
-        "expected nine envelope keys"
+        10,
+        "expected ten envelope keys"
     );
     assert_eq!(envelope["error"], "Message");
     let body = envelope["body"].as_str().unwrap();
     assert!(
         body.starts_with("input JSON"),
         "body should start with \"input JSON\", got {body:?}"
+    );
+    // `message` crosses the ABI too — it is what every binding shows
+    // the user, so a host never has to render its own.
+    assert_eq!(
+        envelope["message"].as_str().unwrap(),
+        body,
+        "Error::Message renders as its own body"
     );
 
     // format is idempotent through the FFI: formatting the output of a

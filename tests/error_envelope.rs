@@ -1,4 +1,4 @@
-//! The unified nine-field error envelope (issue rust#12): one JSON
+//! The unified ten-field error envelope (issue rust#12): one JSON
 //! object for every structured error, parse-time and writer-time
 //! alike. These tests pin the wire contract — field set and order,
 //! path-is-an-array semantics, byte-offset spans, RFC 8259 escaping,
@@ -43,10 +43,11 @@ fn env(err: &Error, src: &str) -> ErrorEnvelope {
     ErrorEnvelope::from_error(err, src)
 }
 
-/// Cross-check: the envelope JSON must have EXACTLY the nine
+/// Cross-check: the envelope JSON must have EXACTLY the ten
 /// contractual fields, in order — absent info is an explicit null,
-/// never an omitted key.
-fn nine_keys_present(json: &str) {
+/// never an omitted key. `message` comes last so the nine original
+/// fields keep the positions they shipped with.
+fn ten_keys_present(json: &str) {
     let v: Json = serde_json::from_str(json).unwrap();
     let object = v.as_object().expect("envelope JSON is an object");
     let keys: Vec<&str> = object.keys().map(String::as_str).collect();
@@ -62,6 +63,7 @@ fn nine_keys_present(json: &str) {
             "body",
             "canonical",
             "spec_section",
+            "message",
         ]
     );
 }
@@ -96,7 +98,7 @@ fn lossy_scalar_envelope_json_shape() {
     assert_eq!(span, Span::new(0, 7));
 
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     let v: Json = serde_json::from_str(&json).unwrap();
     assert_eq!(v["error"], "LossyScalar");
     assert_eq!(v["reason"], Json::Null);
@@ -130,7 +132,7 @@ fn writer_empty_key_name_envelope_shape() {
     assert_eq!(e.spec_section, Some("§5.9.0".to_string()));
 
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     let v: Json = serde_json::from_str(&json).unwrap();
     assert_eq!(v["error"], "UnrepresentableAt");
     assert_eq!(v["reason"], "EmptyKeyName");
@@ -266,7 +268,7 @@ fn path_is_array_not_joined_string() {
     assert_eq!(e.reason, Some("NonFiniteFloat".to_string()));
     assert_eq!(e.path, Some(vec!["a".to_string(), "b".to_string()]));
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     assert!(
         json.contains("\"path\":[\"a\",\"b\"]"),
         "path must be a JSON array, got: {json}"
@@ -301,7 +303,7 @@ fn decoded_dot_stays_one_segment() {
     let e = env(&err, src);
     assert_eq!(e.path, Some(vec!["a.b".to_string()]));
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     assert!(json.contains("\"path\":[\"a.b\"]"), "got: {json}");
 }
 
@@ -317,7 +319,7 @@ fn json_escaping_control_quote_backslash_nonbmp() {
     let e = env(&err, src);
     assert_eq!(e.path, Some(vec!["a\u{1}b".to_string()]));
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     assert!(json.contains("\\u0001"), "got: {json}");
     let v: Json = serde_json::from_str(&json).unwrap();
     assert_eq!(v["path"], serde_json::json!(["a\u{1}b"]));
@@ -328,7 +330,7 @@ fn json_escaping_control_quote_backslash_nonbmp() {
     let e = env(&err, src);
     assert_eq!(e.path, Some(vec!["a\"b".to_string()]));
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     assert!(json.contains("\\\""), "got: {json}");
     let v: Json = serde_json::from_str(&json).unwrap();
     assert_eq!(v["path"], serde_json::json!(["a\"b"]));
@@ -339,7 +341,7 @@ fn json_escaping_control_quote_backslash_nonbmp() {
     let e = env(&err, src);
     assert_eq!(e.path, Some(vec!["🎉".to_string()]));
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     assert!(
         json.as_bytes().windows(4).any(|w| w == "🎉".as_bytes()),
         "raw 4-byte UTF-8 🎉 must survive, got: {json}"
@@ -357,7 +359,7 @@ fn json_escaping_control_quote_backslash_nonbmp() {
     let e = env(&err, src);
     assert_eq!(e.line_text, Some("\"a\"b: v".to_string()));
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     assert!(json.contains("\\\"a\\\"b: v"), "got: {json}");
     let v: Json = serde_json::from_str(&json).unwrap();
     assert_eq!(v["line_text"], "\"a\"b: v");
@@ -610,7 +612,7 @@ fn q2_span_unit_is_byte_offsets() {
 
     let e = env(&err, src);
     let json = e.to_json();
-    nine_keys_present(&json);
+    ten_keys_present(&json);
     let v: Json = serde_json::from_str(&json).unwrap();
     assert_eq!(v["span"]["start"], 13);
 }
@@ -664,7 +666,7 @@ fn push_json_matches_to_json() {
     let mut out = String::with_capacity(1024);
     parse_time.push_json(&mut out);
     assert_eq!(out, parse_time.to_json());
-    nine_keys_present(&out);
+    ten_keys_present(&out);
 
     let writer_time = env(
         &emit_canonical(&obj(&[("a", obj(&[("", n(1))]))])).unwrap_err(),
@@ -673,7 +675,7 @@ fn push_json_matches_to_json() {
     let mut out = String::with_capacity(1024);
     writer_time.push_json(&mut out);
     assert_eq!(out, writer_time.to_json());
-    nine_keys_present(&out);
+    ten_keys_present(&out);
 }
 
 // ---------------------------------------------------------------------------
@@ -713,4 +715,71 @@ fn writer_rejections_are_named_apart() {
     assert_ne!(walking.error, streaming.error);
     assert_eq!(walking.reason, streaming.reason);
     assert_eq!(walking.reason, Some("EmptyKeyName".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// `message` — the field that stops bindings rendering their own
+// ---------------------------------------------------------------------------
+
+/// `message` is `Error`'s `Display`, verbatim, for every error shape —
+/// parse-time and writer-time alike. This is the whole point of the
+/// field: before it existed the envelope carried structured data but no
+/// prose, so five bindings each invented a rendering and all five
+/// disagreed with each other and with what Rust itself printed.
+#[test]
+fn message_is_the_display_rendering_verbatim() {
+    // Parse-time, across several kinds.
+    // Each of these really is rejected — checked, not assumed. A line
+    // like `a:1` on its own is a valid one-element Array under the
+    // § 5.0.1 root-kind rule, not a malformed pair, so it needs a
+    // preceding pair line to land in an object context first.
+    let parse_cases: &[&str] = &[
+        "a: 1.10\n",    // LossyScalar (strict only)
+        "a: 1\nb:2\n",  // MissingSeparatorSpace
+        "a: 1\na: 2\n", // DuplicateKey
+        "a: {\n",       // UnclosedCompound
+    ];
+    for src in parse_cases {
+        let err = parse_strict(src).unwrap_err();
+        let e = env(&err, src);
+        assert_eq!(
+            e.message,
+            err.to_string(),
+            "message must equal Display for {src:?}"
+        );
+        assert!(!e.message.is_empty(), "message is never empty");
+    }
+
+    // Writer-time: no span, but still a rendering.
+    let err = emit_canonical(&obj(&[("a", obj(&[("", n(1))]))])).unwrap_err();
+    let e = env(&err, "");
+    assert_eq!(e.message, err.to_string());
+    assert_eq!(e.line, None, "writer-time still emits honest nulls");
+
+    // Top-level Message keeps its text on BOTH `body` and `message`:
+    // `body` is the wire payload, `message` is what a host displays.
+    let err = Error::Message("boom".to_string());
+    let e = env(&err, "");
+    assert_eq!(e.body, Some("boom".to_string()));
+    assert_eq!(e.message, "boom");
+}
+
+/// `message` survives JSON rendering with its escaping intact, and sits
+/// last so the nine original fields keep their shipped positions.
+#[test]
+fn message_round_trips_through_json_and_comes_last() {
+    let src = "a: 1.10\n";
+    let err = parse_strict(src).unwrap_err();
+    let e = env(&err, src);
+    let json = e.to_json();
+    ten_keys_present(&json);
+
+    let v: Json = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["message"], err.to_string());
+
+    // A control character in the payload must not break the JSON.
+    let err = Error::Message("tab\there\nand \"quotes\"".to_string());
+    let json = env(&err, "").to_json();
+    let v: Json = serde_json::from_str(&json).expect("still valid JSON");
+    assert_eq!(v["message"], "tab\there\nand \"quotes\"");
 }

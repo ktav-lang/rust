@@ -55,6 +55,16 @@ API.
   `dumps`, and 221 canonical byte oracles match `emit_canonical`
   through the wire.
 
+- **`ErrorEnvelope.message` — the error's `Display` rendering,
+  verbatim.** The envelope now has ten fields; `message` is appended
+  last, so the nine that shipped in 0.7.1 keep their positions, and it
+  is the only field that is never `null`. It exists because the other
+  nine are structured data and none of them is prose: a binding that
+  wanted an exception message had to assemble one itself, and five of
+  them did — Go, Java, PHP, C# and JavaScript each invented a different
+  layout, and none matched what the crate and the PyO3 binding already
+  printed for the same input. Hosts surface this field as-is.
+
 ### Changed
 
 - **`ktav_version()` now reports this crate's version, not the

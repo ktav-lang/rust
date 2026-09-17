@@ -787,6 +787,7 @@ mod tests {
                 "body",
                 "canonical",
                 "spec_section",
+                "message",
             ]
         );
         v

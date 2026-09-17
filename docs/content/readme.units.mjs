@@ -1107,18 +1107,19 @@ working.`,
     id: 'envelope-intro',
     join: 'block',
     en: `The accessors above are Rust-only. \`ErrorEnvelope\` is the wire
-contract for everyone else: one JSON object, nine fields, always all
-nine, in a fixed order — \`error\`, \`reason\`, \`line\`, \`line_text\`,
-\`span\`, \`path\`, \`body\`, \`canonical\`, \`spec_section\`.`,
+contract for everyone else: one JSON object, ten fields, always all
+ten, in a fixed order — \`error\`, \`reason\`, \`line\`, \`line_text\`,
+\`span\`, \`path\`, \`body\`, \`canonical\`, \`spec_section\`,
+\`message\`.`,
     ru: `Аксессоры выше существуют только в Rust. \`ErrorEnvelope\` — контракт
-для всех остальных: один JSON-объект, девять полей, всегда все
-девять, в фиксированном порядке — \`error\`, \`reason\`, \`line\`,
+для всех остальных: один JSON-объект, десять полей, всегда все
+десять, в фиксированном порядке — \`error\`, \`reason\`, \`line\`,
 \`line_text\`, \`span\`, \`path\`, \`body\`, \`canonical\`,
-\`spec_section\`.`,
+\`spec_section\`, \`message\`.`,
     zh: `上面的访问器只存在于 Rust。\`ErrorEnvelope\` 是给其余各方的传输契约:
-一个 JSON 对象,九个字段,永远是全部九个,顺序固定 —— \`error\`、
+一个 JSON 对象,十个字段,永远是全部十个,顺序固定 —— \`error\`、
 \`reason\`、\`line\`、\`line_text\`、\`span\`、\`path\`、\`body\`、
-\`canonical\`、\`spec_section\`。`,
+\`canonical\`、\`spec_section\`、\`message\`。`,
   },
   {
     id: 'envelope-snippet',
@@ -1138,8 +1139,29 @@ if let Err(e) = ktav::parse_strict(src) {
     common: `\`\`\`json
 {"error":"LossyScalar","reason":null,"line":1,"line_text":"a: 1.10",
  "span":{"start":0,"end":7},"path":null,"body":"1.10",
- "canonical":"1.1","spec_section":"§3.6/§5.2"}
+ "canonical":"1.1","spec_section":"§3.6/§5.2",
+ "message":"Syntax error: Line 1: LossyScalar: '1.10' would be …"}
 \`\`\``,
+  },
+  {
+    id: 'envelope-message',
+    join: 'block',
+    en: `\`message\` is the last field and the only one that is never
+\`null\`: it carries this error's \`Display\` rendering verbatim. A
+binding shows it to the user as-is rather than assembling prose from
+the structured fields, so the same document produces the same error
+text in every language. The nine older fields keep the positions they
+shipped with — \`message\` was appended, not inserted.`,
+    ru: `\`message\` — последнее поле и единственное, которое никогда не
+\`null\`: в нём дословно лежит \`Display\`-представление этой ошибки.
+Биндинг показывает его пользователю как есть, а не собирает текст сам
+из структурированных полей, поэтому один и тот же документ даёт
+одинаковый текст ошибки на любом языке. Девять прежних полей сохранили
+свои позиции — \`message\` дописано в конец, а не вставлено в середину.`,
+    zh: `\`message\` 是最后一个字段,也是唯一永远不为 \`null\` 的字段:它逐字
+携带该错误的 \`Display\` 渲染结果。绑定层直接把它展示给用户,而不是自己
+从结构化字段拼装文字,因此同一份文档在任何语言下都会给出相同的错误文本。
+原有的九个字段保持各自的位置 —— \`message\` 是追加的,而非插入的。`,
   },
   {
     id: 'envelope-nulls',
