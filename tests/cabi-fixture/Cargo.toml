@@ -7,6 +7,10 @@ name = "ktav-cabi-fixture"
 version = "0.0.0"
 edition = "2021"
 publish = false
+# Must match the parent crate's MSRV. This is not cosmetic: without it
+# Cargo resolves the fixture's graph with no MSRV awareness and writes a
+# v4 lockfile, neither of which the pinned MSRV toolchain can cope with.
+rust-version = "1.71"
 
 [lib]
 crate-type = ["cdylib"]

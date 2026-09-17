@@ -83,6 +83,18 @@ jobs:
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
         run: cargo generate-lockfile
 
+      # tests/cabi_load.rs spawns a SEPARATE `cargo build` for the fixture
+      # cdylib, so the fixture has its own dependency graph and its own
+      # lockfile — neither of which the step above touches. That nested
+      # build runs under the pinned toolchain below, whose resolver has no
+      # MSRV awareness at all, so without this step it resolves
+      # newest-compatible and pulls in a crate requiring a newer edition.
+      # Both lockfiles are gitignored, so both are generated here.
+      - name: Generate MSRV-aware lockfile for the cabi fixture
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: cargo generate-lockfile --manifest-path tests/cabi-fixture/Cargo.toml
+
       - uses: dtolnay/rust-toolchain@1.71
 
       - uses: Swatinem/rust-cache@v2
