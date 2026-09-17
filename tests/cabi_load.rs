@@ -113,8 +113,12 @@ fn loads_fixture_and_exercises_the_abi() {
     let path = build_fixture();
     let lib = unsafe { libloading::Library::new(&path).expect("failed to dlopen the fixture") };
 
-    // Resolution itself is the assertion: all nine symbols must come
-    // out of the dlopened fixture cdylib.
+    // Resolution itself is the assertion: all ten symbols must come
+    // out of the dlopened fixture cdylib. Ten rather than nine since
+    // ktav_canonical_from_source joined them — a dry run against the
+    // real bindings found that Deno resolves an FFI symbol table
+    // eagerly, so one missing symbol poisons the whole library handle
+    // rather than failing only the call that needs it.
     let _loads: libloading::Symbol<DocFn> = unsafe { lib.get(b"ktav_loads").unwrap() };
     let _loads_strict: libloading::Symbol<DocFn> =
         unsafe { lib.get(b"ktav_loads_strict").unwrap() };
@@ -124,14 +128,26 @@ fn loads_fixture_and_exercises_the_abi() {
     let _emit_canonical: libloading::Symbol<DocFn> =
         unsafe { lib.get(b"ktav_emit_canonical").unwrap() };
     let _format: libloading::Symbol<DocFn> = unsafe { lib.get(b"ktav_format").unwrap() };
+    let canonical_from_source: libloading::Symbol<DocFn> =
+        unsafe { lib.get(b"ktav_canonical_from_source").unwrap() };
     let free: libloading::Symbol<FreeFn> = unsafe { lib.get(b"ktav_free").unwrap() };
     let version: libloading::Symbol<VersionFn> = unsafe { lib.get(b"ktav_version").unwrap() };
     let abi_version: libloading::Symbol<AbiVersionFn> =
         unsafe { lib.get(b"ktav_abi_version").unwrap() };
-    eprintln!(
-        "resolved all nine ktav_cabi symbols from {}",
-        path.display()
+    eprintln!("resolved all ten ktav_cabi symbols from {}", path.display());
+
+    // Silence the unused binding; resolution above is the assertion.
+    let _ = &canonical_from_source;
+
+    // Text in, canonical text out, with no host value in between: the
+    // float spelling survives, which is the reason this symbol exists.
+    let (rc, out, err) = call(
+        &lib,
+        b"ktav_canonical_from_source",
+        b"ratio: 1.0\nbig: 1e9\n",
     );
+    assert_eq!(rc, 0, "canonical_from_source failed: {err}");
+    assert_eq!(String::from_utf8(out).unwrap(), "ratio: 1.0\nbig: 1e9\n");
 
     // ABI and crate version oracles.
     assert_eq!(unsafe { abi_version() }, ktav::cabi::ABI_VERSION);

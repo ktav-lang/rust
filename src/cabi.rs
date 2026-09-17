@@ -180,6 +180,28 @@ pub fn format(src: &[u8]) -> Result<Vec<u8>, String> {
     Ok(text.into_bytes())
 }
 
+/// Canonical form of a document, from its **source text** rather than
+/// from a wire value: Ktav text in, canonical Ktav text out.
+///
+/// This is not redundant with [`emit_canonical`], which takes the JSON
+/// wire form. The difference matters in host languages whose number
+/// type cannot carry Ktav's Integer/Float distinction: routing a
+/// document through such a value loses the distinction before the
+/// writer ever sees it, so `1.0` comes back as `1` and § 5.9 becomes
+/// unreachable. Going text to text never materialises a host value and
+/// keeps every scalar spelling byte-exact.
+///
+/// Two bindings arrived at this independently while the shims were
+/// still separate — the JavaScript one after a byte-exact canonical
+/// check failed on ten float fixtures, and the Go one by the same
+/// reasoning — which is why it belongs here rather than in either.
+pub fn canonical_from_source(src: &[u8]) -> Result<Vec<u8>, String> {
+    let input = std::str::from_utf8(src).map_err(not_utf8_envelope)?;
+    let value = crate::parse(input).map_err(|err| envelope(&err, input))?;
+    let text = crate::render::emit_canonical(&value).map_err(|err| envelope(&err, input))?;
+    Ok(text.into_bytes())
+}
+
 /// The dumps-family front half: JSON wire bytes -> `Value`, with every
 /// failure — serde_json parse, tagged-payload validation, the
 /// top-level object/array rule — reported as an envelope. The input
@@ -671,6 +693,44 @@ macro_rules! declare_cabi {
             }
         }
 
+        /// Canonical form from Ktav **source text** (input is Ktav source,
+        /// NOT a JSON wire value). Unlike `ktav_emit_canonical`, nothing
+        /// passes through a host value, so scalar spellings such as `1.0`
+        /// and `1e9` survive byte-exactly in languages whose number type
+        /// cannot carry the Integer/Float distinction.
+        ///
+        /// # Safety
+        /// `src` must point to `src_len` valid bytes; the output pointers
+        /// must be valid for writes; returned buffers are freed via
+        /// `ktav_free`.
+        #[no_mangle]
+        pub unsafe extern "C" fn ktav_canonical_from_source(
+            src: *const u8,
+            src_len: usize,
+            out_buf: *mut *mut u8,
+            out_len: *mut usize,
+            out_err: *mut *mut ::core::ffi::c_char,
+            out_err_len: *mut usize,
+        ) -> ::core::ffi::c_int {
+            *out_buf = ::core::ptr::null_mut();
+            *out_len = 0;
+            *out_err = ::core::ptr::null_mut();
+            *out_err_len = 0;
+            // SAFETY: `src`/`src_len` is this exported function's own
+            // documented contract.
+            let src = unsafe { ::core::slice::from_raw_parts(src, src_len) };
+            match $crate::cabi::canonical_from_source(src) {
+                Ok(bytes) => {
+                    ktav_cabi_emit(bytes, out_buf, out_len);
+                    0
+                }
+                Err(msg) => {
+                    ktav_cabi_emit_err(msg, out_err, out_err_len);
+                    1
+                }
+            }
+        }
+
         /// Free a buffer returned by any `ktav_*` output function.
         /// Null/zero is a no-op.
         ///
@@ -824,6 +884,40 @@ mod tests {
         assert_eq!(v["body"], "1.10");
         assert_eq!(v["canonical"], "1.1");
         assert_eq!(v["line"], 1);
+    }
+
+    /// A writer refusal must carry its § 5.9.0 reason code through the
+    /// ABI, not just a class name. Four bindings tested this in their own
+    /// shims; it belongs here now that the shims are one line each.
+    #[test]
+    fn dumps_writer_refusal_carries_a_reason_code() {
+        // An empty key name is unrepresentable (§ 5.9.0 EmptyKeyName):
+        // it parses as wire JSON but no writer can emit it.
+        let err = dumps(br#"{"a":{"":{"$i":"1"}}}"#).unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["reason"], "EmptyKeyName");
+        assert!(
+            v["error"] == "Unrepresentable" || v["error"] == "UnrepresentableAt",
+            "error = {:?}, expected one of the two writer rejections",
+            v["error"]
+        );
+    }
+
+    /// For a document with no comments and no blank lines, formatting it
+    /// and canonically emitting its parse must agree — the two ABI
+    /// operations take different inputs (Ktav text vs wire JSON) and are
+    /// easy to let drift apart. Four bindings asserted this
+    /// independently before the shims collapsed.
+    #[test]
+    fn format_agrees_with_emit_canonical_on_a_trivia_free_document() {
+        let src: &[u8] = b"server: {host: a, port: 80}\nname: x\n";
+        let formatted = format(src).unwrap();
+        let wire = loads(src).unwrap();
+        let canonical = emit_canonical(&wire).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&formatted).unwrap(),
+            std::str::from_utf8(&canonical).unwrap()
+        );
     }
 
     #[test]

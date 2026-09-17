@@ -9,10 +9,10 @@ being re-derived per language.
 The contract is split between two pieces of the `ktav` crate:
 
 - **`ktav::cabi`** (behind the off-by-default `cabi` feature) is the
-  safe half: wire decoding, the six document operations, the error
+  safe half: wire decoding, the seven document operations, the error
   envelope, `ABI_VERSION` and `library_file_name`. It contains no
   exported symbols.
-- **`ktav::declare_cabi!()`** expands the nine exported `#[no_mangle]`
+- **`ktav::declare_cabi!()`** expands the ten exported `#[no_mangle]`
   symbols *into the calling cdylib*. The export is guaranteed by
   construction: symbols defined in a dependency rlib are not guaranteed
   to survive into a downstream cdylib, symbols defined in the cdylib's
@@ -33,7 +33,7 @@ ktav::declare_cabi!();
 
 ## Symbols
 
-The macro exports exactly nine symbols. The six document functions
+The macro exports exactly ten symbols. The seven document functions
 share one signature (shown for `ktav_loads`; the others differ only in
 name):
 
@@ -51,6 +51,7 @@ int ktav_loads(const uint8_t* src, size_t src_len,
 | `ktav_dumps_force_strings` | shared signature | JSON wire in → Ktav text out, every scalar coerced via `::` |
 | `ktav_emit_canonical` | shared signature | JSON wire in → canonical Ktav text out (spec § 5.9) |
 | `ktav_format` | shared signature | Ktav source text in → formatted Ktav text out |
+| `ktav_canonical_from_source` | shared signature | Ktav source text in → canonical Ktav text out, without passing through a host value |
 | `ktav_free` | `void ktav_free(uint8_t* ptr, size_t len)` | frees a returned buffer |
 | `ktav_version` | `const char* ktav_version(void)` | NUL-terminated crate version, static storage |
 | `ktav_abi_version` | `uint32_t ktav_abi_version(void)` | see [ABI version](#abi-version) |
@@ -132,6 +133,13 @@ text, `line`, `line_text` and `span` populate.
   changed, and the transform is a fixed point
   (`format(format(x)) == format(x)`). For a document with no comments
   and no blank lines it equals `emit_canonical` of its parse.
+- **`ktav_canonical_from_source`** — canonical form straight from Ktav
+  source text, never passing through a host value. Prefer it over
+  `loads` followed by `emit_canonical` in any language whose number
+  type cannot carry the Integer/Float distinction: routing `1.0`
+  through such a value yields `1`, and § 5.9 becomes unreachable. The
+  JavaScript binding discovered this when a byte-exact canonical check
+  failed on ten float fixtures.
 
 ## ABI version
 
@@ -172,6 +180,6 @@ This convention is derived independently by the `php`, `csharp` and
 - `tests/cabi-fixture/` — a cdylib fixture whose entire body is one
   `declare_cabi!()` invocation.
 - `tests/cabi_load.rs` — builds the fixture, dlopens it, resolves all
-  nine symbols and calls through them.
+  ten symbols and calls through them.
 - `tests/cabi_corpus.rs` — the 221-fixture wire round-trip plus the
   canonical byte oracles.
