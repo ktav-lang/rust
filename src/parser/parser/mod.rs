@@ -1,5 +1,7 @@
 //! The parser state machine: a stack of [`Frame`]s plus a line dispatcher.
 
+pub(crate) mod parse_str;
+
 use crate::error::{CompoundKind, Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
 use crate::whitespace::is_ktav_whitespace;

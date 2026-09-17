@@ -1,18 +1,25 @@
 //! Line-oriented Ktav parser. See [`crate::parse`] for the public entry point.
+//!
+//! The tree below groups the parser by what each part does rather than
+//! by file: [`syntax`] classifies what a line says, [`build`] turns that
+//! into a `Value`, [`parser`] is the state machine that drives both,
+//! [`inline`] handles `{ ... }` and `[ ... ]`, and [`fmt_parser`] is the
+//! trivia-preserving fork the formatter uses. The `use` declarations
+//! below re-export every module at its original path, so the rest of the
+//! crate still writes `crate::parser::classify` and friends.
 
-mod bracket;
-pub(crate) mod classify;
-mod collecting;
+mod build;
 pub(crate) mod fmt_parser;
-mod frame;
 pub(crate) mod inline;
-pub(crate) mod insert;
-mod parse_str;
 mod parser;
-pub(crate) mod validate;
-mod value_start;
+mod syntax;
 
-pub(crate) use parse_str::{parse_str, parse_str_strict};
+use build::frame;
+pub(crate) use build::{insert, validate};
+pub(crate) use syntax::classify;
+use syntax::{bracket, collecting, value_start};
+
+pub(crate) use parser::parse_str::{parse_str, parse_str_strict};
 
 /// Byte length of the byte-order mark (U+FEFF) to skip at the very
 /// start of a document: 3 (its UTF-8 encoding `EF BB BF`) when the
@@ -28,7 +35,5 @@ pub(crate) fn leading_bom_len(text: &str) -> usize {
     }
 }
 
-#[cfg(test)]
-mod fmt_differential_tests;
 #[cfg(test)]
 mod tests;

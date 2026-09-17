@@ -15,8 +15,8 @@ use crate::error::{Error, ErrorKind, Span};
 use crate::value::Scalar;
 use crate::whitespace::is_ktav_whitespace;
 
-use super::inline;
 use super::value_start::ValueStart;
+use crate::parser::inline;
 
 /// `text` MUST already have trailing whitespace removed (guaranteed by
 /// `handle_line`'s `raw.trim_matches(is_ktav_whitespace)` at the top of
@@ -24,7 +24,7 @@ use super::value_start::ValueStart;
 ///
 /// `trimmed_span` covers the trimmed source line; it is used as the
 /// `Span` payload for any structured error emitted here.
-pub(super) fn classify_value_start(
+pub(in crate::parser) fn classify_value_start(
     text: &str,
     line_num: usize,
     trimmed_span: Span,
@@ -492,7 +492,7 @@ fn scan_exponent(bytes: &[u8], mut i: usize) -> (usize, bool) {
 /// decimal integer, `None` otherwise. The caller can use the original `s`
 /// directly as the canonical string, avoiding itoa formatting.
 #[inline]
-pub(super) fn fast_plain_decimal_i64(s: &str) -> Option<i64> {
+pub(in crate::parser) fn fast_plain_decimal_i64(s: &str) -> Option<i64> {
     let bytes = s.as_bytes();
     if bytes.is_empty() {
         return None;
@@ -644,7 +644,7 @@ pub fn matches_float_grammar(s: &str) -> bool {
 /// [`crate::render::helpers::bare_item_is_pair_candidate`] — by the
 /// writers' Array-root first-item safeguard (spec 0.7 § 5.9.6).
 pub(crate) fn is_pair_shape(trimmed: &str) -> bool {
-    use super::inline::find_unescaped_colon;
+    use crate::parser::inline::find_unescaped_colon;
 
     let Some(colon_idx) = find_unescaped_colon(trimmed) else {
         return false;

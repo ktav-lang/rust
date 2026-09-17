@@ -6,7 +6,7 @@ use rustc_hash::FxBuildHasher;
 use crate::error::Span;
 use crate::value::{ObjectMap, Value};
 
-pub(super) enum Frame<'a> {
+pub(in crate::parser) enum Frame<'a> {
     Object {
         pairs: ObjectMap,
         /// Set when the last pair opened a compound value whose body is
@@ -25,7 +25,7 @@ pub(super) enum Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    pub(super) fn new_object() -> Self {
+    pub(in crate::parser) fn new_object() -> Self {
         // Most Ktav objects have a handful of entries; preallocating avoids
         // the first one or two rehashes. Empirically `8` covers the typical
         // 5-7-field config row without growing, and the overhead vs `4` for
@@ -37,13 +37,13 @@ impl<'a> Frame<'a> {
         }
     }
 
-    pub(super) fn new_array() -> Self {
+    pub(in crate::parser) fn new_array() -> Self {
         Frame::Array {
             items: Vec::with_capacity(8),
         }
     }
 
-    pub(super) fn into_value(self) -> Value {
+    pub(in crate::parser) fn into_value(self) -> Value {
         match self {
             Frame::Object { pairs, .. } => Value::Object(pairs),
             Frame::Array { items } => Value::Array(items),

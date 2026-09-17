@@ -3,7 +3,7 @@
 
 use crate::value::Scalar;
 
-pub(super) enum ValueStart {
+pub(in crate::parser) enum ValueStart {
     /// A scalar string (anything that isn't a keyword, empty compound, or
     /// opening `{` / `[` / `(` / `((`).
     Scalar(Scalar),

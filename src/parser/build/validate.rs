@@ -158,7 +158,7 @@ fn check_quoted_key(raw: &str) -> KeyValidity {
     // The segment's own first unescaped delimiter closes it; anything
     // other than whitespace-trimming leftovers after the closer (i.e.
     // any byte at all — callers pre-trim) is InvalidKey per § 6.4.
-    let closer = match super::inline::quoted_span_end(bytes, 0) {
+    let closer = match crate::parser::inline::quoted_span_end(bytes, 0) {
         Some(c) => c,
         None => return KeyValidity::Invalid, // unterminated; normally diagnosed earlier
     };

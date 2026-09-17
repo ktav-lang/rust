@@ -29,8 +29,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::fmt_parser::{self, PArray, PObject, PValue};
 use crate::error::{Error, ErrorEnvelope};
+use crate::parser::fmt_parser::{self, PArray, PObject, PValue};
 use crate::value::{ObjectMap, Value};
 
 /// The corpus is large; a floor guards against a walk that silently

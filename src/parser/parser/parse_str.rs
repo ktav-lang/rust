@@ -5,7 +5,7 @@ use memchr::{memchr, memchr2};
 use crate::error::Error;
 use crate::value::Value;
 
-use super::parser::Parser;
+use super::Parser;
 
 /// Parse Ktav text into a [`Value`]. Iterates the input via byte scanning
 /// — each iteration yields a `&str` slice into the original buffer, so no
@@ -34,7 +34,7 @@ fn parse_str_impl(text: &str, strict: bool) -> Result<Value, Error> {
     // Spec § 3.1: skip exactly one leading U+FEFF before any other
     // byte is examined. Line offsets stay in original-input
     // coordinates so error Spans still slice the caller's text.
-    let start = super::leading_bom_len(text);
+    let start = crate::parser::leading_bom_len(text);
 
     // Fast path for the overwhelmingly common case: LF-only input
     // (no CR bytes). This avoids the per-byte branch on `\r` in the

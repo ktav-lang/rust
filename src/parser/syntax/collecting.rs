@@ -4,7 +4,7 @@
 use crate::whitespace::{common_leading_whitespace_prefix_len, is_ktav_whitespace};
 
 #[derive(Copy, Clone)]
-pub(super) enum MultilineMode {
+pub(in crate::parser) enum MultilineMode {
     /// `(` ... `)`: strip common leading whitespace from the collected lines.
     Stripped,
     /// `((` ... `))`: keep lines exactly as they appear.
@@ -12,7 +12,7 @@ pub(super) enum MultilineMode {
 }
 
 impl MultilineMode {
-    pub(super) fn terminator(self) -> &'static str {
+    pub(in crate::parser) fn terminator(self) -> &'static str {
         match self {
             MultilineMode::Stripped => ")",
             MultilineMode::Verbatim => "))",
@@ -20,24 +20,24 @@ impl MultilineMode {
     }
 }
 
-pub(super) struct Collecting<'a> {
-    pub(super) mode: MultilineMode,
-    pub(super) lines: Vec<&'a str>,
+pub(in crate::parser) struct Collecting<'a> {
+    pub(in crate::parser) mode: MultilineMode,
+    pub(in crate::parser) lines: Vec<&'a str>,
 }
 
 impl<'a> Collecting<'a> {
-    pub(super) fn new(mode: MultilineMode) -> Self {
+    pub(in crate::parser) fn new(mode: MultilineMode) -> Self {
         Self {
             mode,
             lines: Vec::with_capacity(8),
         }
     }
 
-    pub(super) fn is_terminator(&self, trimmed: &str) -> bool {
+    pub(in crate::parser) fn is_terminator(&self, trimmed: &str) -> bool {
         trimmed == self.mode.terminator()
     }
 
-    pub(super) fn finish(self) -> String {
+    pub(in crate::parser) fn finish(self) -> String {
         match self.mode {
             MultilineMode::Verbatim => {
                 // `Vec::join` always allocates; for the single-line case we

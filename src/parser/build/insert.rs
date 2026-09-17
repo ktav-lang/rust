@@ -15,8 +15,8 @@ use crate::error::{ConflictKind, Error, ErrorKind, Span};
 use crate::value::{ObjectMap, Value};
 use crate::whitespace::is_inline_whitespace;
 
-use super::inline::{decode_key_segment, key_is_single_segment, split_key_path};
 use super::validate::{check_key, KeyValidity};
+use crate::parser::inline::{decode_key_segment, key_is_single_segment, split_key_path};
 
 /// How the § 6.3 outcome tables observe a stored value's shape. The
 /// labels are the same kind strings the old free `kind_label` produced
