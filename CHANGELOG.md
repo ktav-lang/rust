@@ -22,13 +22,14 @@ API.
 
 - **`ktav::cabi` and the `declare_cabi!` macro** — the shareable
   half of the C ABI shim: the tagged `WireValue` decode (ordered
-  maps, lossless integers of any size), the six document operations
+  maps, lossless integers of any size), the seven document operations
   `loads`, `loads_strict`, `dumps`, `dumps_force_strings`,
-  `emit_canonical` and the new `format`, and envelope encoding for
-  every failure, including the non-`ktav` ones. The module contains no
+  `emit_canonical` and the new `format` and
+  `canonical_from_source`, and envelope encoding for every failure,
+  including the non-`ktav` ones. The module contains no
   `extern "C"`: symbols defined in a dependency rlib are not
   guaranteed to survive into a downstream cdylib. The macro expands the
-  nine `#[no_mangle]` symbols into the calling crate instead, where
+  ten `#[no_mangle]` symbols into the calling crate instead, where
   export is guaranteed by construction.
 
 - **`ktav_abi_version()` and `ktav::cabi::ABI_VERSION`** — the
@@ -46,12 +47,27 @@ API.
 
 - **A load test for the whole surface** — a fixture cdylib whose
   body is one `declare_cabi!()` invocation, built and dlopened by the
-  suite; all nine exported symbols resolve through `libloading`, and
-  `ktav_abi_version`, `ktav_loads` and `ktav_format` are called
-  for real. The wire round-trip runs over the conformance corpus: 221
+  suite; all ten exported symbols resolve through `libloading`, and
+  `ktav_abi_version`, `ktav_loads`, `ktav_format` and
+  `ktav_canonical_from_source` are called for real.
+  The wire round-trip runs over the conformance corpus: 221
   `valid/` fixtures keep their `Value` across `loads` ->
   `dumps`, and 221 canonical byte oracles match `emit_canonical`
   through the wire.
+
+### Changed
+
+- **`ktav_version()` now reports this crate's version, not the
+  binding's.** Each binding's private shim used to return its own
+  package version; the shared macro cannot know it. The number a host
+  reads therefore changes meaning, and constants such as a binding's
+  `LIB_VERSION` become stale without any error.
+
+  This is the honest reading — the native library *is* `ktav` — but
+  it removes the check those constants were performing. Use
+  `ktav_abi_version()` for that instead: it answers "is this library
+  the shape I was built against", which is the question a loader
+  actually has, and it does not move on every release.
 
 ### Fixed
 

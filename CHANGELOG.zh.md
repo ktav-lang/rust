@@ -19,11 +19,12 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
 ### 新增
 
 - **`ktav::cabi` 与 `declare_cabi!` 宏** —— C ABI 垫片中可共享的
-  一半:带标签的 `WireValue` 解码(有序映射、任意大小整数无损),六项
+  一半:带标签的 `WireValue` 解码(有序映射、任意大小整数无损),七项
   文档操作 `loads`、`loads_strict`、`dumps`、
-  `dumps_force_strings`、`emit_canonical` 与新增的 `format`,以及
-  把每一个错误——包括非 ktav 的错误——编码进信封。模块本身不含任何 `extern "C"`:依赖 rlib
-  中定义的符号不保证能存活到下游的 cdylib。宏改为把九个
+  `dumps_force_strings`、`emit_canonical` 与新增的 `format` 和
+  `canonical_from_source`,以及把每一个错误——包括非 ktav 的
+  错误——编码进信封。模块本身不含任何 `extern "C"`:依赖 rlib
+  中定义的符号不保证能存活到下游的 cdylib。宏改为把十个
   `#[no_mangle]` 符号展开进调用方的 crate,在那里导出由构造方式
   保证。
 
@@ -39,11 +40,24 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
 
 - **整个表面的加载测试** —— 一份 body 仅有一行 `declare_cabi!()`
   调用的 fixture cdylib;测试套件构建它、以 dlopen 打开、经
-  `libloading` 解析出全部九个导出符号,并真实调用
-  `ktav_abi_version`、`ktav_loads` 与 `ktav_format`。wire 往返
+  `libloading` 解析出全部十个导出符号,并真实调用
+  `ktav_abi_version`、`ktav_loads`、`ktav_format` 与
+  `ktav_canonical_from_source`。wire 往返
   覆盖一致性语料库:221 个 `valid/` fixture 在 `loads` ->
   `dumps` 之间保持 `Value` 不变,221 个规范字节预言机与经 wire 的
   `emit_canonical` 逐字节一致。
+
+### 变更
+
+- **`ktav_version()` 现在报告本 crate 的版本,而非绑定的版本。**
+  各绑定的私有垫片过去返回自己的包版本;共享宏无从得知它。因此宿主
+  读到的数字含义发生了变化,绑定中诸如 `LIB_VERSION` 的常量会在没有
+  任何报错的情况下过时。
+
+  这是更诚实的读法 —— 原生库**就是** `ktav` —— 但它移除了那些常量
+  原本承担的检查。请改用 `ktav_abi_version()`:它回答「这个库是否
+  与我构建时的形状一致」,这才是加载器真正的问题,而且它不会每次
+  发布都变动。
 
 ### 修复
 

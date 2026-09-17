@@ -95,21 +95,24 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
     join: 'block',
     en: `- **\`ktav::cabi\` and the \`declare_cabi!\` macro** — the shareable
   half of the C ABI shim: the tagged \`WireValue\` decode (ordered
-  maps, lossless integers of any size), the six document operations
+  maps, lossless integers of any size), the seven document operations
   \`loads\`, \`loads_strict\`, \`dumps\`, \`dumps_force_strings\`,
-  \`emit_canonical\` and the new \`format\`, and envelope encoding for
-  every failure, including the non-\`ktav\` ones.`,
+  \`emit_canonical\` and the new \`format\` and
+  \`canonical_from_source\`, and envelope encoding for every failure,
+  including the non-\`ktav\` ones.`,
     ru: `- **\`ktav::cabi\` и макрос \`declare_cabi!\`** — разделяемая половина
   C ABI-шима: тегированное декодирование \`WireValue\` (упорядоченные
-  карты, целые любой величины без потерь), шесть операций над
+  карты, целые любой величины без потерь), семь операций над
   документами \`loads\`, \`loads_strict\`, \`dumps\`,
-  \`dumps_force_strings\`, \`emit_canonical\` и новая \`format\`, и
-  кодирование любого сбоя — включая не-ktav-овские — в конверт.`,
+  \`dumps_force_strings\`, \`emit_canonical\` и новые \`format\` и
+  \`canonical_from_source\`, и кодирование любого сбоя — включая
+  не-ktav-овские — в конверт.`,
     zh: `- **\`ktav::cabi\` 与 \`declare_cabi!\` 宏** —— C ABI 垫片中可共享的
-  一半:带标签的 \`WireValue\` 解码(有序映射、任意大小整数无损),六项
+  一半:带标签的 \`WireValue\` 解码(有序映射、任意大小整数无损),七项
   文档操作 \`loads\`、\`loads_strict\`、\`dumps\`、
-  \`dumps_force_strings\`、\`emit_canonical\` 与新增的 \`format\`,以及
-  把每一个错误——包括非 ktav 的错误——编码进信封。`,
+  \`dumps_force_strings\`、\`emit_canonical\` 与新增的 \`format\` 和
+  \`canonical_from_source\`,以及把每一个错误——包括非 ktav 的
+  错误——编码进信封。`,
   },
   {
     id: 'v0-7-2-005',
@@ -117,15 +120,15 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
     en: `The module contains no
   \`extern "C"\`: symbols defined in a dependency rlib are not
   guaranteed to survive into a downstream cdylib. The macro expands the
-  nine \`#[no_mangle]\` symbols into the calling crate instead, where
+  ten \`#[no_mangle]\` symbols into the calling crate instead, where
   export is guaranteed by construction.`,
     ru: `В модуле нет ни одного \`extern "C"\`:
   символы, определённые в rlib-зависимости, не гарантированно
   выживают в cdylib потребителя. Макрос вместо этого разворачивает
-  девять символов \`#[no_mangle]\` в вызывающий crate, где экспорт
+  десять символов \`#[no_mangle]\` в вызывающий crate, где экспорт
   гарантирован по построению.`,
     zh: `模块本身不含任何 \`extern "C"\`:依赖 rlib
-  中定义的符号不保证能存活到下游的 cdylib。宏改为把九个
+  中定义的符号不保证能存活到下游的 cdylib。宏改为把十个
   \`#[no_mangle]\` 符号展开进调用方的 crate,在那里导出由构造方式
   保证。`,
   },
@@ -172,27 +175,71 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
     join: 'block',
     en: `- **A load test for the whole surface** — a fixture cdylib whose
   body is one \`declare_cabi!()\` invocation, built and dlopened by the
-  suite; all nine exported symbols resolve through \`libloading\`, and
-  \`ktav_abi_version\`, \`ktav_loads\` and \`ktav_format\` are called
-  for real. The wire round-trip runs over the conformance corpus: 221
+  suite; all ten exported symbols resolve through \`libloading\`, and
+  \`ktav_abi_version\`, \`ktav_loads\`, \`ktav_format\` and
+  \`ktav_canonical_from_source\` are called for real.
+  The wire round-trip runs over the conformance corpus: 221
   \`valid/\` fixtures keep their \`Value\` across \`loads\` ->
   \`dumps\`, and 221 canonical byte oracles match \`emit_canonical\`
   through the wire.`,
     ru: `- **Загрузочный тест всей поверхности** — cdylib-фикстура, чьё тело —
   один вызов \`declare_cabi!()\`; тест собирает её, открывает через
-  dlopen, разрешает все девять экспортированных символов через
+  dlopen, разрешает все десять экспортированных символов через
   \`libloading\` и по-настоящему вызывает \`ktav_abi_version\`,
-  \`ktav_loads\` и \`ktav_format\`. Wire-проверка идёт по
+  \`ktav_loads\`, \`ktav_format\` и \`ktav_canonical_from_source\`. Wire-проверка идёт по
   конформанс-корпусу: 221 фикстура из \`valid/\` сохраняет \`Value\`
   через \`loads\` -> \`dumps\`, и 221 канонический байтовый оракул
   совпадает с \`emit_canonical\` через wire.`,
     zh: `- **整个表面的加载测试** —— 一份 body 仅有一行 \`declare_cabi!()\`
   调用的 fixture cdylib;测试套件构建它、以 dlopen 打开、经
-  \`libloading\` 解析出全部九个导出符号,并真实调用
-  \`ktav_abi_version\`、\`ktav_loads\` 与 \`ktav_format\`。wire 往返
+  \`libloading\` 解析出全部十个导出符号,并真实调用
+  \`ktav_abi_version\`、\`ktav_loads\`、\`ktav_format\` 与
+  \`ktav_canonical_from_source\`。wire 往返
   覆盖一致性语料库:221 个 \`valid/\` fixture 在 \`loads\` ->
   \`dumps\` 之间保持 \`Value\` 不变,221 个规范字节预言机与经 wire 的
   \`emit_canonical\` 逐字节一致。`,
+  },
+  {
+    id: 'v0-7-2-008b',
+    join: 'block',
+    en: `### Changed`,
+    ru: `### Changed`,
+    zh: `### 变更`,
+  },
+  {
+    id: 'v0-7-2-008c',
+    join: 'block',
+    en: `- **\`ktav_version()\` now reports this crate's version, not the
+  binding's.** Each binding's private shim used to return its own
+  package version; the shared macro cannot know it. The number a host
+  reads therefore changes meaning, and constants such as a binding's
+  \`LIB_VERSION\` become stale without any error.
+
+  This is the honest reading — the native library *is* \`ktav\` — but
+  it removes the check those constants were performing. Use
+  \`ktav_abi_version()\` for that instead: it answers "is this library
+  the shape I was built against", which is the question a loader
+  actually has, and it does not move on every release.`,
+    ru: `- **\`ktav_version()\` теперь сообщает версию этого crate-а, а не
+  биндинга.** Приватный шим каждого биндинга возвращал собственную
+  версию пакета; общий макрос знать её не может. Смысл числа, которое
+  читает host, тем самым меняется, а константы вроде \`LIB_VERSION\` в
+  биндинге устаревают без единой ошибки.
+
+  Это честное прочтение — нативная библиотека и **есть** \`ktav\`, — но
+  оно убирает проверку, которую эти константы выполняли. Для неё
+  используйте \`ktav_abi_version()\`: он отвечает на вопрос «та ли это
+  библиотека по форме, под которую меня собрали», то есть на настоящий
+  вопрос загрузчика, и не меняется каждый выпуск.`,
+    zh: `- **\`ktav_version()\` 现在报告本 crate 的版本,而非绑定的版本。**
+  各绑定的私有垫片过去返回自己的包版本;共享宏无从得知它。因此宿主
+  读到的数字含义发生了变化,绑定中诸如 \`LIB_VERSION\` 的常量会在没有
+  任何报错的情况下过时。
+
+  这是更诚实的读法 —— 原生库**就是** \`ktav\` —— 但它移除了那些常量
+  原本承担的检查。请改用 \`ktav_abi_version()\`:它回答「这个库是否
+  与我构建时的形状一致」,这才是加载器真正的问题,而且它不会每次
+  发布都变动。`,
   },
   {
     id: 'v0-7-2-009',
