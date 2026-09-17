@@ -2,9 +2,9 @@
 
 // --- validate (spec 0.7 quoted keys, § 5.3.3) --------------------------------
 
-use super::S;
 use crate::error::{Error, ErrorKind};
 use crate::parser::inline::{decode_key_segment, process_escapes};
+use crate::parser::tests::S;
 use crate::parser::validate::is_valid_key;
 use crate::parser::validate::{check_key, KeyValidity};
 use crate::value::Value;

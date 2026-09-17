@@ -8,9 +8,7 @@ mod helpers;
 mod inline_values;
 mod ix_probe;
 mod midvalue_braces;
-mod quote_prescan;
-mod quoted_keys;
-mod quoted_keys_parse;
+mod quoting;
 
 use crate::error::Span;
 

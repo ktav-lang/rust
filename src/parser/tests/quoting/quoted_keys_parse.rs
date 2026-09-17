@@ -1,7 +1,7 @@
 //! Quoted-key tests at the parse level (spec 0.7 § 5.3.3).
 
-use super::S;
 use crate::parser::inline::{has_quote_bytes, InlineBounds};
+use crate::parser::tests::S;
 use crate::value::Value;
 // --- quoted keys: parse-level (spec 0.7 § 5.3.3) ----------------------------
 

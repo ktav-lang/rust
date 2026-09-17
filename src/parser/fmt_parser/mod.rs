@@ -39,6 +39,7 @@ use crate::error::Result;
 use memchr::{memchr, memchr2};
 
 mod doc;
+mod frame;
 mod positioned;
 
 pub(crate) use doc::{to_plain_value, FmtDoc, PArray, PObject, PValue, TriviaLine};

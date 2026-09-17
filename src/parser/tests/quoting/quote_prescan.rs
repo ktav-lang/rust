@@ -1,6 +1,6 @@
 //! R10-F1 tests: quote-presence prescan cost (deterministic counters).
 
-use super::ix_fixtures;
+use crate::parser::tests::ix_fixtures;
 use crate::value::Value;
 // --- R10-F1: quote-presence prescan cost (deterministic counters) ----------
 

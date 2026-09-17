@@ -3,12 +3,12 @@
 use crate::error::{Error, ErrorKind, Span};
 use crate::whitespace::is_inline_whitespace;
 
-use super::keys::{find_unescaped_colon, has_quote_bytes};
 use super::scan_config::{FindFast, FindQ, ScanCfg, ScanFast, ScanQ, ScanStop, SplitFast, SplitQ};
 use super::scanner::Scanner;
+use crate::parser::inline::keys::{find_unescaped_colon, has_quote_bytes};
 
 #[cfg(test)]
-use super::ix_probe;
+use crate::parser::inline::ix_probe;
 
 // ---------------------------------------------------------------------------
 // Splitting on top-level commas
@@ -66,7 +66,7 @@ pub(crate) enum InlineBody {
 /// one allocation.
 #[derive(Clone, Copy)]
 pub(crate) struct InlineBounds<'a> {
-    pub(super) origin: usize, // address of the top body's first byte (coordinate origin)
+    pub(in crate::parser::inline) origin: usize, // address of the top body's first byte (coordinate origin)
     pairs: &'a [(usize, usize)],
 }
 
@@ -130,7 +130,7 @@ impl<'a> InlineBounds<'a> {
 
     /// Closer absolute offset of a recorded span whose opener sits at
     /// absolute offset `abs`, for split's opener jump.
-    pub(super) fn opener_close_at(&self, abs: usize) -> Option<usize> {
+    pub(in crate::parser::inline) fn opener_close_at(&self, abs: usize) -> Option<usize> {
         #[cfg(test)]
         if ix_probe::bypass_engaged() {
             return None;
@@ -422,7 +422,7 @@ pub(crate) fn find_unescaped_colon_inline(s: &str) -> Option<usize> {
 // Error helpers
 // ---------------------------------------------------------------------------
 
-pub(super) fn malformed(line_num: usize, span: Span, detail: &str) -> Error {
+pub(in crate::parser::inline) fn malformed(line_num: usize, span: Span, detail: &str) -> Error {
     Error::Structured(ErrorKind::MalformedInlineCompound {
         line: line_num as u32,
         span,

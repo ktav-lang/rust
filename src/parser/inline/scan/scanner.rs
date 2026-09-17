@@ -2,10 +2,12 @@
 
 use crate::error::{Error, ErrorKind, Span};
 
-use super::escapes::scan_escape;
-use super::keys::{inline_whitespace_at, is_quote_byte, quoted_span_end, skip_segment_ws};
 use super::scan_config::{ScanCfg, ScanStop, ScopeFrame};
 use super::split::{scan_inline_closer, InlineBounds, InlineCloserScan};
+use crate::parser::inline::escapes::scan_escape;
+use crate::parser::inline::keys::{
+    inline_whitespace_at, is_quote_byte, quoted_span_end, skip_segment_ws,
+};
 
 /// The shared byte-at-a-time scanner. All hot state lives in fields
 /// that [`Scanner::run`] copies into LOCALS for the whole loop (the
@@ -13,7 +15,7 @@ use super::split::{scan_inline_closer, InlineBounds, InlineCloserScan};
 /// locals; a field-per-iteration machine measured +15–20% slower on
 /// deeply-nested quote-free documents) and writes back once after the
 /// loop.
-pub(super) struct Scanner<'a, 'b, C: ScanCfg> {
+pub(in crate::parser::inline) struct Scanner<'a, 'b, C: ScanCfg> {
     input: &'a str,
     bytes: &'a [u8],
     open: u8,
@@ -21,26 +23,26 @@ pub(super) struct Scanner<'a, 'b, C: ScanCfg> {
     body_object: bool,
     line_num: usize,
     span: Span,
-    pub(super) i: usize,
-    pub(super) depth: i32,
-    pub(super) in_key: bool,
-    pub(super) seg_start: bool,
-    pub(super) value_start: bool,
+    pub(in crate::parser::inline) i: usize,
+    pub(in crate::parser::inline) depth: i32,
+    pub(in crate::parser::inline) in_key: bool,
+    pub(in crate::parser::inline) seg_start: bool,
+    pub(in crate::parser::inline) value_start: bool,
     raw: bool,
     prev: u8,
     stack: Vec<ScopeFrame>,
-    pub(super) segments: Vec<&'a str>,
-    pub(super) seg_at: usize,
+    pub(in crate::parser::inline) segments: Vec<&'a str>,
+    pub(in crate::parser::inline) seg_at: usize,
     input_off: usize, // offset of input[0] in bounds coordinates
     bounds: InlineBounds<'b>,
     open_at: Vec<(usize, bool, i32)>, // parallels `stack`: (opener offset, pure, entry depth)
-    pub(super) pairs_out: Vec<(usize, usize)>, // recorded (opener, closer) pairs
+    pub(in crate::parser::inline) pairs_out: Vec<(usize, usize)>, // recorded (opener, closer) pairs
     _cfg: std::marker::PhantomData<C>,
 }
 
 impl<'a, 'b, C: ScanCfg> Scanner<'a, 'b, C> {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn new(
+    pub(in crate::parser::inline) fn new(
         input: &'a str,
         open: u8,
         close: u8,
@@ -75,7 +77,7 @@ impl<'a, 'b, C: ScanCfg> Scanner<'a, 'b, C> {
         }
     }
 
-    pub(super) fn run(&mut self) -> ScanStop {
+    pub(in crate::parser::inline) fn run(&mut self) -> ScanStop {
         let input = self.input;
         let bytes = self.bytes;
         let len = bytes.len();

@@ -1,7 +1,6 @@
-//! The trivia-preserving parser itself: `PFrame` and `PositionedParser`, mirroring `super::parser::Parser`'s line dispatch.
-
-use indexmap::IndexMap;
-use rustc_hash::FxBuildHasher;
+//! The trivia-preserving parser itself: `PositionedParser`, mirroring
+//! `crate::parser::parser::Parser`'s line dispatch. Its stack frame lives
+//! next door in [`super::frame`].
 
 use crate::error::{CompoundKind, Error, ErrorKind, Result, Span};
 use crate::whitespace::is_ktav_whitespace;
@@ -18,77 +17,8 @@ use crate::parser::parser::{
 use crate::parser::value_start::ValueStart;
 
 use super::doc::{stamp, trim_trailing_blanks, FmtDoc, PArray, PObject, PValue, TriviaLine};
+use super::frame::PFrame;
 
-// ---------------------------------------------------------------------------
-// Parser frames
-// ---------------------------------------------------------------------------
-
-enum PFrame<'a> {
-    Object {
-        table: PObject,
-        pending_key: Option<&'a str>,
-        pending_key_span: Option<Span>,
-        pending_key_trivia: Vec<TriviaLine>,
-        at_start: bool,
-    },
-    Array {
-        table: PArray,
-        pending_item_trivia: Vec<TriviaLine>,
-        at_start: bool,
-    },
-}
-
-impl<'a> PFrame<'a> {
-    fn new_object() -> Self {
-        PFrame::Object {
-            table: PObject {
-                pairs: IndexMap::with_capacity_and_hasher(8, FxBuildHasher),
-                trailing: Vec::new(),
-            },
-            pending_key: None,
-            pending_key_span: None,
-            pending_key_trivia: Vec::new(),
-            at_start: true,
-        }
-    }
-
-    fn new_array() -> Self {
-        PFrame::Array {
-            table: PArray {
-                items: Vec::with_capacity(8),
-                trailing: Vec::new(),
-            },
-            pending_item_trivia: Vec::new(),
-            at_start: true,
-        }
-    }
-
-    fn into_value(self) -> PValue {
-        match self {
-            PFrame::Object { table, .. } => PValue::Object(table),
-            PFrame::Array { table, .. } => PValue::Array(table),
-        }
-    }
-
-    fn set_started(&mut self) {
-        match self {
-            PFrame::Object { at_start, .. } | PFrame::Array { at_start, .. } => *at_start = false,
-        }
-    }
-
-    fn is_at_start(&self) -> bool {
-        match self {
-            PFrame::Object { at_start, .. } | PFrame::Array { at_start, .. } => *at_start,
-        }
-    }
-
-    fn trailing_mut(&mut self) -> &mut Vec<TriviaLine> {
-        match self {
-            PFrame::Object { table, .. } => &mut table.trailing,
-            PFrame::Array { table, .. } => &mut table.trailing,
-        }
-    }
-}
 // ---------------------------------------------------------------------------
 // The parser itself
 // ---------------------------------------------------------------------------

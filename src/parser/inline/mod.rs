@@ -10,9 +10,7 @@ mod escapes;
 #[cfg(test)]
 pub(crate) mod ix_probe;
 mod keys;
-mod scan_config;
-mod scanner;
-mod split;
+mod scan;
 
 pub(crate) use compound::{
     parse_float_value, parse_inline_array, parse_inline_object, MAX_INLINE_DEPTH,
@@ -22,7 +20,7 @@ pub(crate) use keys::{
     decode_key_segment, find_unescaped_colon, has_quote_bytes, key_is_single_segment,
     quoted_span_end, scan_unescaped_colon, split_key_path, ColonScan,
 };
-pub(crate) use split::{
+pub(crate) use scan::split::{
     find_matching_close, find_unescaped_colon_inline, malformed_closer_not_at_end,
     scan_inline_closer, scan_inline_closer_with_bounds, split_top_level, InlineBody, InlineBounds,
     InlineCloserScan,

@@ -13,7 +13,7 @@ use crate::parser::insert::insert_value;
 
 use super::escapes::process_escapes;
 use super::keys::has_quote_bytes;
-use super::split::{
+use super::scan::split::{
     find_matching_close, find_unescaped_colon_inline, malformed, malformed_closer_not_at_end,
     scan_inline_closer, split_top_level, InlineBody, InlineBounds, InlineCloserScan,
 };

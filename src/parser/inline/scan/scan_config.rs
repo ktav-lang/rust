@@ -69,12 +69,12 @@ use crate::error::Error;
 /// Bit layout: bit 0 = opener kind (0: `{`-scope, 1: `[`-scope),
 /// bit 1 = saved `in_key`, bit 2 = saved `seg_start`, bit 3 = saved `raw`.
 #[derive(Clone, Copy)]
-pub(super) struct ScopeFrame(u8);
+pub(in crate::parser::inline) struct ScopeFrame(u8);
 
 impl ScopeFrame {
     /// `kind` is the opener byte, `b'{'` or `b'['`.
     #[inline]
-    pub(super) fn pack(
+    pub(in crate::parser::inline) fn pack(
         kind: u8,
         saved_in_key: bool,
         saved_seg_start: bool,
@@ -90,7 +90,7 @@ impl ScopeFrame {
 
     /// The stored opener kind, as the opener byte it was packed from.
     #[inline]
-    pub(super) fn kind(self) -> u8 {
+    pub(in crate::parser::inline) fn kind(self) -> u8 {
         if self.0 & 1 == 0 {
             b'{'
         } else {
@@ -99,23 +99,23 @@ impl ScopeFrame {
     }
 
     #[inline]
-    pub(super) fn saved_in_key(self) -> bool {
+    pub(in crate::parser::inline) fn saved_in_key(self) -> bool {
         self.0 & 0b0010 != 0
     }
 
     #[inline]
-    pub(super) fn saved_seg_start(self) -> bool {
+    pub(in crate::parser::inline) fn saved_seg_start(self) -> bool {
         self.0 & 0b0100 != 0
     }
 
     #[inline]
-    pub(super) fn saved_raw(self) -> bool {
+    pub(in crate::parser::inline) fn saved_raw(self) -> bool {
         self.0 & 0b1000 != 0
     }
 }
 
 /// Why the shared scanner loop stopped.
-pub(super) enum ScanStop {
+pub(in crate::parser::inline) enum ScanStop {
     /// Depth returned to 0 at `idx`; `byte` is the closer byte
     /// (`}`/`]`) seen there.
     Closer { idx: usize, byte: u8 },
@@ -132,7 +132,7 @@ pub(super) enum ScanStop {
 /// Compile-time policy knobs of the shared scanner. Every `const` is
 /// folded away by monomorphization, so each config's byte loop is the
 /// specialized machine of exactly one former hand-written scanner.
-pub(super) trait ScanCfg {
+pub(in crate::parser::inline) trait ScanCfg {
     /// Quote/segment-start tracking (§ 5.3.3). `false` for every
     /// *Fast config.
     const TRACK_QUOTES: bool;
@@ -200,7 +200,7 @@ pub(super) trait ScanCfg {
 /// (R8-F2) even though no quote byte can exist: `in_key` still
 /// classifies a `:` as key-separator vs value content, and find must
 /// mean exactly what the quote-aware machine means by every byte.
-pub(super) struct FindFast;
+pub(in crate::parser::inline) struct FindFast;
 impl ScanCfg for FindFast {
     const TRACK_QUOTES: bool = false;
     const USE_STACK: bool = true;
@@ -228,7 +228,7 @@ impl ScanCfg for FindFast {
 /// raw-marker rules as the root scan — only the result shape
 /// (`Option<usize>`, no error construction) and the missing escape
 /// validation differ.
-pub(super) struct FindQ;
+pub(in crate::parser::inline) struct FindQ;
 impl ScanCfg for FindQ {
     const TRACK_QUOTES: bool = true;
     const USE_STACK: bool = true;
@@ -256,7 +256,7 @@ impl ScanCfg for FindQ {
 /// re-derives `in_key` — byte-identical to [`ScanQ`] on quote-free
 /// slices (R8-F2 closed the former fast-only quirks), which is what
 /// lets one recorded boundary memo serve a consumer in either mode.
-pub(super) struct ScanFast;
+pub(in crate::parser::inline) struct ScanFast;
 impl ScanCfg for ScanFast {
     const TRACK_QUOTES: bool = false;
     const USE_STACK: bool = true;
@@ -283,7 +283,7 @@ impl ScanCfg for ScanFast {
 /// raw-marker tracking as the fast path; closers restore the
 /// enclosing scope's key, segment-start and raw state (R4-F2) and
 /// clear `value_start`.
-pub(super) struct ScanQ;
+pub(in crate::parser::inline) struct ScanQ;
 impl ScanCfg for ScanQ {
     const TRACK_QUOTES: bool = true;
     const USE_STACK: bool = true;
@@ -308,7 +308,7 @@ impl ScanCfg for ScanQ {
 /// `split_top_level`, quote-free fast path (also serving object bodies
 /// without quote bytes). Implements the § 5.8.5 value-start rule via
 /// sub-scans; `}`/`]` are ordinary content.
-pub(super) struct SplitFast;
+pub(in crate::parser::inline) struct SplitFast;
 impl ScanCfg for SplitFast {
     const TRACK_QUOTES: bool = false;
     const USE_STACK: bool = false;
@@ -332,7 +332,7 @@ impl ScanCfg for SplitFast {
 
 /// `split_top_level`, object body with quote bytes: quoted KEYS are
 /// comma-opaque (§ 5.3.3), quotes in value positions are content.
-pub(super) struct SplitQ;
+pub(in crate::parser::inline) struct SplitQ;
 impl ScanCfg for SplitQ {
     const TRACK_QUOTES: bool = true;
     const USE_STACK: bool = false;
