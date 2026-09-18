@@ -2,7 +2,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
+use crate::manifest::RunnerManifest;
 use ktav::ReasonCode;
 use serde_json::Value as JsonValue;
 
@@ -16,7 +18,28 @@ pub(crate) fn resolve_spec_root() -> Option<PathBuf> {
     }
     candidates.push(manifest.join("spec"));
     candidates.push(manifest.join("../spec"));
-    candidates.into_iter().find(|p| p.join("versions").is_dir())
+    let root = candidates.into_iter().find(|p| p.join("versions").is_dir())?;
+
+    // § 8.5: load and enforce the corpus manifest BEFORE any fixture is
+    // enumerated. Every runner in this suite reaches its fixtures through
+    // this function, so putting the gate here is what makes "before" true
+    // for all of them rather than for whichever ones remembered to ask.
+    // Once per process: the corpus does not change mid-run, and repeating
+    // the report for each of the eight runners would bury it.
+    ENFORCED.get_or_init(|| {
+        crate::manifest::load_and_enforce(&root.join("versions").join(SPEC_VERSION).join("tests"))
+    });
+    Some(root)
+}
+
+static ENFORCED: OnceLock<RunnerManifest> = OnceLock::new();
+
+/// The § 8.5 manifest for the resolved corpus, or `None` when no spec
+/// checkout is present. Callers that already hold a spec root use this to
+/// honour `raw_bytes` without re-reading the file.
+pub(crate) fn runner_manifest() -> Option<&'static RunnerManifest> {
+    resolve_spec_root()?;
+    ENFORCED.get()
 }
 
 pub(crate) fn tests_dir(spec_root: &Path, bucket: &str) -> PathBuf {
