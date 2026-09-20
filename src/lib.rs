@@ -45,7 +45,8 @@
 //!     Err(other) => panic!("unexpected error: {other:?}"),
 //! }
 //! ```
-//! (See `tests/error_accessors.rs` for the executed test.)
+//! (See `tests/suite/errors/surface/error_accessors.rs` for the executed
+//! test.)
 //!
 //! ## C ABI for language bindings
 //!
@@ -57,9 +58,10 @@
 //!
 //! ## Example
 //!
-//! See [`tests/doc_example.rs`](../tests/doc_example.rs) for the executed
-//! version of this snippet — it exercises the full parse → struct → render
-//! → parse round-trip:
+//! See
+//! [`tests/suite/api/text/docs/doc_example.rs`](../tests/suite/api/text/docs/doc_example.rs)
+//! for the executed version of this snippet — it exercises the full
+//! parse → struct → render → parse round-trip:
 //!
 //! ```text
 //! use serde::{Deserialize, Serialize};
@@ -104,13 +106,13 @@
 
 #[cfg(feature = "cabi")]
 pub mod cabi;
-pub mod de;
 pub mod error;
-pub mod parser;
-pub mod render;
-pub mod ser;
-pub mod thin;
-pub mod value;
+
+mod document;
+pub use document::{parser, render, value};
+
+mod serde_bridge;
+pub use serde_bridge::{de, ser, thin};
 
 #[cfg(test)]
 mod arena_probe;
@@ -120,6 +122,7 @@ mod arena_probe;
 #[cfg(test)]
 extern crate self as ktav;
 
+#[path = "document/whitespace.rs"]
 mod whitespace;
 
 pub use error::{
@@ -133,6 +136,7 @@ use std::path::Path;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_bridge::{EventCursor, EventDeserializer};
 
 /// Parse a Ktav document from a string into a raw [`Value`]. Useful when
 /// you want to inspect or manipulate the document generically. For
@@ -190,8 +194,8 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
     // only when the parser reports re-opened dotted-key prefixes;
     // otherwise the raw (zero-copy) stream is used as-is.
     let events = thin::parse_events_merged(s, &bump)?;
-    let mut cursor = thin::EventCursor::new(&events);
-    T::deserialize(thin::EventDeserializer::new(&mut cursor))
+    let mut cursor = EventCursor::new(&events);
+    T::deserialize(EventDeserializer::new(&mut cursor))
 }
 
 /// Parse a Ktav document from a file path and deserialize it into `T`.

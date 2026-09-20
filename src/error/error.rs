@@ -22,7 +22,7 @@
 //!
 //! `<ErrorKind as Display>` is *byte-identical* to what the matching
 //! `Error::Syntax(format!(…))` site produced in `0.1.4` for the seven
-//! categories pinned in `tests/error_format.rs`. The three new
+//! categories pinned in `tests/suite/errors/surface/error_format.rs`. The three new
 //! categories added in `0.1.6` get their own pinned strings in the same
 //! file.
 //!
