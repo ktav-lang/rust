@@ -403,7 +403,8 @@ if let Err(e) = ktav::parse_strict(src) {
 ### 严格模式 —— 捕获被静默规范化的数字
 
 类型由标量的词法形式推断，且推断出的数字会被规范化：`version: 1.10`
-解析为 `Float(1.1)`，`zip: 01234` 解析为 `Integer(1234)`。默认的
+解析为 `Float(1.1)`。带冗余前导零的十进制字面量是唯一的例外：`zip: 01234`
+是 String `"01234"`（§ 5.2），因为丢掉那个零会摧毁一个标识符。默认的
 `parse()` 会静默完成这一过程，因此把文档写回去就会改写它。
 
 `parse_strict()` 则拒绝这类**有损标量**：
@@ -411,13 +412,14 @@ if let Err(e) = ktav::parse_strict(src) {
 ```rust
 use ktav::{parse, parse_strict, Error, ErrorKind};
 
-let src = "zip: 01234\n";
+let src = "version: 1.10\n";
 
-assert!(parse(src).is_ok());                 // Integer(1234) —— 前导零丢失
+assert!(parse(src).is_ok());                 // Float(1.1) —— 尾部零丢失
+assert!(parse("zip: 01234\n").is_ok());       // String("01234") —— 前导零被保留
 
 match parse_strict(src) {
     Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
-        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+        assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
     }
     other => panic!("期望 LossyScalar，实际为 {other:?}"),
 }

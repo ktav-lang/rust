@@ -433,8 +433,10 @@ escaped per RFC 8259 — and no serde dependency is involved.
 ### Strict mode — catch silently canonicalised numbers
 
 Types are inferred from a scalar's lexical form, and inferred numbers
-are canonicalised: `version: 1.10` parses as `Float(1.1)` and
-`zip: 01234` as `Integer(1234)`. The default `parse()` does this
+are canonicalised: `version: 1.10` parses as `Float(1.1)`. A decimal
+with a redundant leading zero is the one exception — `zip: 01234` is the
+String `"01234"` (§ 5.2), because dropping that zero would destroy an
+identifier. The default `parse()` does this
 silently, so writing the document back out rewrites it.
 
 `parse_strict()` rejects such **lossy scalars** instead:
@@ -442,13 +444,14 @@ silently, so writing the document back out rewrites it.
 ```rust
 use ktav::{parse, parse_strict, Error, ErrorKind};
 
-let src = "zip: 01234\n";
+let src = "version: 1.10\n";
 
-assert!(parse(src).is_ok());                 // Integer(1234) — leading zero gone
+assert!(parse(src).is_ok());                 // Float(1.1) — trailing zero gone
+assert!(parse("zip: 01234\n").is_ok());       // String("01234") — leading zero kept
 
 match parse_strict(src) {
     Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
-        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+        assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
     }
     other => panic!("expected LossyScalar, got {other:?}"),
 }

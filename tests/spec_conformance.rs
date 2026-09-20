@@ -11,7 +11,10 @@
 //!   - every `unrepresentable/**/*.json` Value is rejected by all three
 //!     writer surfaces with the exact `ReasonCode` (spec § 5.9.0);
 //!   - every `parseable-unrepresentable/*.ktav` parses and matches its
-//!     JSON oracle `value`, yet every writer surface rejects it.
+//!     JSON oracle `value`, yet every writer surface rejects it;
+//!   - every `strict-lossy/*.ktav` parses under lax `parse` to the JSON
+//!     oracle's `lax_value`, yet `parse_strict` rejects it with
+//!     `LossyScalar` naming the oracle's `body`/`canonical` (spec § 8.1).
 //!
 //! Spec root resolution (first match wins):
 //!   1. env var `KTAV_SPEC_DIR` (absolute path to the spec-repo root);
@@ -26,6 +29,8 @@ mod manifest;
 mod invalid;
 #[path = "spec_conformance/oracle.rs"]
 mod oracle;
+#[path = "spec_conformance/strict_lossy.rs"]
+mod strict_lossy;
 #[path = "spec_conformance/support.rs"]
 mod support;
 #[path = "spec_conformance/unrepresentable.rs"]

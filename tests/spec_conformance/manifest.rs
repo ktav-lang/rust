@@ -191,7 +191,7 @@ pub(crate) fn load_and_enforce(tests_root: &Path) -> RunnerManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::{resolve_spec_root, runner_manifest};
+    use crate::support::{resolve_spec_root, runner_manifest, SPEC_VERSION};
     use std::fs;
 
     /// The contract is enforced as a side effect of resolving the spec
@@ -228,7 +228,7 @@ mod tests {
             eprintln!("skipping § 8.5 truncation test: spec dir not found");
             return;
         };
-        let real = root.join("versions").join("0.7").join("tests");
+        let real = root.join("versions").join(SPEC_VERSION).join("tests");
         let temp = std::env::temp_dir().join(format!("ktav-truncated-{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp);
 
@@ -237,7 +237,13 @@ mod tests {
         fs::create_dir_all(&temp).unwrap();
         fs::copy(real.join("manifest.json"), temp.join("manifest.json")).unwrap();
         let mut removed = false;
-        for category in ["valid", "invalid", "unrepresentable", "parseable-unrepresentable"] {
+        for category in [
+            "valid",
+            "invalid",
+            "unrepresentable",
+            "parseable-unrepresentable",
+            "strict-lossy",
+        ] {
             copy_tree(&real.join(category), &temp.join(category));
             if category == "valid" && !removed {
                 let victim = first_fixture(&temp.join("valid"));

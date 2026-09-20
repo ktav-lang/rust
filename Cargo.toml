@@ -35,7 +35,7 @@ exclude = [
 # Which version of the Ktav format specification this crate implements.
 # See https://github.com/ktav-lang/spec for the formal document.
 [package.metadata.ktav]
-spec-version = "0.7.1"
+spec-version = "0.8.0"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -91,4 +91,8 @@ harness = false
 
 [[bench]]
 name = "vs_json"
+harness = false
+
+[[bench]]
+name = "format"
 harness = false

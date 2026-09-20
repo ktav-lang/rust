@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use bumpalo::Bump;
 
 use crate::error::{Error, Span};
-use crate::parser::classify::{is_float_literal, try_parse_integer};
+use crate::parser::classify::{has_redundant_leading_zero, is_float_literal, try_parse_integer};
 use crate::parser::inline::parse_float_value;
 
 use super::super::event::Event;
@@ -54,6 +54,12 @@ pub(super) fn classify_inline_scalar<'a>(
         "true" => return Ok(Node::Leaf(Event::Bool(true))),
         "false" => return Ok(Node::Leaf(Event::Bool(false))),
         _ => {}
+    }
+
+    // § 5.2 rules 13-14 exception: a redundant leading zero is never a
+    // number, so the thin API reports the same String the owned API does.
+    if has_redundant_leading_zero(body) {
+        return Ok(Node::Leaf(Event::Str(body)));
     }
 
     if fast_plain_decimal_i64(body).is_some() {

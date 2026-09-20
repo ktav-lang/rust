@@ -1,4 +1,4 @@
-//! Walks every invalid fixture in `spec/versions/0.7/tests/invalid/` and
+//! Walks every invalid fixture in `spec/versions/0.8/tests/invalid/` and
 //! asserts the parser returns `Error::Structured(kind)` (never the legacy
 //! `Error::Syntax(_)` variant) and that the kind matches the expected
 //! category from the sibling `.json` oracle.
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use ktav::{CompoundKind, Error, ErrorKind, Span};
 
-const SPEC_VERSION: &str = "0.7";
+const SPEC_VERSION: &str = "0.8";
 
 /// Floor on the number of fixtures the walk must reach. The 0.7 corpus
 /// holds 74; this is deliberately exact-ish rather than "> 0", because
@@ -34,7 +34,7 @@ fn resolve_spec_root() -> Option<PathBuf> {
     .into_iter()
     .flatten()
     .collect();
-    candidates.into_iter().find(|p| p.join("versions").is_dir())
+    candidates.into_iter().find(|p| p.join("versions").join(SPEC_VERSION).is_dir())
 }
 
 /// Walk `root` recursively and collect every `.ktav` file.

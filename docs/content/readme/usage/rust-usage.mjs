@@ -477,13 +477,18 @@ escaped per RFC 8259 — and no serde dependency is involved.`,
     id: 'strict-mode-intro-1',
     join: 'block',
     en: `Types are inferred from a scalar's lexical form, and inferred numbers
-are canonicalised: \`version: 1.10\` parses as \`Float(1.1)\` and
-\`zip: 01234\` as \`Integer(1234)\`.`,
+are canonicalised: \`version: 1.10\` parses as \`Float(1.1)\`. A decimal
+with a redundant leading zero is the one exception — \`zip: 01234\` is the
+String \`"01234"\` (§ 5.2), because dropping that zero would destroy an
+identifier.`,
     ru: `Типы выводятся по лексической форме скаляра, а выведенные числа
-канонизируются: \`version: 1.10\` разбирается как \`Float(1.1)\`, а
-\`zip: 01234\` — как \`Integer(1234)\`.`,
+канонизируются: \`version: 1.10\` разбирается как \`Float(1.1)\`. Десятичный
+литерал с избыточным ведущим нулём — единственное исключение: \`zip: 01234\`
+это String \`"01234"\` (§ 5.2), потому что отбрасывание этого нуля
+уничтожило бы идентификатор.`,
     zh: `类型由标量的词法形式推断，且推断出的数字会被规范化：\`version: 1.10\`
-解析为 \`Float(1.1)\`，\`zip: 01234\` 解析为 \`Integer(1234)\`。`,
+解析为 \`Float(1.1)\`。带冗余前导零的十进制字面量是唯一的例外：\`zip: 01234\`
+是 String \`"01234"\`（§ 5.2），因为丢掉那个零会摧毁一个标识符。`,
   },
   {
     id: 'strict-mode-intro-2',
@@ -508,13 +513,14 @@ silently, so writing the document back out rewrites it.`,
     en: `\`\`\`rust
 use ktav::{parse, parse_strict, Error, ErrorKind};
 
-let src = "zip: 01234\\n";
+let src = "version: 1.10\\n";
 
-assert!(parse(src).is_ok());                 // Integer(1234) — leading zero gone
+assert!(parse(src).is_ok());                 // Float(1.1) — trailing zero gone
+assert!(parse("zip: 01234\\n").is_ok());       // String("01234") — leading zero kept
 
 match parse_strict(src) {
     Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
-        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+        assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
     }
     other => panic!("expected LossyScalar, got {other:?}"),
 }
@@ -522,13 +528,14 @@ match parse_strict(src) {
     ru: `\`\`\`rust
 use ktav::{parse, parse_strict, Error, ErrorKind};
 
-let src = "zip: 01234\\n";
+let src = "version: 1.10\\n";
 
-assert!(parse(src).is_ok());                 // Integer(1234) — ведущий ноль потерян
+assert!(parse(src).is_ok());                 // Float(1.1) — замыкающий ноль потерян
+assert!(parse("zip: 01234\\n").is_ok());       // String("01234") — ведущий ноль сохранён
 
 match parse_strict(src) {
     Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
-        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+        assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
     }
     other => panic!("ожидался LossyScalar, получено {other:?}"),
 }
@@ -536,13 +543,14 @@ match parse_strict(src) {
     zh: `\`\`\`rust
 use ktav::{parse, parse_strict, Error, ErrorKind};
 
-let src = "zip: 01234\\n";
+let src = "version: 1.10\\n";
 
-assert!(parse(src).is_ok());                 // Integer(1234) —— 前导零丢失
+assert!(parse(src).is_ok());                 // Float(1.1) —— 尾部零丢失
+assert!(parse("zip: 01234\\n").is_ok());       // String("01234") —— 前导零被保留
 
 match parse_strict(src) {
     Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
-        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+        assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
     }
     other => panic!("期望 LossyScalar，实际为 {other:?}"),
 }

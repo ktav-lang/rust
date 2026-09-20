@@ -95,6 +95,15 @@ pub(in crate::parser) fn classify_value_start(
         _ => {}
     }
 
+    // § 5.2 rules 13–14 exception: a redundant leading zero is never a
+    // number. Checked before both rules because the same digit run leads
+    // an integer body and a float's integer part, and checked before the
+    // `strict` comparisons below because nothing is lost here — `01234`
+    // simply IS the String the author wrote, in both entry points.
+    if has_redundant_leading_zero(trimmed) {
+        return Ok(ValueStart::Scalar(trimmed.into()));
+    }
+
     // § 5.2 rule 13: integer literal (§ 3.6)
     // Fast path: plain ASCII decimal (most common in configs — ports,
     // counters, etc.). No sign, underscore, or base prefix. The input
@@ -208,6 +217,39 @@ pub(crate) fn lossy_scalar(body: &str, canonical: &str, line_num: usize, span: S
 // No leading `_`, no trailing `_`, no double `__`, no `_` right
 // after the base prefix.
 // ---------------------------------------------------------------------------
+
+/// § 5.2 rules 13–14: does `s` carry a **redundant leading zero** — a
+/// base-10 digit run whose first digit is `0` while at least one further
+/// digit follows, with or without a sign and ignoring underscore
+/// separators (`01234`, `-045`, `00`, `0_7`)?
+///
+/// Such a body is never Integer and never Float; § 5.2 routes it to
+/// rule 15 so the digits survive exactly as written. Inferring `1234`
+/// from `01234` would destroy the difference between the identifier and
+/// the quantity, and nothing downstream can restore it.
+///
+/// NOT redundant, and deliberately so:
+/// * `0x1A` / `0o755` / `0b1010` — the `0` belongs to the base prefix.
+/// * `0` — no further digit follows.
+/// * `0.5` / `0e3` — the integer part is exactly `0`; the next byte is
+///   `.` or `e`, not another digit.
+///
+/// This is a § 5.2 classification rule, not a § 3.6 grammar rule: the
+/// grammar still MATCHES `01234` as an integer literal, which is why
+/// `matches_integer_grammar` is left alone and the canonical writer
+/// keeps forcing `::` on such a String.
+pub(crate) fn has_redundant_leading_zero(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let start = match bytes.first() {
+        Some(&b'+') | Some(&b'-') => 1,
+        Some(_) => 0,
+        None => return false,
+    };
+    if bytes.get(start) != Some(&b'0') {
+        return false;
+    }
+    matches!(bytes.get(start + 1), Some(&b) if b.is_ascii_digit() || b == b'_')
+}
 
 /// Try to parse `s` as a § 3.6 integer literal. Returns `Some(i64)` on
 /// success, `None` if the grammar doesn't match or the value overflows i64.

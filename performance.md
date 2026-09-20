@@ -1,5 +1,13 @@
 # Performance notes — `ktav` Rust crate
 
+**Historical document.** This explains the *reasoning* behind seven perf
+rounds through commit `ceb8184` (phase 6, crate 0.1.x-era) — why each move
+helped and which "obvious" ones measured worse. The numbers below are frozen
+at that commit and are not re-anchored to later releases; the codebase has
+since gained 0.6, 0.7, 0.7.1 and 0.7.2 (error envelope, formatter, C ABI).
+For current, dated numbers see `bench-baseline.md`, whose "Re-baseline"
+sections track the shipping crate.
+
 This document collects every principle, library choice, and pattern used to
 get the Rust implementation of Ktav to its current speed. It is written
 against the state as of commit `ceb8184` (phase 6) and draws on the full

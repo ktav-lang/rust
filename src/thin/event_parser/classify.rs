@@ -1,7 +1,7 @@
 use bumpalo::Bump;
 
 use crate::error::{CompoundKind, Error, ErrorKind, Result, Span};
-use crate::parser::classify::{is_float_literal, try_parse_integer};
+use crate::parser::classify::{has_redundant_leading_zero, is_float_literal, try_parse_integer};
 use crate::parser::inline::InlineBody;
 use crate::whitespace::{common_leading_whitespace_prefix_len, is_ktav_whitespace};
 
@@ -195,6 +195,12 @@ pub(super) fn classify<'a>(trimmed: &'a str, bump: &'a Bump) -> Result<ValueStar
         "true" => return Ok(ValueStart::Bool(true)),
         "false" => return Ok(ValueStart::Bool(false)),
         _ => {}
+    }
+
+    // § 5.2 rules 13-14 exception: a redundant leading zero is never a
+    // number, so the thin API reports the same String the owned API does.
+    if has_redundant_leading_zero(trimmed) {
+        return Ok(ValueStart::Scalar(trimmed));
     }
 
     // § 5.2 rule 13: integer literal

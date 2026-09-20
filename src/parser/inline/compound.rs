@@ -7,7 +7,8 @@ use crate::value::{ObjectMap, Value};
 use crate::whitespace::is_inline_whitespace;
 
 use crate::parser::classify::{
-    fast_plain_decimal_i64, is_float_literal, lossy_scalar, try_parse_integer,
+    fast_plain_decimal_i64, has_redundant_leading_zero, is_float_literal, lossy_scalar,
+    try_parse_integer,
 };
 use crate::parser::insert::insert_value;
 
@@ -415,6 +416,12 @@ fn classify_inline_scalar(
         "true" => return Ok(Value::Bool(true)),
         "false" => return Ok(Value::Bool(false)),
         _ => {}
+    }
+
+    // section 5.2 rules 13-14 exception: a redundant leading zero is never
+    // a number, in an inline compound exactly as on a pair line.
+    if has_redundant_leading_zero(body) {
+        return Ok(Value::String(body.into()));
     }
 
     // section 5.2 rule 13: integer literal

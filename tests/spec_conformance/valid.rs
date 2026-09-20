@@ -85,7 +85,7 @@ fn valid_fixtures_match_oracle_via_thin_api() {
     let root = tests_dir(&spec_root, "valid");
     if !root.is_dir() {
         panic!(
-            "spec 0.7 resolved but the valid fixture dir is missing: {}",
+            "spec 0.8 resolved but the valid fixture dir is missing: {}",
             root.display()
         );
     }

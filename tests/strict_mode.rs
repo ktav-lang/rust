@@ -6,6 +6,15 @@
 //! `parse` accepts such documents unchanged; `parse_strict` rejects
 //! them with [`ErrorKind::LossyScalar`] so the author can either append
 //! `::` (keep a String) or write the canonical number.
+//!
+//! The data-driven cases (which literal spellings are lossy, in which
+//! grammar position, with which exact body/canonical) live in the
+//! shared spec corpus now (`versions/0.7/tests/strict-lossy/`, exercised
+//! by `tests/spec_conformance/strict_lossy.rs`) rather than here, so
+//! every language binding tests the same fixtures ktav itself does. What
+//! remains in this file is Rust-implementation-specific: exact byte
+//! spans, `Display` formatting, and internal `Value` representation
+//! details no cross-language corpus fixture can pin.
 
 use ktav::value::Value;
 use ktav::{Error, ErrorKind};
@@ -23,94 +32,9 @@ fn lossy(src: &str) -> (u32, String, String) {
 }
 
 #[test]
-fn trailing_zero_float_is_lossy() {
-    let (line, body, canonical) = lossy("version: 1.10\n");
-    assert_eq!(
-        (line, body.as_str(), canonical.as_str()),
-        (1, "1.10", "1.1")
-    );
-}
-
-#[test]
-fn leading_zero_integer_is_lossy() {
-    let (_, body, canonical) = lossy("zip: 01234\n");
-    assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
-}
-
-#[test]
-fn plus_sign_integer_is_lossy() {
-    let (_, body, canonical) = lossy("phone: +79991234567\n");
-    assert_eq!(
-        (body.as_str(), canonical.as_str()),
-        ("+79991234567", "79991234567")
-    );
-}
-
-#[test]
-fn base_prefixed_integers_are_lossy() {
-    for (src, want_body, want_canonical) in [
-        ("umask: 0o755\n", "0o755", "493"),
-        ("sha: 0x1A2B\n", "0x1A2B", "6699"),
-        ("bits: 0b1010\n", "0b1010", "10"),
-    ] {
-        let (_, body, canonical) = lossy(src);
-        assert_eq!(
-            (body.as_str(), canonical.as_str()),
-            (want_body, want_canonical),
-            "src: {src:?}"
-        );
-    }
-}
-
-#[test]
-fn underscored_integer_is_lossy() {
-    let (_, body, canonical) = lossy("budget: 1_000_000\n");
-    assert_eq!(
-        (body.as_str(), canonical.as_str()),
-        ("1_000_000", "1000000")
-    );
-}
-
-#[test]
-fn exponent_float_is_lossy() {
-    let (_, body, canonical) = lossy("build: 5e3\n");
-    assert_eq!((body.as_str(), canonical.as_str()), ("5e3", "5000.0"));
-}
-
-#[test]
-fn negative_zero_is_lossy() {
-    let (_, body, canonical) = lossy("offset: -0\n");
-    assert_eq!((body.as_str(), canonical.as_str()), ("-0", "0"));
-}
-
-#[test]
 fn error_reports_the_offending_line() {
     let (line, body, _) = lossy("service: web\nport: 8080\nversion: 1.10\n");
     assert_eq!((line, body.as_str()), (3, "1.10"));
-}
-
-#[test]
-fn lossy_inside_inline_object_is_rejected() {
-    let (_, body, canonical) = lossy("cfg: {version: 1.10, port: 8080}\n");
-    assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
-}
-
-#[test]
-fn lossy_inside_inline_array_is_rejected() {
-    let (_, body, _) = lossy("versions: [1.9, 1.10]\n");
-    assert_eq!(body, "1.10");
-}
-
-#[test]
-fn lossy_bare_array_item_is_rejected() {
-    let (line, body, _) = lossy("zips: [\n    98101\n    01234\n]\n");
-    assert_eq!((line, body.as_str()), (3, "01234"));
-}
-
-#[test]
-fn lossy_in_top_level_inline_document_is_rejected() {
-    let (_, body, _) = lossy("{version: 1.10}\n");
-    assert_eq!(body, "1.10");
 }
 
 #[test]
@@ -160,8 +84,12 @@ fn canonical_writer_float_forms_pass_strict() {
     assert_eq!(strict, value);
 }
 
+/// Lax parse still canonicalises the spellings § 5.2 infers as numbers,
+/// and still refuses to infer one for a redundant leading zero — the two
+/// halves of the rule in one document, so a regression in either
+/// direction fails here.
 #[test]
-fn non_strict_parse_behaviour_is_unchanged() {
+fn lax_canonicalises_inferred_numbers_but_keeps_a_leading_zero_verbatim() {
     let doc = ktav::parse("version: 1.10\nzip: 01234\n").expect("valid lax Ktav");
     let Value::Object(top) = &doc else {
         panic!("top-level must be an object");
@@ -170,10 +98,14 @@ fn non_strict_parse_behaviour_is_unchanged() {
         panic!("version must stay an inferred Float");
     };
     assert_eq!(v.as_str(), "1.1");
-    let Some(Value::Integer(z)) = top.get("zip") else {
-        panic!("zip must stay an inferred Integer");
+    // § 5.2 rule 13's exception: `01234` is never an Integer, so the
+    // identifier survives the lax entry point byte for byte.
+    let Some(Value::String(z)) = top.get("zip") else {
+        panic!("a redundant leading zero must stay a String, got {:?}", top.get("zip"));
     };
-    assert_eq!(z.as_str(), "1234");
+    assert_eq!(z.as_str(), "01234");
+    // …and strict has nothing to reject there, because nothing is lost.
+    assert!(ktav::parse_strict("zip: 01234\n").is_ok());
 }
 
 #[test]
@@ -232,16 +164,12 @@ fn lax_multiline_float_stores_ryu_form_at_magnitude_extremes() {
 }
 
 #[test]
-fn strict_multiline_float_canonical_payload_for_scientific_region() {
-    // A float in the >= 1e7 region whose source form is not the § 5.9.8
-    // rendering is rejected with that rendering as the canonical payload.
-    let (line, body, canonical) = lossy("big: 10000000.5\n");
-    assert_eq!(
-        (line, body.as_str(), canonical.as_str()),
-        (1, "10000000.5", "1.00000005e7")
-    );
-    // The § 5.9.8 canonical source form itself passes strict and is
-    // stored as the same value.
+fn strict_scientific_region_canonical_form_passes_strict_as_the_same_ryu_value() {
+    // The § 5.9.8 canonical source form for a float in the >= 1e7 region
+    // (spec-corpus-covered: strict-lossy/float/large_magnitude_scientific_region
+    // proves the fixed-point spelling is rejected with this exact rendering)
+    // itself passes strict and is stored as the same Ryu value lax parsing
+    // would produce from the fixed-point spelling.
     let v = ktav::parse_strict("big: 1.00000005e7\n").expect("§ 5.9.8 form must pass strict");
     let Value::Object(top) = &v else {
         panic!("top-level must be an object");

@@ -8,7 +8,7 @@ use crate::manifest::RunnerManifest;
 use ktav::ReasonCode;
 use serde_json::Value as JsonValue;
 
-const SPEC_VERSION: &str = "0.7";
+pub(crate) const SPEC_VERSION: &str = "0.8";
 
 pub(crate) fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -18,7 +18,14 @@ pub(crate) fn resolve_spec_root() -> Option<PathBuf> {
     }
     candidates.push(manifest.join("spec"));
     candidates.push(manifest.join("../spec"));
-    let root = candidates.into_iter().find(|p| p.join("versions").is_dir())?;
+    // Require THIS version's directory specifically, not just any
+    // `versions/` dir: the `spec` submodule stays pinned to an older tag
+    // between spec releases (currently v0.7.1, no `versions/0.8`), so a
+    // generic check would resolve to a root that then fails § 8.5
+    // enforcement below instead of gracefully skipping the suite.
+    let root = candidates
+        .into_iter()
+        .find(|p| p.join("versions").join(SPEC_VERSION).is_dir())?;
 
     // § 8.5: load and enforce the corpus manifest BEFORE any fixture is
     // enumerated. Every runner in this suite reaches its fixtures through
@@ -219,7 +226,7 @@ pub(crate) fn collect_invalid_fixtures(spec_root: &Path) -> Vec<InvalidFixture> 
     let root = tests_dir(spec_root, "invalid");
     if !root.is_dir() {
         panic!(
-            "spec 0.7 resolved but the invalid fixture dir is missing: {}",
+            "spec 0.8 resolved but the invalid fixture dir is missing: {}",
             root.display()
         );
     }

@@ -18,7 +18,7 @@ fn unrepresentable_fixtures_are_rejected_with_reason_codes() {
     let root = tests_dir(&spec_root, "unrepresentable");
     if !root.is_dir() {
         panic!(
-            "spec 0.7 resolved but the unrepresentable fixture dir is missing: {}",
+            "spec 0.8 resolved but the unrepresentable fixture dir is missing: {}",
             root.display()
         );
     }
@@ -105,7 +105,7 @@ fn parseable_unrepresentable_fixtures_reject_canonical_emit() {
     let root = tests_dir(&spec_root, "parseable-unrepresentable");
     if !root.is_dir() {
         panic!(
-            "spec 0.7 resolved but the parseable-unrepresentable fixture dir is missing: {}",
+            "spec 0.8 resolved but the parseable-unrepresentable fixture dir is missing: {}",
             root.display()
         );
     }

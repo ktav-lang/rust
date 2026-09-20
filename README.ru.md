@@ -436,8 +436,10 @@ UTF-8-исходнику**, а не в code units UTF-16: та же единиц
 ### Строгий режим — ловим молча канонизированные числа
 
 Типы выводятся по лексической форме скаляра, а выведенные числа
-канонизируются: `version: 1.10` разбирается как `Float(1.1)`, а
-`zip: 01234` — как `Integer(1234)`. Обычный `parse()` делает это молча,
+канонизируются: `version: 1.10` разбирается как `Float(1.1)`. Десятичный
+литерал с избыточным ведущим нулём — единственное исключение: `zip: 01234`
+это String `"01234"` (§ 5.2), потому что отбрасывание этого нуля
+уничтожило бы идентификатор. Обычный `parse()` делает это молча,
 поэтому обратная запись документа его переписывает.
 
 `parse_strict()` вместо этого отвергает такие **скаляры с потерей**:
@@ -445,13 +447,14 @@ UTF-8-исходнику**, а не в code units UTF-16: та же единиц
 ```rust
 use ktav::{parse, parse_strict, Error, ErrorKind};
 
-let src = "zip: 01234\n";
+let src = "version: 1.10\n";
 
-assert!(parse(src).is_ok());                 // Integer(1234) — ведущий ноль потерян
+assert!(parse(src).is_ok());                 // Float(1.1) — замыкающий ноль потерян
+assert!(parse("zip: 01234\n").is_ok());       // String("01234") — ведущий ноль сохранён
 
 match parse_strict(src) {
     Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
-        assert_eq!((body.as_str(), canonical.as_str()), ("01234", "1234"));
+        assert_eq!((body.as_str(), canonical.as_str()), ("1.10", "1.1"));
     }
     other => panic!("ожидался LossyScalar, получено {other:?}"),
 }

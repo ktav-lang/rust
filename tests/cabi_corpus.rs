@@ -12,7 +12,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const SPEC_VERSION: &str = "0.7";
+const SPEC_VERSION: &str = "0.8";
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -22,7 +22,7 @@ fn resolve_spec_root() -> Option<PathBuf> {
     }
     candidates.push(manifest.join("spec"));
     candidates.push(manifest.join("../spec"));
-    candidates.into_iter().find(|p| p.join("versions").is_dir())
+    candidates.into_iter().find(|p| p.join("versions").join(SPEC_VERSION).is_dir())
 }
 
 /// Walk `root` recursively and collect every `.ktav` file that is NOT
