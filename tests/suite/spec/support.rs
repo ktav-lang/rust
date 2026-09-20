@@ -19,10 +19,11 @@ pub(crate) fn resolve_spec_root() -> Option<PathBuf> {
     candidates.push(manifest.join("spec"));
     candidates.push(manifest.join("../spec"));
     // Require THIS version's directory specifically, not just any
-    // `versions/` dir: the `spec` submodule stays pinned to an older tag
-    // between spec releases (currently v0.7.1, no `versions/0.8`), so a
-    // generic check would resolve to a root that then fails § 8.5
-    // enforcement below instead of gracefully skipping the suite.
+    // `versions/` dir: between spec releases the `spec` submodule can sit
+    // on a commit that predates `versions/0.8`, and the published crate
+    // ships without the submodule at all, so a generic check would resolve
+    // to a root that then fails § 8.5 enforcement below instead of
+    // gracefully skipping the suite.
     let root = candidates
         .into_iter()
         .find(|p| p.join("versions").join(SPEC_VERSION).is_dir())?;

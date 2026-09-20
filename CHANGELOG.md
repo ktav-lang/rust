@@ -10,7 +10,7 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
-## [0.8.0] — unreleased
+## [0.8.0] — 2026-09-20
 
 Two things ship together. A decimal with a redundant leading zero no
 longer infers a number — `zip: 01234` parses to the String

@@ -10,7 +10,7 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
-## [0.8.0] —— unreleased
+## [0.8.0] —— 2026-09-20
 
 本次发布同时带来两件事。带冗余前导零的十进制数不再被推断为数字 ——
 `zip: 01234` 解析为 String `"01234"`,而不是 `Integer(1234)` ——
