@@ -15,10 +15,18 @@ pub(super) fn render_object_body(
     obj: &ObjectMap,
     indent: usize,
     is_root: bool,
+    force_strings: bool,
     out: &mut String,
 ) -> Result<()> {
     for (index, (key, value)) in obj.iter().enumerate() {
-        render_pair(key, value, indent, is_root && index == 0, out)?;
+        render_pair(
+            key,
+            value,
+            indent,
+            is_root && index == 0,
+            force_strings,
+            out,
+        )?;
     }
     Ok(())
 }

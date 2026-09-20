@@ -7,32 +7,54 @@
 //! flushing each [`crate::parser::fmt_parser::TriviaLine`] run
 //! immediately before the construct it is attached to.
 
-use crate::error::Result;
+use crate::error::{Error, ReasonCode, Result};
 use crate::parser::fmt_parser::{to_plain_value, FmtDoc, PArray, PObject, PValue, TriviaLine};
 
-use super::canonical::{canonical_float, emit_string_as_item, emit_string_in_pair};
-use super::helpers::{push_escaped_key_segment, push_indent};
-use super::representable::check_representable;
+use super::canonical::{canonical_float_checked, emit_string_as_item, emit_string_in_pair};
+use super::helpers::{empty_key_error, push_escaped_key_segment, push_indent};
 
 /// Format a trivia-carrying document to Ktav text (§ 5.9 canonical
 /// structure, with comments and blank-line grouping preserved).
+///
+/// Like the canonical writer, this detects the § 5.9.0 conditions as it
+/// emits rather than in a pre-pass. The pre-pass was more expensive here
+/// than anywhere else: it called `to_plain_value` to materialise an
+/// entire throw-away `Value` tree from the trivia-carrying one — a fresh
+/// `ObjectMap` per object, every key and scalar cloned — purely so the
+/// shared predicate had something of the right type to walk. Trivia
+/// cannot change representability, so nothing about that copy affected
+/// the answer.
 pub(crate) fn emit_formatted(doc: &FmtDoc) -> Result<String> {
-    // Reuse the canonical writer's representability predicate exactly —
-    // trivia is not part of the Value model, so it cannot change
-    // whether the underlying structure is representable.
-    check_representable(&to_plain_value(&doc.root))?;
-
     let mut out = String::new();
     emit_trivia(&doc.leading, 0, &mut out);
-    match &doc.root {
-        PValue::Object(o) => emit_object_pairs(o, 0, true, &mut out)?,
+    let emitted = match &doc.root {
+        PValue::Object(o) => emit_object_pairs(o, 0, true, &mut out),
         PValue::Array(a) if a.items.is_empty() && a.trailing.is_empty() => {
             out.push_str("[]\n");
+            Ok(())
         }
-        PValue::Array(a) => emit_array_root(a, &mut out)?,
-        _ => unreachable!("root is always Object or Array (checked by check_representable)"),
+        PValue::Array(a) => emit_array_root(a, &mut out),
+        // § 5.0.1 root-kind detection cannot produce a scalar root, so
+        // this is unreachable in practice — reported rather than
+        // panicked, because a writer rejection is the honest outcome if
+        // the invariant ever breaks.
+        _ => {
+            return Err(Error::UnrepresentableAt {
+                code: ReasonCode::ScalarRoot,
+                path: Vec::new(),
+            })
+        }
+    };
+    match emitted {
+        Ok(()) => Ok(out),
+        // Cold: `to_plain_value` is paid only once emission has already
+        // failed, to name the offending key.
+        Err(e) => Err(super::representable::attach_path(
+            &to_plain_value(&doc.root),
+            e,
+            false,
+        )),
     }
-    Ok(out)
 }
 
 fn emit_trivia(trivia: &[TriviaLine], indent: usize, out: &mut String) {
@@ -100,6 +122,10 @@ fn emit_pair(
     root_first_key: bool,
     out: &mut String,
 ) -> Result<()> {
+    // § 5.9.0 EmptyKeyName, before the key's first byte is pushed.
+    if key.is_empty() {
+        return Err(empty_key_error());
+    }
     push_indent(out, indent);
     push_escaped_key_segment(key, root_first_key, out);
     match value {
@@ -116,7 +142,7 @@ fn emit_pair(
         }
         PValue::Float(s) => {
             out.push_str(": ");
-            out.push_str(&canonical_float(s));
+            out.push_str(&canonical_float_checked(s)?);
             out.push('\n');
         }
         PValue::String(s) => emit_string_in_pair(s, indent, out)?,
@@ -162,7 +188,7 @@ fn emit_array_item(
             out.push('\n');
         }
         PValue::Float(s) => {
-            out.push_str(&canonical_float(s));
+            out.push_str(&canonical_float_checked(s)?);
             out.push('\n');
         }
         PValue::String(s) => emit_string_as_item(s, indent, is_root_array_first, out)?,

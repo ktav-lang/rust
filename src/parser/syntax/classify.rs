@@ -584,12 +584,20 @@ fn parse_float_value(s: &str) -> Option<f64> {
 /// Check if a string matches the § 3.6 integer literal grammar. Used by
 /// the renderer to decide when `::` is needed. This checks the grammar
 /// syntactically — the value may overflow i64 and still match.
+///
+/// This is the syntax scan alone, deliberately. It used to try
+/// `try_parse_integer(s).is_some()` first and fall back to the scan, but
+/// that branch was dead weight on the writers' hot path: it accumulates
+/// the value with `checked_mul`/`checked_add` and then throws it away,
+/// and its success already implies the scan would pass. The implication
+/// holds by construction — `parse_decimal_int` / `parse_prefixed_int`
+/// return `Some` only when the first byte is a digit and every later byte
+/// is a digit or a single non-trailing `_`, which is exactly what
+/// `check_decimal_digits` / `check_prefixed_digits` require — so the
+/// scan is a strict superset (it also admits the overflowing values this
+/// predicate is documented to match). Locked by
+/// `parse_success_implies_grammar_match` in the parser tests.
 pub fn matches_integer_grammar(s: &str) -> bool {
-    // If it parses to i64, it obviously matches.
-    if try_parse_integer(s).is_some() {
-        return true;
-    }
-    // Also check if it matches the grammar syntactically (for overflow values).
     matches_integer_grammar_syntax(s)
 }
 

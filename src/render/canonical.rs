@@ -26,7 +26,7 @@ mod strings;
 mod walk;
 
 pub(super) use super::representable;
-pub(crate) use num::canonical_float;
+pub(crate) use num::{canonical_float, canonical_float_checked};
 pub(crate) use strings::{emit_string_as_item, emit_string_in_pair};
 pub use walk::emit_canonical;
 

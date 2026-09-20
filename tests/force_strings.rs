@@ -105,6 +105,31 @@ fn top_level_array_force_strings() {
     assert!(items.iter().all(|i| matches!(i, Value::String(_))));
 }
 
+/// The documented asymmetry of this entry point, which nothing pinned
+/// before: § 5.9.0's `NonFiniteFloat` cannot fire here. The coercion
+/// turns the Float into a String *first*, and a String holding the text
+/// `NaN` is perfectly representable — whereas `render` fed the same
+/// `Value` must still reject it. Both halves are asserted, so a change
+/// that coerces too late (or checks too early) fails here.
+#[test]
+fn non_finite_float_is_coerced_instead_of_rejected() {
+    let mut top = ktav::ObjectMap::default();
+    top.insert("ratio".into(), Value::Float("NaN".into()));
+    let v = Value::Object(top);
+
+    assert!(
+        ktav::render::render(&v).is_err(),
+        "render must reject a non-finite Float (§ 5.9.0 NonFiniteFloat)"
+    );
+
+    let out = to_string_force_strings(&v).expect("coercion makes it representable");
+    let back = ktav::parse(&out).expect("the coerced document must re-parse");
+    let Value::Object(map) = &back else {
+        panic!("expected Object");
+    };
+    assert_eq!(map.get("ratio"), Some(&Value::String("NaN".into())));
+}
+
 #[test]
 fn idempotent_after_one_pass() {
     let original = ktav::parse("port: 8080\nflag: true\nname: alice\n").unwrap();

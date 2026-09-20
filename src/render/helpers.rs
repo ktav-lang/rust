@@ -38,8 +38,24 @@ pub(crate) fn first_item_needs_wrap(item: &Value) -> bool {
 
 /// Push `\u` followed by exactly four UPPERCASE hex digits naming
 /// `ch` (§ 3.7.1). Used only where no named escape exists.
+///
+/// Writes the four digits straight into `out` instead of going through
+/// `format!`, which allocated a throw-away `String` per escaped code
+/// point. Every code point that reaches here today is in the BMP
+/// (control bytes, DEL, and the § 3.3 whitespace members, the highest
+/// being U+3000), so four digits always suffice; anything above U+FFFF
+/// would need more and takes the general formatter.
 fn push_unicode_escape(out: &mut String, ch: char) {
-    out.push_str(&format!("\\u{:04X}", ch as u32));
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let cp = ch as u32;
+    if cp > 0xFFFF {
+        out.push_str(&format!("\\u{:04X}", cp));
+        return;
+    }
+    out.push_str("\\u");
+    for shift in [12, 8, 4, 0] {
+        out.push(HEX[((cp >> shift) & 0xF) as usize] as char);
+    }
 }
 
 /// Emit a key (flat, single-segment — the byte string stored on the
@@ -76,44 +92,59 @@ fn push_unicode_escape(out: &mut String, ch: char) {
 /// segment). Callers that want to emit a dotted path (multiple
 /// segments separated by an UNescaped `.`) join multiple calls with a
 /// literal `.` between them.
+/// Form selection and emission share ONE pass over the key's bytes.
+///
+/// They used to be two: a `bytes().any(…)` scan deciding the form,
+/// followed — for the bare form, which is the overwhelmingly common one
+/// in configs — by a second `bytes().any(…)` over an overlapping
+/// predicate deciding whether the bare body needed rewriting at all. The
+/// loop below collapses them: a structural byte ends the scan early and
+/// goes quoted (rule (a)), anything else in the escape set only records
+/// that the bare body must be rewritten, and a key with neither is
+/// pushed verbatim.
 pub(crate) fn push_escaped_key_segment(key: &str, root_first_key: bool, out: &mut String) {
-    if key_segment_needs_quotes(key, root_first_key) {
-        push_quoted_key(key, out);
-    } else {
-        push_bare_key(key, out);
-    }
-}
-
-/// § 5.9.10 form selection — see [`push_escaped_key_segment`].
-fn key_segment_needs_quotes(key: &str, root_first_key: bool) -> bool {
     let first = key.chars().next();
-    let last = key.chars().next_back();
 
-    // (b) leading quote character.
-    if matches!(first, Some('"') | Some('\'') | Some('`')) {
-        return true;
-    }
-    // (c) root's first-serialized key beginning with U+FEFF.
-    if root_first_key && first == Some('\u{FEFF}') {
-        return true;
-    }
-    // (d) leading `##` comment collision.
-    if key.as_bytes().starts_with(b"##") {
-        return true;
-    }
-    // (a) structural bytes anywhere.
-    if key.bytes().any(|b| {
-        matches!(
-            b,
-            b'.' | b':' | b',' | b'{' | b'}' | b'[' | b']' | b'(' | b')'
-        )
-    }) {
-        return true;
+    // Rules (b)/(c)/(d) read the leading code point(s) only — decided
+    // before any scan.
+    if matches!(first, Some('"') | Some('\'') | Some('`'))
+        || (root_first_key && first == Some('\u{FEFF}'))
+        || key.as_bytes().starts_with(b"##")
+    {
+        push_quoted_key(key, out);
+        return;
     }
     // (a) edge whitespace — except LF/CR, which a quoted segment never
-    // admits raw, so quoting buys nothing for them.
+    // admits raw, so quoting buys nothing for them. Two code-point peeks,
+    // not a scan.
     let edge_ws = |c: Option<char>| c.is_some_and(is_inline_whitespace);
-    edge_ws(first) || edge_ws(last)
+    if edge_ws(first) || edge_ws(key.chars().next_back()) {
+        push_quoted_key(key, out);
+        return;
+    }
+
+    let mut needs_rewrite = false;
+    for &b in key.as_bytes() {
+        match b {
+            // (a) a structural byte anywhere → quoted form. Nothing later
+            // in the key can change that, so stop scanning.
+            b'.' | b':' | b',' | b'{' | b'}' | b'[' | b']' | b'(' | b')' => {
+                push_quoted_key(key, out);
+                return;
+            }
+            // Escaped in bare form, but escaping alone never forces
+            // quotes: quoted form spells these identically.
+            b'\\' | b'\n' | b'\r' | 0x7F => needs_rewrite = true,
+            b if b < 0x20 && !matches!(b, b'\t' | 0x0B | 0x0C) => needs_rewrite = true,
+            _ => {}
+        }
+    }
+    if needs_rewrite {
+        push_bare_key_escaped(key, out);
+    } else {
+        // Nothing to escape and neither edge is § 3.3 whitespace.
+        out.push_str(key);
+    }
 }
 
 /// Bare form (§ 5.9.10 bullet recipe): named escapes for `\` `.` `:`
@@ -122,26 +153,12 @@ fn key_segment_needs_quotes(key: &str, root_first_key: bool) -> bool {
 /// code point at the first or last code-point position (named `\n`/
 /// `\r` when applicable) — unescaped it would be trimmed away on
 /// re-parse. Interior whitespace (including tab) stays raw.
-fn push_bare_key(key: &str, out: &mut String) {
-    let first_ch = key.chars().next();
-    let last_ch = key.chars().next_back();
-    let edge_ws = |c: Option<char>| c.is_some_and(is_inline_whitespace);
-
-    // Fast path: nothing to escape anywhere, and neither edge code
-    // point is § 3.3 whitespace → push the whole string verbatim.
-    let needs_rewrite = key.bytes().any(|b| {
-        matches!(
-            b,
-            b'\\' | b'.' | b':' | b',' | b'{' | b'}' | b'[' | b']' | b'(' | b')' | b'\n' | b'\r'
-        ) || (b < 0x20 && !matches!(b, b'\t' | 0x0B | 0x0C))
-            || b == 0x7F
-    }) || edge_ws(first_ch)
-        || edge_ws(last_ch);
-    if !needs_rewrite {
-        out.push_str(key);
-        return;
-    }
-
+///
+/// Called only once [`push_escaped_key_segment`]'s single pass has
+/// established that the bare form applies AND that at least one byte
+/// needs rewriting — the verbatim fast path and the form decision both
+/// live there, so this function does no pre-scan of its own.
+fn push_bare_key_escaped(key: &str, out: &mut String) {
     out.reserve(key.len() + 8);
     let last_idx = key.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
     for (i, ch) in key.char_indices() {
@@ -223,6 +240,32 @@ pub(crate) fn string_needs_multiline(s: &str) -> bool {
 /// rather than emit a document that parses to a different one.
 pub(crate) fn cr_error() -> Error {
     Error::Unrepresentable(ReasonCode::CRByte)
+}
+
+/// The § 5.9.0 [`ReasonCode::EmptyKeyName`] rejection. Raised by each
+/// writer's pair emitter, before the key's first byte is pushed, so the
+/// check sits in document order with the rest of the node conditions.
+pub(crate) fn empty_key_error() -> Error {
+    Error::Unrepresentable(ReasonCode::EmptyKeyName)
+}
+
+/// § 5.9.0 [`ReasonCode::NonFiniteFloat`], for the writers that emit a
+/// Float's stored payload verbatim instead of canonicalising it (the
+/// pretty renderer). The canonical and formatting writers get the same
+/// verdict for free from
+/// [`super::canonical::canonical_float_checked`], which needs the
+/// parsed value anyway.
+///
+/// A payload that is not an f64 lexical form at all is outside the Float
+/// domain but is not one of the seven reason codes, so it passes — same
+/// rule the representability walk applies.
+pub(crate) fn reject_non_finite(s: &str) -> Result<()> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_nan() || v.is_infinite() => {
+            Err(Error::Unrepresentable(ReasonCode::NonFiniteFloat))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Which multi-line form a String body should take.

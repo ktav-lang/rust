@@ -1,4 +1,4 @@
-use super::num::canonical_float;
+use super::num::canonical_float_checked;
 use super::shared::push_indent;
 use super::strings::{emit_string_as_item, emit_string_in_pair};
 use crate::error::{Error, Result};
@@ -17,18 +17,31 @@ use crate::value::{ObjectMap, Value};
 /// the three multi-line collision cases. The check runs before any
 /// bytes are emitted, so a rejection produces no partial output.
 pub fn emit_canonical(value: &Value) -> Result<String> {
-    super::representable::check_representable(value)?;
     let mut out = String::with_capacity(estimate_size(value));
-    match value {
-        Value::Object(o) => emit_object_pairs(o, 0, true, &mut out)?,
+    let emitted = match value {
+        Value::Object(o) => emit_object_pairs(o, 0, true, &mut out),
         Value::Array(items) if items.is_empty() => {
             // § 5.9.3: empty Array root → `[]\n`
             out.push_str("[]\n");
+            Ok(())
         }
-        Value::Array(items) => emit_array_root(items, &mut out)?,
-        _ => return Err(Error::Unrepresentable(crate::error::ReasonCode::ScalarRoot)),
+        Value::Array(items) => emit_array_root(items, &mut out),
+        // § 5.9.0's fixed precedence: root kind decided before any node
+        // is visited, so the path is empty.
+        _ => {
+            return Err(Error::UnrepresentableAt {
+                code: crate::error::ReasonCode::ScalarRoot,
+                path: Vec::new(),
+            })
+        }
+    };
+    match emitted {
+        Ok(()) => Ok(out),
+        // `out` is local and discarded here — the § 5.9.0 "no partial
+        // output" guarantee holds by construction, not by a pre-pass.
+        // The re-walk is only to name the offending key.
+        Err(e) => Err(super::representable::attach_path(value, e, false)),
     }
-    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +104,10 @@ fn emit_pair(
     root_first_key: bool,
     out: &mut String,
 ) -> Result<()> {
+    // § 5.9.0 EmptyKeyName, before the key's first byte is pushed.
+    if key.is_empty() {
+        return Err(crate::render::helpers::empty_key_error());
+    }
     push_indent(out, indent);
     // Spec 0.7 § 5.9.10 — bare/quoted form selection + re-escape.
     crate::render::helpers::push_escaped_key_segment(key, root_first_key, out);
@@ -114,7 +131,7 @@ fn emit_pair(
         Value::Float(s) => {
             // § 5.9.8: canonical float form — scientific for large/small abs.
             out.push_str(": ");
-            out.push_str(&canonical_float(s));
+            out.push_str(&canonical_float_checked(s)?);
             out.push('\n');
         }
         Value::String(s) => {
@@ -176,7 +193,7 @@ fn emit_array_item(
             out.push('\n');
         }
         Value::Float(s) => {
-            out.push_str(&canonical_float(s));
+            out.push_str(&canonical_float_checked(s)?);
             out.push('\n');
         }
         Value::String(s) => {

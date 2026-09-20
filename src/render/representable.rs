@@ -1,27 +1,82 @@
-//! Spec 0.7 § 5.9.0 — the representability predicate and its pre-pass.
-//!
-//! `check_representable` runs before any bytes are emitted so a
-//! rejection leaves no partial output, and so the root Object-or-Array
-//! constraint is evaluated BEFORE node-representability is checked
-//! recursively (the one fixed precedence § 5.9.0 mandates).
+//! Spec 0.7 § 5.9.0 — the representability predicate, as the writers'
+//! COLD path.
 //!
 //! All rejections emerge as [`Error::UnrepresentableAt`] carrying the
 //! decoded key path from the document root to the offending pair's key
 //! (empty path = root-level offense), per the § 5.9.0 structured-error
 //! contract (issue rust#12).
+//!
+//! This used to run as a pre-pass in front of every writer, which is
+//! where the key path came from. It no longer does. The pre-pass was
+//! never what gave § 5.9.0 its "no partial output on rejection"
+//! guarantee — every writer assembles its document in a LOCAL `String`
+//! and hands it out only on `Ok`, so a rejection discards the buffer by
+//! construction. What the pre-pass actually bought was the key path, and
+//! that is only needed once a rejection has already happened.
+//!
+//! So the writers now detect all seven conditions inline as they emit
+//! (their own root-kind match, [`super::helpers::empty_key_error`],
+//! [`super::helpers::reject_non_finite`] /
+//! [`super::canonical::canonical_float_checked`],
+//! [`super::helpers::cr_error`], and `choose_multiline_form`'s three
+//! collision codes), and call [`attach_path`] on the way out to convert
+//! the path-less [`Error::Unrepresentable`] into the path-carrying
+//! form. The hot path pays one tree walk instead of two, parses each
+//! Float once instead of twice, and scans each String once instead of
+//! twice.
+//!
+//! The fixed § 5.9.0 precedence still holds: each writer matches the
+//! root kind before it touches a node, and the emitters visit nodes in
+//! document order, so the first offending node is the same one this walk
+//! reports.
 
 use crate::error::{Error, ReasonCode, Result};
 use crate::value::Value;
 
 use super::helpers::{choose_multiline_form, string_needs_multiline};
 
+/// Turn a writer's path-less § 5.9.0 rejection into the path-carrying
+/// [`Error::UnrepresentableAt`], by re-walking `value` to locate the
+/// offending node. Cold: called only after emission has already failed.
+///
+/// `force_strings` mirrors the writer's own mode — see
+/// [`check_representable_with`].
+///
+/// If the walk disagrees with the emitter and finds nothing, the
+/// emitter's own error is returned unchanged rather than inventing a
+/// path.
+pub(crate) fn attach_path(value: &Value, err: Error, force_strings: bool) -> Error {
+    if !matches!(err, Error::Unrepresentable(_)) {
+        return err;
+    }
+    match check_representable_with(value, force_strings) {
+        Err(located) => located,
+        Ok(()) => err,
+    }
+}
+
 /// Reject a non-representable Value (§ 5.9.0) with the matching
 /// [`ReasonCode`], reported as [`Error::UnrepresentableAt`] carrying
 /// the key path to the offending pair. Runs the root-kind check first,
 /// then recurses.
+#[cfg(test)]
 pub(crate) fn check_representable(value: &Value) -> Result<()> {
+    check_representable_with(value, false)
+}
+
+/// [`check_representable`] parameterised by the writer's mode.
+///
+/// `force_strings` is the [`crate::to_string_force_strings`] mode, where
+/// every scalar is emitted as a String. A non-finite Float becomes the
+/// String `"NaN"`/`"inf"`, which is perfectly representable, so
+/// [`ReasonCode::NonFiniteFloat`] cannot fire — exactly what the old
+/// implementation achieved by coercing the whole tree before checking
+/// it. Every other condition is unaffected: keys are untouched, and a
+/// coerced numeric or keyword payload can hold neither a `CR` nor a
+/// line break.
+pub(crate) fn check_representable_with(value: &Value, force_strings: bool) -> Result<()> {
     match value {
-        Value::Object(_) | Value::Array(_) => check_node(value, &mut Vec::new()),
+        Value::Object(_) | Value::Array(_) => check_node(value, force_strings, &mut Vec::new()),
         _ => Err(Error::UnrepresentableAt {
             code: ReasonCode::ScalarRoot,
             path: Vec::new(),
@@ -29,7 +84,7 @@ pub(crate) fn check_representable(value: &Value) -> Result<()> {
     }
 }
 
-fn check_node<'k>(value: &'k Value, path: &mut Vec<&'k str>) -> Result<()> {
+fn check_node<'k>(value: &'k Value, force_strings: bool, path: &mut Vec<&'k str>) -> Result<()> {
     match value {
         Value::Object(pairs) => {
             for (k, v) in pairs {
@@ -40,17 +95,20 @@ fn check_node<'k>(value: &'k Value, path: &mut Vec<&'k str>) -> Result<()> {
                         path,
                     ));
                 }
-                check_node(v, path)?;
+                check_node(v, force_strings, path)?;
                 path.pop();
             }
             Ok(())
         }
         Value::Array(items) => {
             for item in items {
-                check_node(item, path)?;
+                check_node(item, force_strings, path)?;
             }
             Ok(())
         }
+        // Coerced to a String before emission, so it is representable
+        // whatever it holds.
+        Value::Float(_) if force_strings => Ok(()),
         Value::Float(s) => match s.parse::<f64>() {
             Ok(v) if v.is_nan() || v.is_infinite() => Err(at_path(
                 Error::Unrepresentable(ReasonCode::NonFiniteFloat),
