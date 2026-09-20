@@ -1,14 +1,7 @@
 //! Round-trip integration tests: `T → text → T` should yield the same `T`.
-
+#[path = "roundtrip/edge_cases.rs"]
+mod edge_cases;
 #[path = "roundtrip/errors.rs"]
 mod errors;
-#[path = "roundtrip/keywords.rs"]
-mod keywords;
-#[path = "roundtrip/multiline.rs"]
-mod multiline;
-#[path = "roundtrip/scalars.rs"]
-mod scalars;
-#[path = "roundtrip/structures.rs"]
-mod structures;
-#[path = "roundtrip/typed.rs"]
-mod typed;
+#[path = "roundtrip/serde.rs"]
+mod serde;
