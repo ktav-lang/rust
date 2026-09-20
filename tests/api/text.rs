@@ -2,8 +2,6 @@
 //! compounds, keys and quoting, README/formatter surfaces, and
 //! inline-scan conformance.
 
-#[path = "fixtures/common/mod.rs"]
-mod common;
 #[path = "text/docs.rs"]
 mod docs;
 #[path = "text/inline.rs"]
