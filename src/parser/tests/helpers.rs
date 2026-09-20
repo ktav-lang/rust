@@ -1,7 +1,9 @@
 //! Tests for the parser's helper fns: `validate`, `classify`, `insert_value`, key trimming, integer/float literal grammar, and `classify_value_start` inference.
 
 use super::S;
-use crate::parser::classify::{classify_value_start, is_float_literal, try_parse_integer};
+use crate::parser::classify::{
+    classify_value_start, has_redundant_leading_zero, is_float_literal, try_parse_integer,
+};
 use crate::parser::insert::insert_value;
 use crate::parser::validate::is_valid_key;
 use crate::parser::value_start::ValueStart;
@@ -215,6 +217,79 @@ fn insert_trims_dotted_key_segments() {
 }
 
 // --- integer literal parsing (0.5.0 § 3.6) ---------------------------------
+
+/// `matches_integer_grammar` is the syntax scan alone; this locks the
+/// implication that makes dropping its old `try_parse_integer` fast path
+/// behaviour-preserving — a successful parse always matches the grammar.
+/// The spellings below walk both implementations' disagreement surface:
+/// every base prefix, underscore placement, sign, the i64 boundaries and
+/// the values that overflow them (where the parse fails but the grammar
+/// must still match).
+#[test]
+fn parse_success_implies_grammar_match() {
+    const SPELLINGS: &[&str] = &[
+        // plain decimal, signs, the leading-zero forms § 5.2 sends to
+        // rule 15 while § 3.6's grammar keeps matching them
+        "0",
+        "42",
+        "-7",
+        "+5",
+        "-0",
+        "+0",
+        "00",
+        "01234",
+        "-045",
+        "0_7",
+        // underscores: valid, doubled, leading, trailing
+        "1_000",
+        "1_000_000",
+        "1__0",
+        "_1",
+        "1_",
+        "0x_1",
+        "0x1_",
+        "0xA__B",
+        // base prefixes, upper and lower, signed, and the empty-digit forms
+        "0xFF",
+        "0x1a",
+        "-0x10",
+        "0X1A",
+        "0o77",
+        "0O10",
+        "0b1010",
+        "0B11",
+        "0x",
+        "0o",
+        "0b",
+        // i64 boundaries and past them — parse returns None, grammar must not
+        "9223372036854775807",
+        "9223372036854775808",
+        "-9223372036854775808",
+        "-9223372036854775809",
+        "0xFFFFFFFFFFFFFFFFF",
+        "99999999999999999999999999",
+        // not integers at all
+        "",
+        "+",
+        "-",
+        "1.5",
+        "5e3",
+        "abc",
+        "0xZZ",
+        "1 000",
+        "１２３",
+    ];
+    for s in SPELLINGS {
+        if try_parse_integer(s).is_some() {
+            assert!(
+                crate::parser::classify::matches_integer_grammar(s),
+                "{s:?}: parsed to i64 but the grammar scan rejected it — \
+                 the two implementations have diverged and \
+                 matches_integer_grammar can no longer drop the parse"
+            );
+        }
+    }
+}
 
 #[test]
 fn integer_decimal_basic() {
@@ -446,5 +521,53 @@ fn classify_integer_overflow_falls_to_string() {
             "expected Scalar (String), got {:?}",
             std::mem::discriminant(&other)
         ),
+    }
+}
+
+// --- § 5.2 rules 13-14: the redundant-leading-zero exception ---------------
+
+/// Both sides of the boundary, because the rule was deliberately kept
+/// narrow: it skips a sign and `_` separators but stops at a base
+/// prefix, so widening it by one character would start turning `0x1A`
+/// and `0.5` into Strings too.
+#[test]
+fn redundant_leading_zero_is_confined_to_base_ten() {
+    // `05` is the tightest case: one redundant zero, one digit after it,
+    // nothing else. It is what separates the rule from plain `0`.
+    for s in ["05", "01234", "-045", "+007", "00", "0_7", "01.5", "05e3"] {
+        assert!(has_redundant_leading_zero(s), "{s} must carry one");
+    }
+    for s in [
+        "0",
+        "-0",
+        "0.5",
+        "0x1A",
+        "0o755",
+        "0b1010",
+        "1_000_000",
+        "+7",
+        "1.10",
+        "5e3",
+        "",
+    ] {
+        assert!(!has_redundant_leading_zero(s), "{s:?} must not carry one");
+    }
+}
+
+/// The exception reaches rule 15, and it reaches it identically in both
+/// entry points: strict mode has nothing to report, because refusing to
+/// infer a number is exactly what keeps the digits intact.
+#[test]
+fn classify_sends_a_redundant_leading_zero_to_string() {
+    for strict in [false, true] {
+        for s in ["05", "01234", "-045", "00", "0_7", "01.5", "05e3"] {
+            match classify_value_start(s, 1, S, strict).unwrap() {
+                ValueStart::Scalar(got) => assert_eq!(got, s),
+                other => panic!(
+                    "{s} (strict={strict}): expected Scalar (String), got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        }
     }
 }

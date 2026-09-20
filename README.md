@@ -14,7 +14,7 @@
 
 **Playground:** convert JSON / YAML / TOML / INI ⇄ Ktav in your browser at **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Specification:** this crate implements **Ktav 0.7.1**, the version
+**Specification:** this crate implements **Ktav 0.8.0**, the version
 named by `[package.metadata.ktav] spec-version` in `Cargo.toml`. The
 format is versioned and maintained independently of this crate — the two
 numbers move apart on purpose, since a crate release that changes no
@@ -83,9 +83,12 @@ Numbers are written bare (no quotes) and typed by lexical form: a bare
 integer body parses to `Value::Integer`, a bare decimal to
 `Value::Float`. Each stores a *normalized* payload, not the original
 spelling: `Integer` holds the canonical base-10 form (no underscores,
-no leading zeros/`+`), `Float` holds the shortest decimal form that
+no `+`), `Float` holds the shortest decimal form that
 round-trips the exact `f64` bits — `+1_000` becomes `Integer("1000")`,
-`1.0e+2` becomes `Float("100.0")`. `Value`-level `Integer` covers the
+`1.0e+2` becomes `Float("100.0")`. A decimal whose digits open with a
+redundant `0` is not a number at all: `zip: 01234` is
+`String("01234")` (§ 5.2), so a zero-padded identifier survives
+verbatim. `Value`-level `Integer` covers the
 i64 range; a native Rust integer type wider than i64 (`u64`, `i128`,
 `u128`) that doesn't fit is stored as `Value::String` instead when
 going through `ser::to_value`, matching what parsing that same decimal
@@ -933,7 +936,7 @@ their parent module.
 
 ```toml
 [dependencies]
-ktav = "0.7.1"
+ktav = "0.8.0"
 serde = { version = "1", features = ["derive"] }
 ```
 

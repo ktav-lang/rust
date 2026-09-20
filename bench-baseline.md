@@ -362,18 +362,20 @@ worth a separate investigation — the win on memory-bandwidth-bound
 hardware could differ — but on this dev host the cursor wins.
 
 
-## Re-baseline — 0.7.2 (2026-09-19)
+## Re-baseline — 0.8.0 (2026-09-19)
 
 The previous full-run section above ("Final post-optimisation reference
 baseline") is from 2026-05-08 against a 0.1.x-era crate. Everything in
-0.6, 0.7, 0.7.1 and 0.7.2 shipped in between — the error envelope, the
+0.6, 0.7 and 0.7.1 shipped in between, and 0.8.0 carries the
+rest — the error envelope, the
 comment-preserving formatter, spans, the six-binding C ABI and
 `declare_cabi!` — so this section resets the reference point rather than
 attempting to attribute the gap to any one change; four months of
 accretion is not a bisectable regression.
 
 - **Date:** 2026-09-19
-- **Crate:** `ktav` 0.7.2
+- **Crate:** `ktav` 0.8.0 — numbered 0.7.2 on the day of the run; that
+  unreleased line was renumbered when the § 5.2 change made it breaking
 - **Toolchain:** `rustc 1.97.0 (2d8144b78 2026-07-07)`
 - **OS:** Microsoft Windows 10 Pro, build 10.0.19045
 - **CPU:** 11th Gen Intel(R) Core(TM) i7-11800H @ 2.30 GHz
@@ -418,7 +420,7 @@ every size, and by a large margin — signal, not noise, by this
 document's own rule. `small` even flips sign (ktav used to win). Per
 task scope this is measurement only, no root-cause dig or fix here, but
 it is a concrete lead for whoever picks up the render path next: something
-in the render pipeline's relative cost grew across 0.2.x -> 0.7.2, most
+in the render pipeline's relative cost grew across 0.2.x -> 0.8.0, most
 plausibly connected to `render/` now also serving the formatter's needs
 (`emit_formatted` shares code with `render`) or to the `IndexMap`-backed
 `Value`/`ObjectMap` representation growing additional bookkeeping since

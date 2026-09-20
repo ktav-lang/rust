@@ -1,6 +1,6 @@
-//! Spec 0.7 § 5.9.10 writer regression: quoted keys must be emitted
+//! Spec § 5.9.10 writer regression: quoted keys must be emitted
 //! byte-for-byte identically to the corpus oracles in
-//! `spec/versions/0.7/tests/valid/{key_escaping,quoted_keys}/`, across
+//! `spec/versions/0.8/tests/valid/{key_escaping,quoted_keys}/`, across
 //! every writer surface (`emit_canonical`, `render`, and the serde
 //! streaming serializer), plus the § 5.9.6/§ 5.9.12 array-root
 //! first-item safeguards and the root-first-key guard for a leading

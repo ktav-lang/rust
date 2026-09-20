@@ -144,10 +144,14 @@ pub fn parse(text: &str) -> Result<Value> {
 /// Parse a Ktav document like [`parse`], but reject **lossy scalars**:
 /// values whose lexical form differs from the canonical form of the
 /// number they would be inferred as (§ 3.6 / § 5.2), e.g. `1.10`
-/// (→ `1.1`), `01234` (→ `1234`), `+7`, `0x1A`, `1_000`, `5e3`. Type
-/// inference would silently rewrite such values; strict mode surfaces
-/// them as [`ErrorKind::LossyScalar`] so the author can either append
-/// `::` (keep the scalar a String) or write the canonical number.
+/// (→ `1.1`), `+7`, `0x1A`, `1_000`, `5e3`. Type inference would
+/// silently rewrite such values; strict mode surfaces them as
+/// [`ErrorKind::LossyScalar`] so the author can either append `::`
+/// (keep the scalar a String) or write the canonical number.
+///
+/// A redundant leading zero (`01234`) is **not** rejected here: § 5.2
+/// infers no number from it at all, so both entry points agree it is
+/// the String `"01234"` and there is nothing to lose.
 ///
 /// Documents accepted by `parse_strict` produce exactly the same
 /// [`Value`] tree as [`parse`]. The serde event path ([`from_str`])

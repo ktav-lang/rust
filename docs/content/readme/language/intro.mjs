@@ -56,21 +56,21 @@ export const intro = [
   {
     id: 'spec-pointer',
     join: 'block',
-    en: `**Specification:** this crate implements **Ktav 0.7.1**, the version
+    en: `**Specification:** this crate implements **Ktav 0.8.0**, the version
 named by \`[package.metadata.ktav] spec-version\` in \`Cargo.toml\`. The
 format is versioned and maintained independently of this crate — the two
 numbers move apart on purpose, since a crate release that changes no
 format behaviour leaves \`spec-version\` where it was. See
 [\`ktav-lang/spec\`](https://github.com/ktav-lang/spec) for the formal
 document, and [\`CHANGELOG.md\`](CHANGELOG.md) for this crate's history.`,
-    ru: `**Спецификация:** этот crate реализует **Ktav 0.7.1** — версию,
+    ru: `**Спецификация:** этот crate реализует **Ktav 0.8.0** — версию,
 указанную в \`[package.metadata.ktav] spec-version\` в \`Cargo.toml\`.
 Формат версионируется и поддерживается независимо от crate-а, и два
 номера намеренно расходятся: выпуск crate-а, не меняющий поведение
 формата, оставляет \`spec-version\` на месте. См.
 [\`ktav-lang/spec\`](https://github.com/ktav-lang/spec) для канонического
 документа и [\`CHANGELOG.ru.md\`](CHANGELOG.ru.md) — историю crate-а.`,
-    zh: `**规范:** 本 crate 实现 **Ktav 0.7.1**,即 \`Cargo.toml\` 中
+    zh: `**规范:** 本 crate 实现 **Ktav 0.8.0**,即 \`Cargo.toml\` 中
 \`[package.metadata.ktav] spec-version\` 所指定的版本。格式与 crate 彼此
 独立地版本化与维护,两个号码会有意分开——不改变格式行为的 crate 发布会
 让 \`spec-version\` 保持原样。规范正文见

@@ -2,14 +2,17 @@
 //!
 //! A scalar is *lossy* when its lexical form differs from the canonical
 //! form of the inferred number: type inference would silently rewrite
-//! the value (`1.10` → `1.1`, `01234` → `1234`, `0x1A` → `26`, …).
+//! the value (`1.10` → `1.1`, `0x1A` → `26`, `+7` → `7`, …). A
+//! leading-zero decimal is not one of them: § 5.2 classifies `01234` as
+//! a String, so there is no inferred number to rewrite and nothing for
+//! strict mode to reject.
 //! `parse` accepts such documents unchanged; `parse_strict` rejects
 //! them with [`ErrorKind::LossyScalar`] so the author can either append
 //! `::` (keep a String) or write the canonical number.
 //!
 //! The data-driven cases (which literal spellings are lossy, in which
 //! grammar position, with which exact body/canonical) live in the
-//! shared spec corpus now (`versions/0.7/tests/strict-lossy/`, exercised
+//! shared spec corpus now (`versions/0.8/tests/strict-lossy/`, exercised
 //! by `tests/spec_conformance/strict_lossy.rs`) rather than here, so
 //! every language binding tests the same fixtures ktav itself does. What
 //! remains in this file is Rust-implementation-specific: exact byte

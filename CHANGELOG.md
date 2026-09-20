@@ -10,13 +10,59 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
-## [0.7.2] — unreleased
+## [0.8.0] — unreleased
 
-The `cabi` feature turns the six language bindings' private
-copies of the C ABI shim into one macro invocation against this crate.
-The feature is off by default — a default build pulls no
-`serde_json` — and the release is purely additive to the public
-API.
+Two things ship together. A decimal with a redundant leading zero no
+longer infers a number — `zip: 01234` parses to the String
+`"01234"`, not `Integer(1234)` — which changes what a document
+means and is why this is a minor bump rather than a patch. Alongside it,
+the `cabi` feature turns the six language bindings' private copies of
+the C ABI shim into one macro invocation against this crate; that half
+is purely additive and off by default, so a default build still pulls no
+`serde_json`.
+
+### Changed
+
+- **A redundant leading zero is no longer a number
+  ([spec 0.8 § 5.2](https://github.com/ktav-lang/spec/blob/main/versions/0.8/spec.md)).**
+  A base-10 digit run whose first digit is `0` with at least one
+  further digit — `01234`, `-045`, `00`, `0_7`, and a float's
+  integer part in `01.5` and `05e3` — is now a String carrying the
+  digits as written. `zip: 01234` was `Integer(1234)`, which
+  destroyed a postcode, a phone number or a zero-padded id without
+  saying so; it is now `"01234"`. The rule holds at every entry point —
+  `parse`, `parse_strict`, `from_str`, the thin event parser and
+  the C ABI — and it is confined to base 10: `0`, `0.5`, `0x1A`,
+  `0o755`, `0b1010`, `1_000_000` and `+7` still infer numbers
+  exactly as before. Canonical output does not move either, because the
+  `::` marker keys off § 3.6's grammar, which 0.8 left untouched: the
+  String `"01234"` still renders as `zip:: 01234`. Two consequences
+  for callers: code that relied on the old coercion must parse the
+  String itself, and `parse_strict` no longer reports
+  `LossyScalar` for these forms, since nothing is lost any more.
+
+- **`spec-version` metadata moves to `0.8.0`, and the pinned
+  `spec` submodule with it.** The suite now runs the 0.8 conformance
+  corpus: 223 `valid/`, 74 `invalid/`, 5 `unrepresentable/`, 4
+  `parseable-unrepresentable/` and 13 `strict-lossy/` fixtures —
+  the exact counts § 8.5's `manifest.json` declares, loaded and
+  checked before any fixture is enumerated. The rule above is pinned by
+  `valid/numbers/integer/leading_zero_is_string` and
+  `valid/numbers/float/leading_zero_is_string`, which carry both sides
+  of the boundary in one document each, so every implementation is held
+  to it and not just this one.
+
+- **`ktav_version()` now reports this crate's version, not the
+  binding's.** Each binding's private shim used to return its own
+  package version; the shared macro cannot know it. The number a host
+  reads therefore changes meaning, and constants such as a binding's
+  `LIB_VERSION` become stale without any error.
+
+  This is the honest reading — the native library *is* `ktav` — but
+  it removes the check those constants were performing. Use
+  `ktav_abi_version()` for that instead: it answers "is this library
+  the shape I was built against", which is the question a loader
+  actually has, and it does not move on every release.
 
 ### Added
 
@@ -50,9 +96,9 @@ API.
   suite; all ten exported symbols resolve through `libloading`, and
   `ktav_abi_version`, `ktav_loads`, `ktav_format` and
   `ktav_canonical_from_source` are called for real.
-  The wire round-trip runs over the conformance corpus: 221
+  The wire round-trip runs over the conformance corpus: 223
   `valid/` fixtures keep their `Value` across `loads` ->
-  `dumps`, and 221 canonical byte oracles match `emit_canonical`
+  `dumps`, and 223 canonical byte oracles match `emit_canonical`
   through the wire.
 
 - **`ErrorEnvelope.message` — the error's `Display` rendering,
@@ -64,20 +110,6 @@ API.
   them did — Go, Java, PHP, C# and JavaScript each invented a different
   layout, and none matched what the crate and the PyO3 binding already
   printed for the same input. Hosts surface this field as-is.
-
-### Changed
-
-- **`ktav_version()` now reports this crate's version, not the
-  binding's.** Each binding's private shim used to return its own
-  package version; the shared macro cannot know it. The number a host
-  reads therefore changes meaning, and constants such as a binding's
-  `LIB_VERSION` become stale without any error.
-
-  This is the honest reading — the native library *is* `ktav` — but
-  it removes the check those constants were performing. Use
-  `ktav_abi_version()` for that instead: it answers "is this library
-  the shape I was built against", which is the question a loader
-  actually has, and it does not move on every release.
 
 ### Fixed
 

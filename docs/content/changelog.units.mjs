@@ -14,7 +14,7 @@
 // in every language (code, tables, version headings).
 
 import { preamble } from './changelog/preamble.mjs';
-import { v0_7_2 } from './changelog/v0-7/v0-7-2.mjs';
+import { v0_8_0 } from './changelog/v0-8/v0-8-0.mjs';
 import { v0_7_1 } from './changelog/v0-7/v0-7-1.mjs';
 import { v0_7_0 } from './changelog/v0-7/v0-7-0.mjs';
 import { v0_6_4 } from './changelog/v0-6/v0-6-4.mjs';
@@ -35,7 +35,7 @@ import { v0_1_0 } from './changelog/v0-1/v0-1-0.mjs';
 
 export default [
   ...preamble,
-  ...v0_7_2,
+  ...v0_8_0,
   ...v0_7_1,
   ...v0_7_0,
   ...v0_6_4,

@@ -1,4 +1,4 @@
-# The Ktav C ABI (0.7.2)
+# The Ktav C ABI (0.8.0)
 
 This document specifies the C ABI that the Ktav language bindings
 (Go, Java, PHP, C#, JS, Python) load and call. It is written for the
@@ -22,7 +22,7 @@ Getting started:
 
 ```toml
 # Cargo.toml of the binding's native crate:
-#   [dependencies] ktav = { version = "0.7", features = ["cabi"] }
+#   [dependencies] ktav = { version = "0.8", features = ["cabi"] }
 #   [lib] crate-type = ["cdylib"]
 ```
 

@@ -76,9 +76,12 @@ pattern:: [a-z]+
 integer body parses to \`Value::Integer\`, a bare decimal to
 \`Value::Float\`. Each stores a *normalized* payload, not the original
 spelling: \`Integer\` holds the canonical base-10 form (no underscores,
-no leading zeros/\`+\`), \`Float\` holds the shortest decimal form that
+no \`+\`), \`Float\` holds the shortest decimal form that
 round-trips the exact \`f64\` bits — \`+1_000\` becomes \`Integer("1000")\`,
-\`1.0e+2\` becomes \`Float("100.0")\`. \`Value\`-level \`Integer\` covers the
+\`1.0e+2\` becomes \`Float("100.0")\`. A decimal whose digits open with a
+redundant \`0\` is not a number at all: \`zip: 01234\` is
+\`String("01234")\` (§ 5.2), so a zero-padded identifier survives
+verbatim. \`Value\`-level \`Integer\` covers the
 i64 range; a native Rust integer type wider than i64 (\`u64\`, \`i128\`,
 \`u128\`) that doesn't fit is stored as \`Value::String\` instead when
 going through \`ser::to_value\`, matching what parsing that same decimal
@@ -90,9 +93,12 @@ forced to a string with \`::\` is still accepted.`,
 целое тело разбирается в \`Value::Integer\`, голая десятичная запись —
 в \`Value::Float\`. Каждый хранит *нормализованный* payload, а не
 исходное написание: \`Integer\` хранит канонический десятичный вид (без
-подчёркиваний, без ведущих нулей/\`+\`), \`Float\` — кратчайшую десятичную
+подчёркиваний, без \`+\`), \`Float\` — кратчайшую десятичную
 форму, восстанавливающую точные биты \`f64\` — \`+1_000\` становится
-\`Integer("1000")\`, \`1.0e+2\` становится \`Float("100.0")\`. \`Integer\` на
+\`Integer("1000")\`, \`1.0e+2\` становится \`Float("100.0")\`. Десятичное
+число, чьи цифры начинаются с избыточного \`0\`, вовсе не число:
+\`zip: 01234\` — это \`String("01234")\` (§ 5.2), поэтому дополненный
+нулями идентификатор сохраняется дословно. \`Integer\` на
 уровне \`Value\` покрывает диапазон i64; более широкий native Rust
 целочисленный тип (\`u64\`, \`i128\`, \`u128\`), не помещающийся в i64, при
 проходе через \`ser::to_value\` сохраняется как \`Value::String\` — точно
@@ -103,9 +109,11 @@ serde десериализует числа в целевой Rust-тип (\`u16
     zh: `数字不加引号,并根据字面形式分类:裸整数 body 解析为
 \`Value::Integer\`,裸小数解析为 \`Value::Float\`。两者存放的都是
 *规范化*后的 payload,而非原始写法:\`Integer\` 保存规范十进制形式
-(无下划线、无前导零/\`+\`),\`Float\` 保存能还原精确 \`f64\` 位模式的最短
+(无下划线、无 \`+\`),\`Float\` 保存能还原精确 \`f64\` 位模式的最短
 十进制形式——\`+1_000\` 变为 \`Integer("1000")\`,\`1.0e+2\` 变为
-\`Float("100.0")\`。\`Value\` 层的 \`Integer\` 覆盖 i64 范围;比 i64 更宽的
+\`Float("100.0")\`。数字以冗余的 \`0\` 开头的十进制根本不是数字:
+\`zip: 01234\` 是 \`String("01234")\`(§ 5.2),因此补零的标识符会被
+逐字保留。\`Value\` 层的 \`Integer\` 覆盖 i64 范围;比 i64 更宽的
 native Rust 整数类型(\`u64\`、\`i128\`、\`u128\`)若超出该范围,经过
 \`ser::to_value\` 时会存为 \`Value::String\`——效果与直接解析同一段十进制
 文本完全一致。serde 在反序列化时直接将数字解析为目标 Rust 类型

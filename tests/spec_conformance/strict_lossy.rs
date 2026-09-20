@@ -104,13 +104,14 @@ fn strict_lossy_fixtures_round_trip_lax_and_reject_strict() {
         eprintln!("skipping spec_conformance::strict_lossy: spec dir not found");
         return;
     };
-    // strict-lossy/ was introduced in spec 0.8.0; `resolve_spec_root`
-    // already refuses to resolve any checkout that lacks
-    // `versions/<SPEC_VERSION>` (currently 0.8), so the committed 0.7.1
-    // submodule never reaches this point at all. This check is defensive
-    // insurance against a future SPEC_VERSION whose corpus predates this
-    // category — it only fires when the directory is absent outright,
-    // never when it exists but is empty or incomplete.
+    // strict-lossy/ was introduced in spec 0.8.0. The committed `spec`
+    // submodule is pinned at that corpus, and `resolve_spec_root`
+    // refuses to resolve any checkout that lacks
+    // `versions/<SPEC_VERSION>` (currently 0.8), so in a normal checkout
+    // this branch is dead. It is defensive insurance against a future
+    // SPEC_VERSION whose corpus predates this category — it only fires
+    // when the directory is absent outright, never when it exists but is
+    // empty or incomplete.
     if !tests_dir(&spec_root, "strict-lossy").is_dir() {
         eprintln!(
             "skipping spec_conformance::strict_lossy: this spec checkout predates the \

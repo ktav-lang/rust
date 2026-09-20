@@ -12,7 +12,7 @@ export const installation = [
     join: 'block',
     common: `\`\`\`toml
 [dependencies]
-ktav = "0.7.1"
+ktav = "0.8.0"
 serde = { version = "1", features = ["derive"] }
 \`\`\``,
   },

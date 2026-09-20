@@ -13,7 +13,7 @@
 
 **演练场：** 在浏览器中互转 JSON / YAML / TOML / INI ⇄ Ktav — **[ktav-lang.github.io](https://ktav-lang.github.io/)**。
 
-**规范:** 本 crate 实现 **Ktav 0.7.1**,即 `Cargo.toml` 中
+**规范:** 本 crate 实现 **Ktav 0.8.0**,即 `Cargo.toml` 中
 `[package.metadata.ktav] spec-version` 所指定的版本。格式与 crate 彼此
 独立地版本化与维护,两个号码会有意分开——不改变格式行为的 crate 发布会
 让 `spec-version` 保持原样。规范正文见
@@ -77,9 +77,11 @@ pattern:: [a-z]+
 数字不加引号,并根据字面形式分类:裸整数 body 解析为
 `Value::Integer`,裸小数解析为 `Value::Float`。两者存放的都是
 *规范化*后的 payload,而非原始写法:`Integer` 保存规范十进制形式
-(无下划线、无前导零/`+`),`Float` 保存能还原精确 `f64` 位模式的最短
+(无下划线、无 `+`),`Float` 保存能还原精确 `f64` 位模式的最短
 十进制形式——`+1_000` 变为 `Integer("1000")`,`1.0e+2` 变为
-`Float("100.0")`。`Value` 层的 `Integer` 覆盖 i64 范围;比 i64 更宽的
+`Float("100.0")`。数字以冗余的 `0` 开头的十进制根本不是数字:
+`zip: 01234` 是 `String("01234")`(§ 5.2),因此补零的标识符会被
+逐字保留。`Value` 层的 `Integer` 覆盖 i64 范围;比 i64 更宽的
 native Rust 整数类型(`u64`、`i128`、`u128`)若超出该范围,经过
 `ser::to_value` 时会存为 `Value::String`——效果与直接解析同一段十进制
 文本完全一致。serde 在反序列化时直接将数字解析为目标 Rust 类型
@@ -872,7 +874,7 @@ ktav/
 
 ```toml
 [dependencies]
-ktav = "0.7.1"
+ktav = "0.8.0"
 serde = { version = "1", features = ["derive"] }
 ```
 

@@ -259,7 +259,9 @@ pub enum ErrorKind {
     /// **Strict mode only** ([`crate::parse_strict`]). A scalar whose
     /// lexical form differs from the canonical form of the number it
     /// would be inferred as (§ 3.6 / § 5.2) — type inference would
-    /// silently rewrite the value (`1.10` → `1.1`, `01234` → `1234`).
+    /// silently rewrite the value (`1.10` → `1.1`, `0x1A` → `26`). A
+    /// leading-zero decimal is never one of these: § 5.2 classifies
+    /// `01234` as a String, so no inference happens and nothing is lost.
     /// `body` is the source form, `canonical` the form the inferred
     /// value would round-trip to. Fix by appending `::` to keep the
     /// scalar a String, or by writing the canonical number.

@@ -1,6 +1,6 @@
 [package]
 name = "ktav"
-version = "0.7.2"
+version = "0.8.0"
 edition = "2021"
 description = "Ktav — a plain configuration format. Three rules, zero indentation, zero quoting. Serde-native."
 license = "MIT OR Apache-2.0"

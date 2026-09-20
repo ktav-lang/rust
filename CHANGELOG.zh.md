@@ -10,11 +10,52 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
-## [0.7.2] —— unreleased
+## [0.8.0] —— unreleased
 
-`cabi` feature 把六个语言绑定各自私有的 C ABI 垫片副本收敛为对本
-crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉取
-`serde_json`——本次发布对公开 API 是纯增量的。
+本次发布同时带来两件事。带冗余前导零的十进制数不再被推断为数字 ——
+`zip: 01234` 解析为 String `"01234"`,而不是 `Integer(1234)` ——
+这改变了文档的含义,也正是本次发布为 minor 而非 patch 的原因。与之同行,
+`cabi` feature 把六个语言绑定各自私有的 C ABI 垫片副本收敛为对本 crate
+的一次宏调用;这一半是纯增量的、默认关闭,因此默认构建依然不会拉取
+`serde_json`。
+
+### 变更
+
+- **冗余前导零不再是数字
+  ([spec 0.8 § 5.2](https://github.com/ktav-lang/spec/blob/main/versions/0.8/spec.zh.md))。**
+  以 `0` 开头且后面至少还有一位数字的十进制数字串 —— `01234`、
+  `-045`、`00`、`0_7`,以及 `01.5` 与 `05e3` 中 float 的整数
+  部分 —— 现在是按书写原样携带这些数字的 String。`zip: 01234` 曾是
+  `Integer(1234)`,这会不声不响地毁掉邮政编码、电话号码或补零的
+  标识符;现在它是 `"01234"`。该规则在每一个入口都成立 ——
+  `parse`、`parse_strict`、`from_str`、thin event parser 与
+  C ABI —— 并且仅限于十进制:`0`、`0.5`、`0x1A`、`0o755`、
+  `0b1010`、`1_000_000` 与 `+7` 仍与此前完全一致地推断为数字。
+  规范化输出同样不变,因为 `::` 标记绑定到 § 3.6 的语法,而 0.8 未
+  触动它:String `"01234"` 依旧写作 `zip:: 01234`。对调用方有两点
+  影响:依赖旧的强制转换的代码须自行解析该 String;而
+  `parse_strict` 不再为这些形态报告 `LossyScalar`,因为已经没有
+  任何信息会丢失。
+
+- **`spec-version` 元数据升至 `0.8.0`,固定的 `spec` submodule
+  也随之移动。** 测试套件现在跑的是 0.8 一致性语料库:223 个
+  `valid/`、74 个 `invalid/`、5 个 `unrepresentable/`、4 个
+  `parseable-unrepresentable/` 与 13 个 `strict-lossy/` fixture ——
+  正是 § 8.5 的 `manifest.json` 所声明的精确数量,并在枚举任何
+  fixture 之前加载与校验。上述规则由
+  `valid/numbers/integer/leading_zero_is_string` 与
+  `valid/numbers/float/leading_zero_is_string` 钉死,两者各自在一份
+  文档里同时承载边界的两侧,因此受约束的是每一个实现,而不只是这一个。
+
+- **`ktav_version()` 现在报告本 crate 的版本,而非绑定的版本。**
+  各绑定的私有垫片过去返回自己的包版本;共享宏无从得知它。因此宿主
+  读到的数字含义发生了变化,绑定中诸如 `LIB_VERSION` 的常量会在没有
+  任何报错的情况下过时。
+
+  这是更诚实的读法 —— 原生库**就是** `ktav` —— 但它移除了那些常量
+  原本承担的检查。请改用 `ktav_abi_version()`:它回答「这个库是否
+  与我构建时的形状一致」,这才是加载器真正的问题,而且它不会每次
+  发布都变动。
 
 ### 新增
 
@@ -43,8 +84,8 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
   `libloading` 解析出全部十个导出符号,并真实调用
   `ktav_abi_version`、`ktav_loads`、`ktav_format` 与
   `ktav_canonical_from_source`。wire 往返
-  覆盖一致性语料库:221 个 `valid/` fixture 在 `loads` ->
-  `dumps` 之间保持 `Value` 不变,221 个规范字节预言机与经 wire 的
+  覆盖一致性语料库:223 个 `valid/` fixture 在 `loads` ->
+  `dumps` 之间保持 `Value` 不变,223 个规范字节预言机与经 wire 的
   `emit_canonical` 逐字节一致。
 
 - **`ErrorEnvelope.message` —— 错误的 `Display` 渲染结果,逐字
@@ -54,18 +95,6 @@ crate 的一次宏调用。该 feature 默认关闭——默认构建不会拉�
   绑定只能自己拼装 —— 而且有五个确实这么做了。Go、Java、PHP、C# 与
   JavaScript 各自发明了一种不同的排版,没有一种与 crate 本身和 PyO3
   绑定对同一输入已经打印的内容一致。host 直接原样呈现该字段。
-
-### 变更
-
-- **`ktav_version()` 现在报告本 crate 的版本,而非绑定的版本。**
-  各绑定的私有垫片过去返回自己的包版本;共享宏无从得知它。因此宿主
-  读到的数字含义发生了变化,绑定中诸如 `LIB_VERSION` 的常量会在没有
-  任何报错的情况下过时。
-
-  这是更诚实的读法 —— 原生库**就是** `ktav` —— 但它移除了那些常量
-  原本承担的检查。请改用 `ktav_abi_version()`:它回答「这个库是否
-  与我构建时的形状一致」,这才是加载器真正的问题,而且它不会每次
-  发布都变动。
 
 ### 修复
 

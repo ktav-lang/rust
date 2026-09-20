@@ -310,9 +310,9 @@ fn needs_raw_marker_float_forms() {
     assert!(!needs_raw_marker(".5"));
 }
 
-// --- 0.7 § 5.9.10: key form selection + re-escape -------------------
-// Exact-oracle expectations verified against the 0.7 corpus
-// fixtures (spec/versions/0.7/tests/valid/{key_escaping,quoted_keys}).
+// --- § 5.9.10: key form selection + re-escape ------------------------
+// Exact-oracle expectations verified against the corpus
+// fixtures (spec/versions/0.8/tests/valid/{key_escaping,quoted_keys}).
 
 /// Structural bytes (`.` `:` `,` `{` `}` `[` `]` `(` `)`) route the
 /// key to quoted form (§ 5.9.10 rule (a)) — bare `\.` is the old
