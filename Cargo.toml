@@ -96,3 +96,7 @@ harness = false
 [[bench]]
 name = "format"
 harness = false
+
+[[bench]]
+name = "emit"
+harness = false

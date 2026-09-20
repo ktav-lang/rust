@@ -362,6 +362,92 @@ worth a separate investigation — the win on memory-bandwidth-bound
 hardware could differ — but on this dev host the cursor wins.
 
 
+## Writer instruction counts — 0.8.0 perf pass (2026-09-20)
+
+Measures the effect of the writer changes in `4d22ee2` (see
+`docs/reviews/2026-09-20-rust-perf-review-post-0.6.0.md`). **Instruction
+counts, not wall clock**, because wall clock could not answer the
+question on this host — see "Why not wall clock" below.
+
+- **Tool:** `valgrind --tool=callgrind` under WSL2 (Ubuntu 24.04,
+  valgrind 3.22, rustc 1.98.1), driving
+  `examples/callgrind_writers.rs`. Deterministic: the same binary and
+  input give the same count on every run, whatever else the machine is
+  doing.
+- **Method:** for each workload, `I refs` with N iterations minus
+  `I refs` with 0 iterations, divided by N. The subtraction removes
+  fixture parsing, so what is left is the writer call alone. N is 200 /
+  50 / 10 for small / medium / large.
+- **A/B:** identical harness against `bd778ee` (before) and `4d22ee2`
+  (after); only `src/` differed.
+
+Per-call instructions, before → after:
+
+| Workload                    | Before      | After       | Δ      |
+|-----------------------------|-------------|-------------|--------|
+| `emit_canonical/small_1k`   | 45 443      | 27 480      | −39.5 % |
+| `emit_canonical/medium_50k` | 2 093 792   | 1 250 152   | −40.3 % |
+| `emit_canonical/large_500k` | 20 441 958  | 12 152 482  | −40.6 % |
+| `render/small_1k`           | 45 248      | 29 189      | −35.5 % |
+| `render/medium_50k`         | 2 098 643   | 1 337 922   | −36.2 % |
+| `render/large_500k`         | 20 497 533  | 12 998 436  | −36.6 % |
+| `force_strings/small_1k`    | 76 143      | 33 016      | −56.6 % |
+| `force_strings/medium_50k`  | 3 540 482   | 1 499 118   | −57.7 % |
+| `force_strings/large_500k`  | 34 329 787  | 14 567 183  | −57.6 % |
+| `format_str/small_1k`       | 191 674     | 145 110     | −24.3 % |
+| `format_str/medium_50k`     | 8 830 322   | 6 666 990   | −24.5 % |
+| `format_str/large_500k`     | 85 184 236  | 64 189 220  | −24.6 % |
+
+Each workload's reduction is flat across three orders of magnitude of
+document size, which is the signature of removed per-node work rather
+than a changed constant or a measurement artefact.
+
+Sanity check on the setup-only runs: 458 028 → 458 070 instructions for
+small and 58 317 890 → 58 316 647 for large — 0.002 % apart. Those runs
+are pure `ktav::parse`, so this confirms the parse path was untouched,
+as intended (the `matches_integer_grammar` change in this pass is
+reached only by writers).
+
+Reading the numbers against the review's claims:
+
+- `emit_canonical` and `render` lose ~40 % / ~36 %: one of the two full
+  tree traversals, one of two `parse::<f64>()` per Float, one of two
+  scans per String.
+- `force_strings` loses ~57 %, the largest win, because it stopped
+  deep-cloning the whole document before rendering it.
+- `format_str` loses ~25 %: `emit_formatted` no longer materialises a
+  throw-away `Value` tree via `to_plain_value` just to run the
+  representability predicate.
+
+### Why not wall clock
+
+Two attempts, both on this host:
+
+1. **`capc 5` (hard 5 % CPU cap).** Unusable. A hard
+   `JOBOBJECT_CPU_RATE_CONTROL_INFORMATION` cap enforces its quota by
+   *suspending* the whole job for most of each scheduling interval, so
+   each measured iteration absorbs multi-millisecond stalls at arbitrary
+   points. Criterion reported confidence intervals five to seven times
+   the median (`emit_canonical/large_500k`:
+   `[20.104 ms 74.537 ms 143.93 ms]`) and p-values from 0.30 to 0.79 —
+   no signal at any size. More samples cannot fix this; the noise is
+   structural, not Gaussian.
+2. **`capt 2` (affinity, 2 of 16 logical CPUs).** Much better —
+   affinity does not suspend — and most rows agreed with the
+   instruction counts (`render/large_500k` −42 %, `force_strings`
+   −51…−63 %, `emit_canonical` small/medium −35 % / −40 %). But several
+   ids stayed noise-dominated and would have been read wrongly:
+   `emit_canonical/large_500k` came out `[-41.2 % −10.1 % +49.6 %]`,
+   p = 0.80, "no change" — against a true −40.6 %. `format_str/medium_50k`
+   read *+7.4 %*, p = 0.19, against a true −24.5 %.
+
+So the wall-clock A/B corroborates the direction where it has power and
+misreports it where it does not. The instruction counts above are the
+measurement of record for this pass. They say nothing about absolute
+speed on real hardware — instructions are not cycles, and callgrind
+models neither the branch predictor nor memory stalls — so they are not
+comparable with the wall-clock sections of this file.
+
 ## Re-baseline — 0.8.0 (2026-09-19)
 
 The previous full-run section above ("Final post-optimisation reference
