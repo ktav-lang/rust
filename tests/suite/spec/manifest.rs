@@ -195,8 +195,8 @@ pub(crate) fn load_and_enforce(tests_root: &Path) -> RunnerManifest {
 
 #[cfg(test)]
 mod tests {
+    use super::super::support::{resolve_spec_root, runner_manifest, SPEC_VERSION};
     use super::*;
-    use crate::support::{resolve_spec_root, runner_manifest, SPEC_VERSION};
     use std::fs;
 
     /// The contract is enforced as a side effect of resolving the spec

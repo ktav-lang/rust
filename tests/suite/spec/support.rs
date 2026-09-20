@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::manifest::RunnerManifest;
+use super::manifest::RunnerManifest;
 use ktav::ReasonCode;
 use serde_json::Value as JsonValue;
 
@@ -34,7 +34,7 @@ pub(crate) fn resolve_spec_root() -> Option<PathBuf> {
     // Once per process: the corpus does not change mid-run, and repeating
     // the report for each of the eight runners would bury it.
     ENFORCED.get_or_init(|| {
-        crate::manifest::load_and_enforce(&root.join("versions").join(SPEC_VERSION).join("tests"))
+        super::manifest::load_and_enforce(&root.join("versions").join(SPEC_VERSION).join("tests"))
     });
     Some(root)
 }

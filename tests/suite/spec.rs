@@ -23,17 +23,17 @@
 //!   4. if none contains a `versions/` dir, the test logs and returns —
 //!      it does not fail, so CI without the spec checkout stays green.
 
-#[path = "spec_conformance/invalid.rs"]
+#[path = "spec/invalid.rs"]
 mod invalid;
-#[path = "spec_conformance/manifest.rs"]
+#[path = "spec/manifest.rs"]
 mod manifest;
-#[path = "spec_conformance/oracle.rs"]
+#[path = "spec/oracle.rs"]
 mod oracle;
-#[path = "spec_conformance/strict_lossy.rs"]
+#[path = "spec/strict_lossy.rs"]
 mod strict_lossy;
-#[path = "spec_conformance/support.rs"]
+#[path = "spec/support.rs"]
 mod support;
-#[path = "spec_conformance/unrepresentable.rs"]
+#[path = "spec/unrepresentable.rs"]
 mod unrepresentable;
-#[path = "spec_conformance/valid.rs"]
+#[path = "spec/valid.rs"]
 mod valid;

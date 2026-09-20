@@ -1,6 +1,6 @@
 //! Invalid-fixture conformance tests (owned API and thin API).
 
-use crate::support::{
+use super::support::{
     check_known_gap, collect_invalid_fixtures, resolve_spec_root, thin_known_gap, THIN_KNOWN_GAPS,
 };
 

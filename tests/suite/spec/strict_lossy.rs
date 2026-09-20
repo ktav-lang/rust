@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use serde_json::Value as JsonValue;
 
-use crate::oracle::{json_eq_ordered, ktav_to_json};
-use crate::support::{collect_ktav_files, resolve_spec_root, tests_dir};
+use super::oracle::{json_eq_ordered, ktav_to_json};
+use super::support::{collect_ktav_files, resolve_spec_root, tests_dir};
 use ktav::{Error, ErrorKind};
 
 struct StrictLossyFixture {

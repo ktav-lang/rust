@@ -4,8 +4,8 @@ use std::fs;
 
 use serde_json::Value as JsonValue;
 
-use crate::oracle::{json_eq_ordered, ktav_to_json};
-use crate::support::{
+use super::oracle::{json_eq_ordered, ktav_to_json};
+use super::support::{
     check_known_gap, collect_ktav_files, resolve_spec_root, tests_dir, thin_known_gap,
     THIN_KNOWN_GAPS,
 };

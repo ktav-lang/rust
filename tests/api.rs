@@ -5,9 +5,9 @@
 
 #[path = "fixtures/common/mod.rs"]
 mod common;
-#[path = "api/text.rs"]
+#[path = "suite/api/text.rs"]
 mod text;
-#[path = "api/thin.rs"]
+#[path = "suite/api/thin.rs"]
 mod thin;
-#[path = "api/value.rs"]
+#[path = "suite/api/value.rs"]
 mod value;

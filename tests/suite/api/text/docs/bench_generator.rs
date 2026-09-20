@@ -6,7 +6,7 @@
 //! every 12 indices cover the full branch mix, so a larger target adds
 //! nothing but runtime.
 
-#[path = "../../../../benches/fixtures.rs"]
+#[path = "../../../../../benches/fixtures.rs"]
 mod fixtures;
 
 use ktav::{Error, ErrorKind};
