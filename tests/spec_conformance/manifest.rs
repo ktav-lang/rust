@@ -56,7 +56,9 @@ impl RunnerManifest {
 /// canonical files are excluded rather than counted.
 fn count_fixtures(dir: &Path, json_only: bool) -> usize {
     fn walk(dir: &Path, json_only: bool, n: &mut usize) {
-        let Ok(entries) = fs::read_dir(dir) else { return };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -109,9 +111,12 @@ pub(crate) fn load_and_enforce(tests_root: &Path) -> RunnerManifest {
         .unwrap_or_else(|| panic!("§ 8.5: {} has no categories map", path.display()))
         .iter()
         .map(|(name, spec)| {
-            let count = spec.get("count").and_then(JsonValue::as_u64).unwrap_or_else(|| {
-                panic!("§ 8.5: category {name:?} has no numeric count in the manifest")
-            });
+            let count = spec
+                .get("count")
+                .and_then(JsonValue::as_u64)
+                .unwrap_or_else(|| {
+                    panic!("§ 8.5: category {name:?} has no numeric count in the manifest")
+                });
             (name.clone(), count)
         })
         .collect();
@@ -256,10 +261,11 @@ mod tests {
         let outcome = std::panic::catch_unwind(|| load_and_enforce(&temp));
         let _ = fs::remove_dir_all(&temp);
         let err = outcome.expect_err("§ 8.5: a corpus one fixture short MUST be refused");
-        let message = err
-            .downcast_ref::<String>()
-            .cloned()
-            .unwrap_or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()).unwrap_or_default());
+        let message = err.downcast_ref::<String>().cloned().unwrap_or_else(|| {
+            err.downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .unwrap_or_default()
+        });
         assert!(
             message.contains("§ 8.5") && message.contains("valid"),
             "the refusal must name the section and the short category; got {message:?}"
@@ -286,7 +292,11 @@ mod tests {
                 if path.is_dir() {
                     walk(&path, out);
                 } else if path.extension().and_then(|s| s.to_str()) == Some("ktav")
-                    && !path.file_stem().and_then(|s| s.to_str()).unwrap_or("").ends_with(".canonical")
+                    && !path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .ends_with(".canonical")
                 {
                     out.push(path);
                 }

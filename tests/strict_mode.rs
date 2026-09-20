@@ -101,7 +101,10 @@ fn lax_canonicalises_inferred_numbers_but_keeps_a_leading_zero_verbatim() {
     // § 5.2 rule 13's exception: `01234` is never an Integer, so the
     // identifier survives the lax entry point byte for byte.
     let Some(Value::String(z)) = top.get("zip") else {
-        panic!("a redundant leading zero must stay a String, got {:?}", top.get("zip"));
+        panic!(
+            "a redundant leading zero must stay a String, got {:?}",
+            top.get("zip")
+        );
     };
     assert_eq!(z.as_str(), "01234");
     // …and strict has nothing to reject there, because nothing is lost.

@@ -34,7 +34,9 @@ fn resolve_spec_root() -> Option<PathBuf> {
     .into_iter()
     .flatten()
     .collect();
-    candidates.into_iter().find(|p| p.join("versions").join(SPEC_VERSION).is_dir())
+    candidates
+        .into_iter()
+        .find(|p| p.join("versions").join(SPEC_VERSION).is_dir())
 }
 
 /// Walk `root` recursively and collect every `.ktav` file.

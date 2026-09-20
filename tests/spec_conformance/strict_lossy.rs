@@ -66,9 +66,7 @@ fn collect_strict_lossy_fixtures(spec_root: &std::path::Path) -> Vec<StrictLossy
             .and_then(JsonValue::as_str)
             .unwrap_or_else(|| panic!("fixture {rel}: oracle missing string `expected_error`"));
         if expected_error != "LossyScalar" {
-            panic!(
-                "fixture {rel}: expected_error must be \"LossyScalar\", got {expected_error:?}"
-            );
+            panic!("fixture {rel}: expected_error must be \"LossyScalar\", got {expected_error:?}");
         }
         let expected_body = map
             .get("body")
@@ -146,7 +144,9 @@ fn strict_lossy_fixtures_round_trip_lax_and_reject_strict() {
                 "fixture {}: strict parse unexpectedly succeeded, expected LossyScalar",
                 fixture.rel
             )),
-            Err(Error::Structured(ErrorKind::LossyScalar { body, canonical, .. })) => {
+            Err(Error::Structured(ErrorKind::LossyScalar {
+                body, canonical, ..
+            })) => {
                 if body != fixture.expected_body {
                     failures.push(format!(
                         "fixture {}: strict body {body:?} != oracle body {:?}",

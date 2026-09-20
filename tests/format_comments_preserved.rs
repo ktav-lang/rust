@@ -183,7 +183,9 @@ fn resolve_spec_root() -> Option<PathBuf> {
     }
     candidates.push(manifest.join("spec"));
     candidates.push(manifest.join("../spec"));
-    candidates.into_iter().find(|p| p.join("versions").join(SPEC_VERSION).is_dir())
+    candidates
+        .into_iter()
+        .find(|p| p.join("versions").join(SPEC_VERSION).is_dir())
 }
 
 #[test]
