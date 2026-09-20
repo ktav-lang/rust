@@ -5,15 +5,15 @@
 //! spec-section mapping, and the parse-trigger → envelope mapping for
 //! every `ErrorKind` and `ReasonCode`.
 
-#[path = "error_envelope/escapes.rs"]
+#[path = "envelope/escapes.rs"]
 mod escapes;
-#[path = "error_envelope/helpers.rs"]
+#[path = "envelope/helpers.rs"]
 mod helpers;
-#[path = "error_envelope/message.rs"]
+#[path = "envelope/message.rs"]
 mod message;
-#[path = "error_envelope/paths.rs"]
+#[path = "envelope/paths.rs"]
 mod paths;
-#[path = "error_envelope/shape.rs"]
+#[path = "envelope/shape.rs"]
 mod shape;
-#[path = "error_envelope/spans.rs"]
+#[path = "envelope/spans.rs"]
 mod spans;

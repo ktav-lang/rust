@@ -1,5 +1,7 @@
 //! Round-trip integration tests: `T → text → T` should yield the same `T`.
 
+#[path = "roundtrip/errors.rs"]
+mod errors;
 #[path = "roundtrip/keywords.rs"]
 mod keywords;
 #[path = "roundtrip/multiline.rs"]

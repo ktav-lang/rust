@@ -1,6 +1,6 @@
 //! Escaping behavior pinned by questions Q1 and Q3.
 
-use crate::helpers::{obj, s};
+use super::helpers::{obj, s};
 use ktav::{emit_canonical, parse, parse_strict, Error, ErrorKind};
 
 // ---------------------------------------------------------------------------

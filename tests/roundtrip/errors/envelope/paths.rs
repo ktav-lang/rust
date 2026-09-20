@@ -1,6 +1,6 @@
 //! Path-is-an-array-of-decoded-segments semantics and JSON escaping of paths.
 
-use crate::helpers::{env, f, obj, s, ten_keys_present};
+use super::helpers::{env, f, obj, s, ten_keys_present};
 use ktav::value::Scalar;
 use ktav::{emit_canonical, parse, Error, ErrorKind, Value};
 use serde_json::Value as Json;

@@ -1,6 +1,6 @@
 //! The `message` field: `Display` rendered verbatim, last on the wire.
 
-use crate::helpers::{env, n, obj, ten_keys_present};
+use super::helpers::{env, n, obj, ten_keys_present};
 use ktav::{emit_canonical, parse_strict, Error};
 use serde_json::Value as Json;
 

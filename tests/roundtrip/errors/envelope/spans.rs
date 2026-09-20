@@ -1,6 +1,6 @@
 //! Spans, line text, and spec-section mapping onto the envelope.
 
-use crate::helpers::{env, ten_keys_present};
+use super::helpers::{env, ten_keys_present};
 use ktav::{emit_canonical, parse, ConflictKind, Error, ErrorKind, Span, Value};
 use serde_json::Value as Json;
 
