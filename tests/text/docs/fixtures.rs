@@ -1,9 +1,6 @@
 //! End-to-end tests backed by `.conf` files under `tests/fixtures/`.
 
-#[path = "common/mod.rs"]
-mod common;
-
-use common::fixture;
+use crate::common::fixture;
 use ktav::from_file;
 use serde::Deserialize;
 

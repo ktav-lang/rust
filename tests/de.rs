@@ -1,6 +1,6 @@
 //! Deserialization integration tests, organized by feature.
 
-#[path = "common/mod.rs"]
+#[path = "fixtures/common/mod.rs"]
 mod common;
 
 #[path = "de/arrays.rs"]
