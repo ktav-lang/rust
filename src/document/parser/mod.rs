@@ -1,9 +1,9 @@
 //! Line-oriented Ktav parser. See [`crate::parse`] for the public entry point.
 //!
 //! The tree below groups the parser by what each part does rather than
-//! by file: [`syntax`] classifies what a line says, [`build`] turns that
-//! into a `Value`, [`parser`] is the state machine that drives both,
-//! [`inline`] handles `{ ... }` and `[ ... ]`, and [`fmt_parser`] is the
+//! by file: `syntax` classifies what a line says, `build` turns that
+//! into a `Value`, `parser` is the state machine that drives both,
+//! `inline` handles `{ ... }` and `[ ... ]`, and `fmt_parser` is the
 //! trivia-preserving fork the formatter uses. The `use` declarations
 //! below re-export every module at its original path, so the rest of the
 //! crate still writes `crate::parser::classify` and friends.
