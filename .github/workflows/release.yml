@@ -68,6 +68,13 @@ jobs:
       - name: cargo build (release)
         run: cargo build --release --all-features
 
+      # docs.rs builds with --all-features; catches broken intra-doc
+      # links before they ship in a published version.
+      - name: Build API documentation
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
   publish:
     name: cargo publish
     needs: verify

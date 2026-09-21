@@ -27,6 +27,18 @@ jobs:
       - name: docs-gen's own tests
         run: node --test ./tools/docs-gen/test/docs-gen.test.mjs
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # docs.rs builds with --all-features; this is what caught the
+      # broken-intra-doc-link regressions the generated-markdown check
+      # above cannot see, since that check never touches rustdoc.
+      - name: Build API documentation
+        run: cargo doc --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
