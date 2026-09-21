@@ -75,14 +75,8 @@ impl WireValue {
         match self {
             WireValue::Null => Ok(Value::Null),
             WireValue::Bool(b) => Ok(Value::Bool(b)),
-            WireValue::Integer(s) => {
-                validate_integer(&s)?;
-                Ok(Value::Integer(s.into()))
-            }
-            WireValue::Float(s) => {
-                validate_float(&s)?;
-                Ok(Value::Float(s.into()))
-            }
+            WireValue::Integer(s) => Ok(Value::Integer(canonical_integer(&s)?.into())),
+            WireValue::Float(s) => Ok(Value::Float(canonical_float(&s)?.into())),
             WireValue::String(s) => Ok(Value::String(s.into())),
             WireValue::Array(items) => {
                 let mut out = Vec::with_capacity(items.len());
@@ -102,12 +96,37 @@ impl WireValue {
     }
 }
 
-fn validate_integer(s: &str) -> Result<(), String> {
-    let rest = s.strip_prefix('-').unwrap_or(s);
-    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+/// Normalize an `$i` payload to this crate's canonical Integer text: no
+/// redundant leading zero, no explicit `+`, and no signed zero — the
+/// same shape the internal text parser always stores (classify.rs never
+/// lets a parsed Integer keep its original spelling). String-level, not
+/// `i64`-parsed: the wire format deliberately carries integers beyond
+/// `i64` (that is the whole reason `$i` exists instead of a bare JSON
+/// number), so a bignum payload must pass through unchanged rather than
+/// overflow.
+///
+/// Without this, both writers (`render` and the canonical one) trust
+/// that stored Integer/Float text is already canonical and echo it
+/// verbatim — `render`'s own comment on its `Value::Integer` arm says
+/// so explicitly. A non-canonical wire payload breaks that trust
+/// silently: `"01234"` gets written out unchanged, and since § 5.2 now
+/// routes a redundant leading zero to String, re-parsing that output
+/// reclassifies it — `dumps` -> `loads` silently turns the Integer into
+/// a String.
+fn canonical_integer(s: &str) -> Result<String, String> {
+    let (sign, digits) = match s.as_bytes().first() {
+        Some(b'-') => ("-", &s[1..]),
+        Some(b'+') => ("", &s[1..]),
+        _ => ("", s),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err(format!("$i payload not an integer literal: {s:?}"));
     }
-    Ok(())
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        return Ok("0".to_string());
+    }
+    Ok(format!("{sign}{trimmed}"))
 }
 
 /// True when a number's source text is a float lexical form (`.` or
@@ -116,14 +135,28 @@ fn looks_like_float(s: &str) -> bool {
     s.bytes().any(|b| b == b'.' || b == b'e' || b == b'E')
 }
 
-fn validate_float(s: &str) -> Result<(), String> {
+/// Normalize an `$f` payload to this crate's canonical Float text the
+/// same way `classify.rs` does when it parses one from source: `f64`
+/// parse, then `ryu`'s shortest round-trip decimal. A non-finite result
+/// — reachable here via an extreme exponent like `"1e400"`, which
+/// `f64::from_str` silently overflows to `Infinity` rather than erroring
+/// — is passed through verbatim instead: `ryu` only documents finite
+/// input, and a non-finite `Value::Float` is a deliberate wire-only
+/// capability the § 5.9.0 writers reject at render time (or coerce
+/// under `force_strings`), never something to normalize away here.
+fn canonical_float(s: &str) -> Result<String, String> {
     if s.parse::<f64>().is_err() {
         return Err(format!("$f payload not a finite decimal: {s:?}"));
     }
     if !looks_like_float(s) {
         return Err(format!("$f payload must contain '.' or exponent: {s:?}"));
     }
-    Ok(())
+    let val: f64 = s.parse().expect("just validated above");
+    if !val.is_finite() {
+        return Ok(s.to_string());
+    }
+    let mut buf = ryu::Buffer::new();
+    Ok(buf.format(val).to_string())
 }
 
 /// The string payload of a `$i` / `$f` tag (or of serde_json's

@@ -245,6 +245,93 @@ mod tests {
         assert_eq!(v["line_text"], "port:8080");
     }
 
+    /// § 5.2's redundant-leading-zero exception means `01234` is never
+    /// an Integer, so a `$i` payload spelled that way must be
+    /// normalized to `1234` at construction time — otherwise the
+    /// writer echoes the stored text verbatim (it trusts an `Integer`
+    /// is already canonical), and re-parsing `n: 01234` through the
+    /// real parser reclassifies it as a String, silently changing the
+    /// round-tripped type.
+    #[test]
+    fn wire_integer_payload_drops_a_redundant_leading_zero() {
+        let text = dumps(br#"{"n":{"$i":"01234"}}"#).unwrap();
+        let text = std::str::from_utf8(&text).unwrap();
+        assert_eq!(text, "n: 1234\n");
+        let roundtrip = loads(text.as_bytes()).unwrap();
+        assert_eq!(roundtrip, br#"{"n":{"$i":"1234"}}"#);
+    }
+
+    #[test]
+    fn wire_integer_payload_drops_a_leading_plus_and_folds_signed_zero() {
+        let out = loads(
+            dumps(br#"{"a":{"$i":"+7"},"b":{"$i":"-0"}}"#)
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap();
+        assert_eq!(out, br#"{"a":{"$i":"7"},"b":{"$i":"0"}}"#);
+    }
+
+    /// The wire format deliberately supports integers beyond `i64` (the
+    /// whole reason `$i` exists instead of a bare JSON number) — a
+    /// bignum payload with no leading zero must survive normalization
+    /// unchanged rather than overflow. (It does not round-trip back to
+    /// Integer through `loads`: the text parser's own Integer grammar
+    /// caps at `i64` and falls through to String beyond it, same as
+    /// `dumps_big_integer_survives_arbitrary_precision` above already
+    /// establishes — this test only pins that normalization itself
+    /// does not corrupt or reject the digits on the way out.)
+    #[test]
+    fn wire_integer_payload_preserves_arbitrary_precision() {
+        let big = "123456789012345678901234567890";
+        let text = dumps(format!(r#"{{"n":{{"$i":"{big}"}}}}"#).as_bytes()).unwrap();
+        assert_eq!(std::str::from_utf8(&text).unwrap(), format!("n: {big}\n"));
+    }
+
+    /// Same defect as the Integer case, for Float: both writers trust a
+    /// stored `Float` is already `ryu`-canonical and echo it verbatim
+    /// (the canonical writer's decimal-region branch is a documented
+    /// no-op for exactly this reason), so a non-canonical `$f` spelling
+    /// must be normalized at construction time — otherwise
+    /// re-canonicalizing the output is not a no-op (idempotent), it is a
+    /// second, different answer.
+    #[test]
+    fn wire_float_payload_normalizes_leading_zero_and_trailing_zero() {
+        let leading = emit_canonical(br#"{"n":{"$f":"01.5"}}"#).unwrap();
+        assert_eq!(std::str::from_utf8(&leading).unwrap(), "n: 1.5\n");
+
+        let trailing = emit_canonical(br#"{"n":{"$f":"0.50"}}"#).unwrap();
+        let text = std::str::from_utf8(&trailing).unwrap();
+        assert_eq!(text, "n: 0.5\n");
+
+        // Idempotent: canonicalizing the wire form of the already-canonical
+        // output must reproduce the same text, not drift a second time.
+        let wire_again = loads(text.as_bytes()).unwrap();
+        let again = emit_canonical(&wire_again).unwrap();
+        assert_eq!(again, trailing);
+    }
+
+    /// A non-finite `$f` payload — `f64::from_str` silently overflows an
+    /// extreme exponent like `1e400` to `Infinity` rather than erroring
+    /// — is a deliberate wire-only capability, not something to reject
+    /// or run through `ryu` (which only documents finite input) — it
+    /// must construct successfully. `dumps` (the § 5.9.0 writer) still
+    /// rejects a non-finite Float at render time, as it always has;
+    /// `dumps_force_strings` bypasses that check, so it is what proves
+    /// the value was constructed and carries the payload through
+    /// verbatim.
+    #[test]
+    fn wire_float_payload_passes_non_finite_through_verbatim() {
+        assert!(dumps(br#"{"n":{"$f":"1e400"}}"#).is_err());
+
+        let out = dumps_force_strings(br#"{"n":{"$f":"1e400"}}"#).unwrap();
+        let text = std::str::from_utf8(&out).unwrap();
+        // The forced string's content still matches § 3.6's float
+        // grammar, so the writer needs the `::` raw marker to keep a
+        // lax reader from reading it back as a number.
+        assert_eq!(text, "n:: 1e400\n");
+    }
+
     #[test]
     fn version_bytes_are_nul_terminated() {
         assert!(VERSION_BYTES.ends_with(&[0u8]));
