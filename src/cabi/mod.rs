@@ -33,13 +33,13 @@
 //! # Error encoding
 //!
 //! Every `Err` payload of the six operations is already the
-//! [`ErrorEnvelope`] JSON — `ErrorEnvelope::from_error(&err,
+//! [`crate::ErrorEnvelope`] JSON — `ErrorEnvelope::from_error(&err,
 //! source).to_json()`: ten fields, always all ten, in the fixed order
 //! `error, reason, line, line_text, span, path, body, canonical,
 //! spec_section, message`, with absent information an explicit `null`,
 //! `path` an array of exact decoded key segments, and `message` the
 //! `Display` rendering, which is never null. Errors that are not
-//! [`Error`]s (serde_json failures, the top-level check) are wrapped as
+//! [`crate::Error`]s (serde_json failures, the top-level check) are wrapped as
 //! `Error::Message` and encoded the same way, so hosts never have to
 //! sniff plain text vs JSON. For operations whose input was Ktav source
 //! text the source is passed, so `line_text` populates; for the

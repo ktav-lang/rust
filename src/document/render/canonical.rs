@@ -1,4 +1,4 @@
-//! Canonical writer — emits a deterministic byte sequence for any [`Value`]
+//! Canonical writer — emits a deterministic byte sequence for any [`crate::Value`]
 //! per spec § 5.9.
 //!
 //! The canonical form is:
