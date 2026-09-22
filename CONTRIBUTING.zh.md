@@ -58,7 +58,9 @@ Criterion 会把上一次运行的数字保存在 `target/criterion/`,并在下�
 - **破坏 semver**(重命名 / 删除项、改签名、收紧 bound)——在
   pre-1.0 阶段,版本号递进进入下一个 `MINOR`。
 
-同一个 PR 里同步更新 `CHANGELOG.md`,置于 `## [Unreleased]` 之下。
+请在同一个 PR 中于 `root-docs/CHANGELOG/` 下为你的改动添加一条
+CHANGELOG 记录(通过 `node scripts/build-docs.mjs` 重新生成产物——
+绝不要手动修改 `CHANGELOG.md`)。
 
 ### 4. 一个概念,一个 commit
 
@@ -106,6 +108,61 @@ cargo test --doc                   # 文档测试
 - `tests/spec_conformance.rs` —— 来自 `ktav-lang/spec` 的语言无关
   套件（valid 固件匹配 JSON 预期值；invalid 固件被拒绝；valid 固件
   经历无损 round-trip）。
+
+## 推送前的本地检查(强制)
+
+在 `git push` 之前,在本地运行**全部五项**检查。CI 运行相同的命令,
+而流水线中途的失败比在键盘前多花几秒钟的代价更大——如果是触发
+发布的 tag 推送,还会引出一套「修复后强制移动 tag」的折腾。
+
+```
+cargo fmt --all -- --check                                         # 规范格式化
+cargo clippy --release --all-features --all-targets -- -D warnings # 零警告策略
+cargo test --release --all-features                                # release 模式下的完整套件
+cargo build --release --all-features                               # 最终二进制构建
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps      # docs.rs 构建,零警告
+```
+
+只要有一项是红的,这次推送就**没有准备好**。本仓库的 CI 会强制
+执行全部五项(见 `.github/workflows/ci.yml`);推送一个有问题的
+提交必然导致 main 徽章变红,若是 tag 推送,还会破坏发布流水线。
+
+这条规则适用于整个仓库,不仅限于本 crate——每个 `ktav-lang/*`
+绑定都在自己的 `CONTRIBUTING.md` 中记录了等价的本地检查咒语。
+
+## 发布
+
+本 crate 的发布**完全自动化**——推送一个 `v*` tag,`Release`
+工作流会处理一切:
+
+```
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+这会在 `.github/workflows/release.yml` 中触发三个依次执行的 job:
+
+1. **`verify`**——在已打 tag 的提交上重新运行上面的五项推送前检查
+   (fmt / clippy / test / build / doc)。此处不通过,就不会发布。
+2. **`publish`**——通过 crates.io **Trusted Publishing**(OIDC)执行
+   `cargo publish`:工作流用其短期有效的 GitHub 身份换取一个仅在本次
+   运行期间有效的 crates.io 令牌,绑定到 `crates-io` 环境。仓库中不
+   存储任何长期有效的注册表令牌。上传前会确认 tag 与 `Cargo.toml`
+   中的版本一致。
+3. **`github-release`**——为该 tag 创建 GitHub Release,并从
+   `CHANGELOG.md` 中提取对应的 `## [X.Y.Z]` 小节作为发布说明。因此
+   **CHANGELOG 条目本身就是发布说明**:打 tag 之前先写好 changelog。
+
+这在实践中意味着:
+
+- **务必在打 tag 之前写好 CHANGELOG 条目。** 跳过这一步会让 GH
+  Release 的说明留空。请编辑 `root-docs/CHANGELOG/` 下的源文件,并通过
+  `node scripts/build-docs.mjs` 重新生成——绝不要手动修改
+  `CHANGELOG.md`。
+- **绝不要在维护者本机运行 `cargo publish`**——工作流才是规范路径。
+  (手动发布会跳过 verify 关卡,也不会产生 GH Release。)
+- 如果需要在不移动 tag 的情况下重试发布,使用 `workflow_dispatch`,
+  以 tag 名称作为输入。
 
 ## 基准测试
 

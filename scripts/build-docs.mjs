@@ -3,6 +3,7 @@
 // @ktav-lang/polydoc. Run with --check for a CI-friendly, read-only
 // verification instead of regenerating the files.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -11,15 +12,25 @@ import { configure, buildRootDocs, writeRootDocs, checkRootDocs } from '@ktav-la
 const LANGS = ['en', 'ru', 'zh'];
 configure({
   langs: LANGS,
-  rootDocuments: ['README', 'CHANGELOG'],
+  rootDocuments: ['README', 'CHANGELOG', 'CONTRIBUTING', 'SECURITY'],
 });
+
+// SECURITY.md's supported-version line uses @@MINOR_LINE@@ so it can
+// never quietly fall behind Cargo.toml's actual version the way a
+// hand-written "0.1.x" once did.
+function readCrateVersion(root) {
+  const toml = fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8');
+  const match = toml.match(/^version\s*=\s*"([^"]+)"/mu);
+  if (!match) throw new Error('Cargo.toml: no top-level version field found');
+  return match[1];
+}
 
 // Per-unit validation proves every meaning has every language. It does
 // NOT prove the languages describe the same DOCUMENT: a heading demoted
 // from ## to ### in one translation, or an extra heading in another,
-// passes unit validation untouched. Ported from tools/docs-gen (deleted
-// once this repo moved to polydoc) rather than dropped, since it is what
-// catches that class of drift.
+// passes unit validation untouched. This check (originally from this
+// repo's own pre-polydoc docs-gen tool) is what catches that class of
+// drift.
 function headingSkeleton(markdown) {
   const levels = [];
   let fenceChar = null;
@@ -82,7 +93,8 @@ function cli() {
 
   let docs;
   try {
-    docs = buildRootDocs(root);
+    const version = readCrateVersion(root);
+    docs = buildRootDocs(root, { release: { version, released: '' } });
     for (const [name, perLang] of docs) {
       const problems = structuralProblems(name, perLang);
       if (problems.length > 0) {

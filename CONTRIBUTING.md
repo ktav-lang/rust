@@ -1,5 +1,7 @@
 # Contributing to Ktav
 
+**Languages:** **English** · [Русский](CONTRIBUTING.ru.md) · [简体中文](CONTRIBUTING.zh.md)
+
 ## Core rules
 
 ### 1. Every bug fix ships with a regression test
@@ -64,7 +66,9 @@ say whether it's:
   tightened bounds) — in which case the version bump goes into the
   next `MINOR` while we're pre-1.0.
 
-Update `CHANGELOG.md` in the same PR under `## [Unreleased]`.
+Add a CHANGELOG entry for your change under `root-docs/CHANGELOG/` in
+the same PR (regenerate the artifacts with `node scripts/build-docs.mjs`
+— never hand-edit `CHANGELOG.md`).
 
 ### 4. One concept per commit
 
@@ -100,22 +104,36 @@ cargo test multiline               # by name filter
 cargo test --doc                   # doc-tests only
 ```
 
+Test categories:
+
+- `src/**/tests.rs` — private unit tests per module.
+- `tests/de/*` — deserialization by feature.
+- `tests/ser/*` — serialization by feature.
+- `tests/roundtrip/*` — round-trip (`T → text → T`).
+- `tests/edge_cases/*` — combinatorial edge cases (paren literals,
+  keywords in maps, deep nesting, special strings…).
+- `tests/fixtures.rs` — end-to-end against real `.conf` files.
+- `tests/spec_conformance.rs` — language-agnostic suite from
+  `ktav-lang/spec` (valid fixtures match JSON oracle; invalid fixtures
+  are rejected; valid fixtures survive lossless round-trip).
+
 ## Pre-push local checks (mandatory)
 
-Run **all four** of these locally before `git push`. CI runs the same
+Run **all five** of these locally before `git push`. CI runs the same
 commands and a failure mid-pipeline costs more than a few seconds at
 the keyboard — and in the case of a tag push that triggers a release,
 a fix-and-force-tag-move dance.
 
 ```
-cargo fmt --all -- --check          # canonical formatting
-cargo clippy --release -- -D warnings  # zero warnings policy
-cargo test --release                # full suite, release mode
-cargo build --release               # final binary build
+cargo fmt --all -- --check                                         # canonical formatting
+cargo clippy --release --all-features --all-targets -- -D warnings # zero warnings policy
+cargo test --release --all-features                                # full suite, release mode
+cargo build --release --all-features                               # final binary build
+RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps      # docs.rs build, zero warnings
 ```
 
 If any of these are red, the push is **not** ready. The CI in this
-repo enforces all four (see `.github/workflows/ci.yml`); pushing a
+repo enforces all five (see `.github/workflows/ci.yml`); pushing a
 broken commit guarantees a red main badge and, for tag pushes,
 breaks the release pipeline.
 
@@ -129,45 +147,37 @@ A release is **fully automated** for this crate — push a `v*` tag and
 the `Release` workflow handles everything:
 
 ```
-git tag -a v0.1.X -m "v0.1.X"
-git push origin v0.1.X
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
 That triggers three sequential jobs in `.github/workflows/release.yml`:
 
-1. **`verify`** — re-runs the four pre-push checks above (fmt /
-   clippy / test / build) on the tagged commit. No green here, no
+1. **`verify`** — re-runs the five pre-push checks above (fmt / clippy
+   / test / build / doc) on the tagged commit. No green here, no
    publish.
-2. **`publish`** — `cargo publish` with the `CARGO_REGISTRY_TOKEN`
-   secret (gated to the `crates-io` environment). Confirms the tag
-   matches `Cargo.toml` version before uploading.
+2. **`publish`** — `cargo publish` via crates.io **Trusted Publishing**
+   (OIDC): the workflow trades its short-lived GitHub identity for a
+   crates.io token that expires within the run, gated to the
+   `crates-io` environment. No long-lived registry token is stored in
+   the repository. Confirms the tag matches `Cargo.toml` version
+   before uploading.
 3. **`github-release`** — creates a GitHub Release for the tag and
-   pulls the matching `## [vX.Y.Z]` section out of `CHANGELOG.md` for
+   pulls the matching `## [X.Y.Z]` section out of `CHANGELOG.md` for
    the release notes. So **the CHANGELOG entry IS the release notes**:
    write the changelog before tagging.
 
 What this means in practice:
 
 - **Always write the CHANGELOG entry before tagging.** Skipping it
-  leaves the GH Release with empty notes.
+  leaves the GH Release with empty notes. Edit the source under
+  `root-docs/CHANGELOG/` and regenerate with
+  `node scripts/build-docs.mjs` — never hand-edit `CHANGELOG.md`.
 - **Never `cargo publish` from a maintainer's machine** — the
   workflow is the canonical path. (Manual publish would skip the
   verify gate and produce no GH Release.)
 - If you need to retry a release without moving the tag, use
   `workflow_dispatch` with the tag name as the input.
-
-Test categories:
-
-- `src/**/tests.rs` — private unit tests per module.
-- `tests/de/*` — deserialization by feature.
-- `tests/ser/*` — serialization by feature.
-- `tests/roundtrip/*` — round-trip (`T → text → T`).
-- `tests/edge_cases/*` — combinatorial edge cases (paren literals,
-  keywords in maps, deep nesting, special strings…).
-- `tests/fixtures.rs` — end-to-end against real `.conf` files.
-- `tests/spec_conformance.rs` — language-agnostic suite from
-  `ktav-lang/spec` (valid fixtures match JSON oracle; invalid fixtures
-  are rejected; valid fixtures survive lossless round-trip).
 
 ## Benchmarks
 
