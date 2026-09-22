@@ -1,0 +1,13 @@
+{
+  "name": "@ktav-lang/rust-docs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ktav-lang/polydoc": "0.1.0"
+  },
+  "scripts": {
+    "docs:build": "node scripts/build-docs.mjs",
+    "docs:check": "node scripts/build-docs.mjs --check"
+  }
+}

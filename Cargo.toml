@@ -26,10 +26,13 @@ rust-version = "1.71"
 exclude = [
     "/.github/",
     "/docs/",
-    "/docs.config.mjs",
+    "/node_modules/",
+    "/package.json",
+    "/package-lock.json",
+    "/root-docs/",
+    "/scripts/",
     "/spec/",
     "/tests/cabi-fixture/",
-    "/tools/",
 ]
 
 # Which version of the Ktav format specification this crate implements.

@@ -1,0 +1,20 @@
+export default [
+  "intro",
+  "name",
+  "motto",
+  "rules",
+  "values",
+  "compounds",
+  "corners",
+  "rust-usage",
+  "examples",
+  "round-trip",
+  "formatting",
+  "cabi",
+  "architecture",
+  "not-do",
+  "installation",
+  "support",
+  "license",
+  "implementations"
+]

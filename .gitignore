@@ -3,6 +3,9 @@
 **/*.rs.bk
 Cargo.lock
 
+# Node (docs generation only)
+/node_modules
+
 # Local working directories
 /docs_local
 
