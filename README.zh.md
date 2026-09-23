@@ -823,7 +823,7 @@ ktav-fmt -                   read one document from stdin
 
 六个语言绑定——Go、Java、PHP、C#、JS 与 Python——加载一个构建在
 本 crate 之上的小型原生库。垫片中可共享的一半位于默认关闭的
-`cabi` feature 之后:`ktav::cabi` 模块承载 wire 解码、六项文档
+`cabi` feature 之后:`ktav::cabi` 模块承载 wire 解码、七项文档
 操作与错误编码,而绑定 cdylib 中的一次宏调用即可展开全部导出符号。
 
 ```text
@@ -831,10 +831,11 @@ ktav-fmt -                   read one document from stdin
 ktav::declare_cabi!();
 ```
 
-展开导出九个符号:六个文档操作函数(`ktav_loads`、
+展开导出十个符号:七个文档操作函数(`ktav_loads`、
 `ktav_loads_strict`、`ktav_dumps`、`ktav_dumps_force_strings`、
-`ktav_emit_canonical`、`ktav_format`)、`ktav_free`、
-`ktav_version` 与 `ktav_abi_version`。每个错误都以九字段 JSON
+`ktav_emit_canonical`、`ktav_format`、
+`ktav_canonical_from_source`)、`ktav_free`、`ktav_version`
+与 `ktav_abi_version`。每个错误都以十字段 JSON
 信封传递,宿主无需嗅探它是纯文本还是 JSON;`ktav_abi_version()`
 让宿主拒绝过期的原生库而不是破坏内存。完整契约——签名、所有权、
 错误编码、产物命名约定(`ktav_cabi-windows-amd64.dll`、

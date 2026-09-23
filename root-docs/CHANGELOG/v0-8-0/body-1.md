@@ -1,5 +1,5 @@
 >>>>> lang=en
-## [0.8.0] — 2026-09-22
+## [0.8.0] — 2026-09-23
 
 Two things ship together. A decimal with a redundant leading zero no
 longer infers a number — `zip: 01234` parses to the String
@@ -31,7 +31,7 @@ is purely additive and off by default, so a default build still pulls no
   `LossyScalar` for these forms, since nothing is lost any more.
 
 >>>>> lang=ru
-## [0.8.0] — 2026-09-22
+## [0.8.0] — 2026-09-23
 
 Выходят две вещи вместе. Десятичное число с избыточным ведущим нулём
 больше не выводится как число — `zip: 01234` разбирается в String
@@ -64,7 +64,7 @@ is purely additive and off by default, so a default build still pulls no
   уже нечего.
 
 >>>>> lang=zh
-## [0.8.0] —— 2026-09-22
+## [0.8.0] —— 2026-09-23
 
 本次发布同时带来两件事。带冗余前导零的十进制数不再被推断为数字 ——
 `zip: 01234` 解析为 String `"01234"`,而不是 `Integer(1234)` ——

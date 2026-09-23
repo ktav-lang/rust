@@ -10,7 +10,7 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
-## [0.8.0] — 2026-09-22
+## [0.8.0] — 2026-09-23
 
 Two things ship together. A decimal with a redundant leading zero no
 longer infers a number — `zip: 01234` parses to the String
@@ -120,6 +120,35 @@ is purely additive and off by default, so a default build still pulls no
   received `{"error":"Message"}` plus eight nulls instead of the
   diagnostic. No shipped consumer can regress — the envelope has never
   shipped in any binding.
+
+### Performance
+
+Measured with callgrind instruction counts, not wall-clock benchmarks —
+criterion's confidence intervals were noise-dominated on this host even
+under CPU-affinity restriction, while callgrind counts are deterministic
+per input regardless of what else the machine is doing
+(`examples/callgrind_writers.rs`, run under valgrind in WSL). Per call,
+before → after: `emit_canonical` −40%, `render` −36%,
+`to_string_force_strings` −57%, `format_str` −25%. Each figure holds
+flat across three orders of magnitude of document size — the signature
+of removed per-node work, not a shifted constant — and `parse` itself
+is untouched (agrees to 0.002%).
+
+- Every writer opened by walking the whole `Value` through
+  `check_representable` before emitting a byte, even though each writer
+  already discards its buffer on rejection by construction — that
+  guarantee comes from assembling into a local buffer, not from the
+  pre-pass. The check now happens at the point of emission, and the
+  cold path re-walks only to name the offending key once a rejection
+  has already happened.
+- The formatter paid the most: `emit_formatted` materialised an entire
+  throw-away `Value` tree — a fresh map per object, every key and
+  scalar cloned — purely to hand `check_representable` an argument of
+  the right type. That tree is now built only after a failure.
+- `to_string_force_strings` no longer deep-clones the document; a
+  `force_strings` flag reaches the leaf emitters directly.
+- `benches/emit.rs` adds the criterion coverage `emit_canonical`,
+  `render` and `to_string_force_strings` never had.
 
 ## [0.7.1] — 2026-09-16
 
