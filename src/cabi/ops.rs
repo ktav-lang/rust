@@ -3,7 +3,7 @@ use super::wire::{value_to_json, wire_to_value};
 
 /// Parse Ktav source text bytes into a JSON wire document.
 pub fn loads(src: &[u8]) -> Result<Vec<u8>, String> {
-    let input = std::str::from_utf8(src).map_err(not_utf8_envelope)?;
+    let input = std::str::from_utf8(src).map_err(|e| not_utf8_envelope(src, e))?;
     let value = crate::parse(input).map_err(|err| envelope(&err, input))?;
     let json = value_to_json(&value);
     serde_json::to_vec(&json)
@@ -13,7 +13,7 @@ pub fn loads(src: &[u8]) -> Result<Vec<u8>, String> {
 /// Like [`loads`], but with strict scalar inference: lossy numeric
 /// literals (`1.10`, `+1`) are rejected instead of normalized.
 pub fn loads_strict(src: &[u8]) -> Result<Vec<u8>, String> {
-    let input = std::str::from_utf8(src).map_err(not_utf8_envelope)?;
+    let input = std::str::from_utf8(src).map_err(|e| not_utf8_envelope(src, e))?;
     let value = crate::parse_strict(input).map_err(|err| envelope(&err, input))?;
     let json = value_to_json(&value);
     serde_json::to_vec(&json)
@@ -47,7 +47,7 @@ pub fn emit_canonical(src: &[u8]) -> Result<Vec<u8>, String> {
 /// JSON wire value. Formatting preserves comments and blank-line
 /// grouping and is a fixed point: `format(format(x)) == format(x)`.
 pub fn format(src: &[u8]) -> Result<Vec<u8>, String> {
-    let input = std::str::from_utf8(src).map_err(not_utf8_envelope)?;
+    let input = std::str::from_utf8(src).map_err(|e| not_utf8_envelope(src, e))?;
     let text = crate::format_str(input).map_err(|err| envelope(&err, input))?;
     Ok(text.into_bytes())
 }
@@ -68,7 +68,7 @@ pub fn format(src: &[u8]) -> Result<Vec<u8>, String> {
 /// check failed on ten float fixtures, and the Go one by the same
 /// reasoning — which is why it belongs here rather than in either.
 pub fn canonical_from_source(src: &[u8]) -> Result<Vec<u8>, String> {
-    let input = std::str::from_utf8(src).map_err(not_utf8_envelope)?;
+    let input = std::str::from_utf8(src).map_err(|e| not_utf8_envelope(src, e))?;
     let value = crate::parse(input).map_err(|err| envelope(&err, input))?;
     let text = crate::render::emit_canonical(&value).map_err(|err| envelope(&err, input))?;
     Ok(text.into_bytes())

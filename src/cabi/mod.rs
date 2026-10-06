@@ -44,7 +44,12 @@
 //! sniff plain text vs JSON. For operations whose input was Ktav source
 //! text the source is passed, so `line_text` populates; for the
 //! JSON-input family an empty source is passed and the envelope emits
-//! honest nulls.
+//! honest nulls. A source-bytes operation whose input is not valid
+//! UTF-8 reports `InvalidUtf8`, not `Message` (spec § 6.15): the line
+//! counts LF / lone CR / CRLF terminators over the raw bytes before BOM
+//! removal, the span covers the offending sequence (through end-of-input
+//! when it is truncated at EOF), and an EOF-detected `UnclosedCompound`
+//! gets its line derived from the opener span.
 //!
 //! # [`ABI_VERSION`]
 //!

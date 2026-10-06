@@ -6,5 +6,11 @@ mod format_canonical_equivalence;
 mod format_cli;
 #[path = "format/format_comments_preserved.rs"]
 mod format_comments_preserved;
+#[path = "format/format_explicit_root_unclosed.rs"]
+mod format_explicit_root_unclosed;
+
 #[path = "format/format_idempotent.rs"]
 mod format_idempotent;
+
+#[path = "format/format_scalar_prefix_case.rs"]
+mod format_scalar_prefix_case;

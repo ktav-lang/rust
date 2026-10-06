@@ -404,6 +404,74 @@ fn parse_top_level_explicit_array() {
     assert_eq!(arr[1], Value::String("bar".into()));
 }
 
+// --- explicit root left open at EOF (spec § 6.1; review finding F2) --------
+
+fn expect_unclosed_root(src: &str, kind: crate::error::CompoundKind, start: u32, end: u32) {
+    let err = crate::parse(src).unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::UnclosedCompound { kind: k, span }) => {
+            assert_eq!(k, kind, "kind mismatch for {src:?}");
+            assert_eq!(
+                span,
+                crate::error::Span::new(start, end),
+                "span mismatch for {src:?}"
+            );
+        }
+        other => panic!("expected UnclosedCompound for {src:?}, got: {}", other),
+    }
+}
+
+#[test]
+fn parse_explicit_root_unclosed_at_eof_is_error() {
+    expect_unclosed_root("{", crate::error::CompoundKind::Object, 0, 1);
+    expect_unclosed_root("[", crate::error::CompoundKind::Array, 0, 1);
+    expect_unclosed_root("{\n", crate::error::CompoundKind::Object, 0, 2);
+    expect_unclosed_root("[\r\n", crate::error::CompoundKind::Array, 0, 3);
+    expect_unclosed_root("{\na: 1\n", crate::error::CompoundKind::Object, 0, 7);
+    expect_unclosed_root("[\n1\n2\n", crate::error::CompoundKind::Array, 0, 6);
+    // Inner compound closed, root still open at EOF: the error names the root.
+    expect_unclosed_root(
+        "{\na: {\n    b: 1\n}\n",
+        crate::error::CompoundKind::Object,
+        0,
+        18,
+    );
+}
+
+#[test]
+fn parse_explicit_root_closed_forms_still_parse() {
+    crate::parse("{\n}\n").unwrap();
+    crate::parse("[\n]\n").unwrap();
+    let v = crate::parse("{\na: 1\n}\n").unwrap();
+    let obj = v.as_object().unwrap();
+    assert_eq!(obj.get("a"), Some(&Value::Integer("1".into())));
+    crate::parse("{a: 1}").unwrap(); // inline root needs no closer line
+    crate::parse("").unwrap(); // empty document
+    crate::parse("## only a comment\n").unwrap(); // comments-only document
+}
+
+#[test]
+fn parse_explicit_root_pins_after_close() {
+    // After a CLOSED explicit root, trailing content keeps its existing
+    // orphan error; the EOF fix must not change that priority.
+    let err = crate::parse("{\n}\nextra: 1\n").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::OrphanLineAfterTopLevelInline {
+            line, ..
+        }) => {
+            assert_eq!(line, 3);
+        }
+        other => panic!("expected OrphanLineAfterTopLevelInline, got: {}", other),
+    }
+    // A mismatched closer stays UnbalancedBracket, not UnclosedCompound.
+    let err = crate::parse("{\n]\n").unwrap_err();
+    match err {
+        crate::Error::Structured(crate::ErrorKind::UnbalancedBracket { line, .. }) => {
+            assert_eq!(line, 2);
+        }
+        other => panic!("expected UnbalancedBracket, got: {}", other),
+    }
+}
 #[test]
 fn parse_orphan_after_top_level_inline() {
     let err = crate::parse("{a: 1}\norphan: line").unwrap_err();

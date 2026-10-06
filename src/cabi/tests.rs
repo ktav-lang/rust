@@ -1,3 +1,4 @@
+use super::envelope::line_of_offset;
 use super::*;
 use crate::value::Value;
 use serde_json::Value as Json;
@@ -26,6 +27,17 @@ mod tests {
             ]
         );
         v
+    }
+
+    /// § 3.2/§ 6.15 witness: multibyte content, CRLF terminators, then a
+    /// lone continuation byte at offset 33 of 34 (physical line 3).
+    fn multibyte_crlf_bad() -> Vec<u8> {
+        let mut src = Vec::new();
+        src.extend_from_slice(b"name: ");
+        src.extend_from_slice("שלום".as_bytes());
+        src.extend_from_slice(b"\r\nport: 8080\r\nbad: ");
+        src.push(0x80);
+        src
     }
 
     #[test]
@@ -98,7 +110,14 @@ mod tests {
     fn loads_reports_envelope_on_invalid_utf8() {
         let err = loads(&[0xFF, 0xFE]).unwrap_err();
         let v = envelope_json(&err);
-        assert_eq!(v["error"], "Message");
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["spec_section"], "§6.15");
+        // No terminators, first invalid byte at 0: raw line 1.
+        assert_eq!(v["line"], 1);
+        assert!(v["line_text"].is_null());
+        // 0xFF is a 1-byte invalid sequence at offset 0.
+        assert_eq!(v["span"]["start"], 0);
+        assert_eq!(v["span"]["end"], 1);
         assert!(
             v["body"]
                 .as_str()
@@ -107,9 +126,130 @@ mod tests {
             "body = {:?}",
             v["body"]
         );
-        assert!(v["line"].is_null());
+        assert!(
+            v["message"].as_str().unwrap().starts_with("InvalidUtf8"),
+            "message = {:?}",
+            v["message"]
+        );
+    }
+
+    #[test]
+    fn loads_strict_reports_invalid_utf8_envelope() {
+        let err = loads_strict(&multibyte_crlf_bad()).unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["line"], 3);
         assert!(v["line_text"].is_null());
-        assert!(v["span"].is_null());
+        assert_eq!(v["span"]["start"], 33);
+        assert_eq!(v["span"]["end"], 34);
+        assert_eq!(v["spec_section"], "§6.15");
+    }
+
+    #[test]
+    fn format_reports_invalid_utf8_envelope() {
+        let err = format(&multibyte_crlf_bad()).unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["line"], 3);
+        assert!(v["line_text"].is_null());
+        assert_eq!(v["span"]["start"], 33);
+        assert_eq!(v["span"]["end"], 34);
+    }
+
+    #[test]
+    fn canonical_from_source_reports_invalid_utf8_envelope() {
+        let err = canonical_from_source(&multibyte_crlf_bad()).unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["line"], 3);
+        assert_eq!(v["span"]["start"], 33);
+        assert_eq!(v["span"]["end"], 34);
+    }
+
+    /// A truncated 3-byte sequence (E1 80) at end of input: error_len is
+    /// None, so the span must reach EOF and stay non-empty. The bad bytes
+    /// start after the line-1 terminator, on line 2.
+    #[test]
+    fn loads_invalid_utf8_truncated_sequence_spans_to_eof() {
+        let src: &[u8] = b"a: 1\n\xE1\x80";
+        let err = loads(src).unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["line"], 2);
+        assert_eq!(v["span"]["start"], 5);
+        assert_eq!(v["span"]["end"], src.len());
+        assert!(v["span"]["start"].as_u64().unwrap() < v["span"]["end"].as_u64().unwrap());
+    }
+
+    /// E1 80 interrupted by ASCII 'A': error_len is Some(2), span covers
+    /// exactly the two bad bytes.
+    #[test]
+    fn loads_invalid_utf8_interrupted_sequence() {
+        let err = loads(b"a: \xE1\x80\x41\n").unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["line"], 1);
+        assert_eq!(v["span"]["start"], 3);
+        assert_eq!(v["span"]["end"], 5);
+    }
+
+    /// C0 AF is an overlong encoding; C0 is an illegal lead byte, the
+    /// sequence is 2 bytes long.
+    #[test]
+    fn loads_invalid_utf8_overlong_two_byte() {
+        let err = loads(b"a: \xC0\xAF\n").unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["line"], 1);
+        assert_eq!(v["span"]["start"], 3);
+        assert_eq!(v["span"]["end"], 5);
+    }
+
+    /// A leading BOM (never skipped for raw diagnostics) and lone CR
+    /// terminators: bytes are EF BB BF "a: 1" CR "b: 2" CR 80 CR "c: 3";
+    /// the 0x80 is at offset 13 on the third physical line.
+    #[test]
+    fn loads_invalid_utf8_after_bom_and_lone_cr() {
+        let src: &[u8] = b"\xEF\xBB\xBFa: 1\rb: 2\r\x80\rc: 3";
+        let err = loads(src).unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_eq!(v["line"], 3);
+        assert_eq!(v["span"]["start"], 13);
+        assert_eq!(v["span"]["end"], 14);
+    }
+
+    /// § 6.15: UTF-8 validation happens before any grammar-level
+    /// processing, so a prefix that also violates the grammar (the bare
+    /// line `just-some-text` would be MissingSeparator) still reports
+    /// InvalidUtf8 for the bad byte on line 3.
+    #[test]
+    fn invalid_utf8_beats_grammar_error_in_valid_prefix() {
+        let err = loads(b"anchor: ok\njust-some-text\na: \x80").unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "InvalidUtf8");
+        assert_ne!(v["error"], "MissingSeparator");
+        assert_eq!(v["line"], 3);
+        assert_eq!(v["span"]["start"], 29);
+        assert_eq!(v["span"]["end"], 30);
+    }
+
+    /// § 6: an EOF-detected UnclosedCompound carries a span (the opener
+    /// through EOF) but no line in the Error accessors; through the C ABI
+    /// the envelope must derive the 1-based opener line from the span.
+    #[test]
+    fn loads_reports_line_for_unclosed_compound_at_eof() {
+        let err = loads(b"a: {\n").unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "UnclosedCompound");
+        assert_eq!(v["line"], 1);
+        assert!(v["span"].is_object());
+        assert_eq!(v["line_text"], "a: {");
+
+        let err = loads(b"x: 1\nobj: {\n").unwrap_err();
+        let v = envelope_json(&err);
+        assert_eq!(v["error"], "UnclosedCompound");
+        assert_eq!(v["line"], 2);
     }
 
     #[test]
@@ -339,5 +479,61 @@ mod tests {
             &VERSION_BYTES[..VERSION_BYTES.len() - 1],
             env!("CARGO_PKG_VERSION").as_bytes()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // line_of_offset: the raw-byte line counter (§ 3.2 / § 6.15)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn line_of_offset_empty_and_no_terminator() {
+        assert_eq!(line_of_offset(b"", 0), 1);
+        assert_eq!(line_of_offset(b"abc", 0), 1);
+        // == len: still the (only) line
+        assert_eq!(line_of_offset(b"abc", 3), 1);
+        // Beyond the end clamps to the end.
+        assert_eq!(line_of_offset(b"abc", 99), 1);
+    }
+
+    #[test]
+    fn line_of_offset_counts_lf_cr_crlf_as_one_terminator() {
+        // LF: an offset AT the terminator belongs to the line it closes.
+        assert_eq!(line_of_offset(b"a\nb", 1), 1);
+        assert_eq!(line_of_offset(b"a\nb", 2), 2);
+        // Lone CR, same rule.
+        assert_eq!(line_of_offset(b"a\rb", 1), 1);
+        assert_eq!(line_of_offset(b"a\rb", 2), 2);
+        // CRLF is ONE terminator: the LF byte is still on line 1.
+        assert_eq!(line_of_offset(b"a\r\nb", 1), 1);
+        assert_eq!(line_of_offset(b"a\r\nb", 2), 1);
+        assert_eq!(line_of_offset(b"a\r\nb", 3), 2);
+    }
+
+    #[test]
+    fn line_of_offset_mixed_terminators() {
+        // a \n \r\n \r b: lines are "a", "", "", "b".
+        let src = b"a\n\r\n\rb";
+        assert_eq!(line_of_offset(src, 0), 1);
+        // The CR of the CRLF closes line 2.
+        assert_eq!(line_of_offset(src, 2), 2);
+        // The lone CR closes line 3.
+        assert_eq!(line_of_offset(src, 4), 3);
+        assert_eq!(line_of_offset(src, 5), 4);
+    }
+
+    #[test]
+    fn line_of_offset_after_final_terminator_and_over_bom() {
+        // An offset after the final terminator starts the next (empty)
+        // line.
+        assert_eq!(line_of_offset(b"a\n", 2), 2);
+        assert_eq!(line_of_offset(b"a\r\n", 3), 2);
+        // The LF byte of a final CRLF is still line 1.
+        assert_eq!(line_of_offset(b"a\r\n", 2), 1);
+        // A leading BOM is never skipped: its bytes are ordinary line-1
+        // content, and the terminator after them is counted at its raw
+        // position.
+        assert_eq!(line_of_offset(b"\xEF\xBB\xBFa\nb", 1), 1);
+        assert_eq!(line_of_offset(b"\xEF\xBB\xBFa\nb", 5), 2);
+        assert_eq!(line_of_offset(b"\xEF\xBB\xBF\n", 4), 2);
     }
 }

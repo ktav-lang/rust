@@ -249,7 +249,9 @@ fn parse_success_implies_grammar_match() {
         "0x_1",
         "0x1_",
         "0xA__B",
-        // base prefixes, upper and lower, signed, and the empty-digit forms
+        // base prefixes, signed, and the empty-digit forms. The uppercase
+        // spellings are Strings per § 5.2 rule 13 — negative controls
+        // walking the arms that must reject them.
         "0xFF",
         "0x1a",
         "-0x10",
@@ -430,6 +432,98 @@ fn parse_strict_negative_prefixed_i64_min() {
     match err {
         crate::error::Error::Structured(crate::error::ErrorKind::LossyScalar { body, .. }) => {
             assert_eq!(body, "-0x8000000000000000");
+        }
+        other => panic!("expected LossyScalar, got {other:?}"),
+    }
+}
+
+// --- § 3.6 / § 5.2 rule 13: base prefixes are lowercase-only ----------------
+
+/// § 3.6 spells the base prefixes `0x` / `0o` / `0b` only, and § 5.2 rule
+/// 13 matches numeric literals case-sensitively, so every
+/// uppercase-prefixed body — signed or not, digits or none — is outside
+/// the integer grammar.
+#[test]
+fn uppercase_base_prefixes_do_not_parse_as_integers() {
+    for s in ["0X1A", "0O17", "0B101", "-0XFF", "+0XFF", "0X", "0O", "0B"] {
+        assert_eq!(try_parse_integer(s), None, "{s:?} must not be an Integer");
+    }
+    // Controls: lowercase prefixes, and uppercase hex DIGITS after a
+    // lowercase prefix, stay numeric.
+    assert_eq!(try_parse_integer("0x1A"), Some(26));
+    assert_eq!(try_parse_integer("0o17"), Some(15));
+    assert_eq!(try_parse_integer("0b101"), Some(5));
+    assert_eq!(try_parse_integer("0xAB"), Some(171));
+    assert_eq!(try_parse_integer("0xDEADbeef"), Some(3_735_928_559));
+}
+
+/// The writer predicate must agree: a bare `0X1A` re-parses as that same
+/// String, so the renderer must not force `::` onto it.
+#[test]
+fn uppercase_base_prefixes_do_not_match_integer_grammar() {
+    for s in ["0X1A", "0O17", "0B101", "-0XFF", "+0XFF", "0X", "0O", "0B"] {
+        assert!(
+            !crate::parser::classify::matches_integer_grammar(s),
+            "{s:?}: grammar match would force a needless `::`"
+        );
+    }
+    assert!(crate::parser::classify::matches_integer_grammar("0x1A"));
+    assert!(crate::parser::classify::matches_integer_grammar("0xAB"));
+}
+
+/// End to end: § 5.2 rule 15 keeps the body exactly as written — in
+/// pairs, inline Array items, and bare top-level Array items.
+#[test]
+fn uppercase_prefixes_parse_as_strings_end_to_end() {
+    let v = crate::parse("x: 0X1A").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("x"),
+        Some(&Value::String("0X1A".into()))
+    );
+    let v = crate::parse("x: -0XFF").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("x"),
+        Some(&Value::String("-0XFF".into()))
+    );
+    let v = crate::parse("mixed: [0X1A, 0x1A, 0B1, 0b1]").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("mixed"),
+        Some(&Value::Array(vec![
+            Value::String("0X1A".into()),
+            Value::Integer("26".into()),
+            Value::String("0B1".into()),
+            Value::Integer("1".into()),
+        ]))
+    );
+    let v = crate::parse("[\n0X1A\n0x1A\n]").unwrap();
+    assert_eq!(
+        v,
+        Value::Array(vec![
+            Value::String("0X1A".into()),
+            Value::Integer("26".into()),
+        ])
+    );
+}
+
+/// Strict mode has nothing to lose on an uppercase prefix — the body is a
+/// String, so no LossyScalar may fire — while the lowercase control keeps
+/// firing exactly as before.
+#[test]
+fn strict_accepts_uppercase_prefixes_and_still_rejects_lowercase() {
+    let v = crate::parse_strict("x: 0X1A").unwrap();
+    assert_eq!(
+        v.as_object().unwrap().get("x"),
+        Some(&Value::String("0X1A".into()))
+    );
+    let err = crate::parse_strict("x: 0x1A").unwrap_err();
+    match err {
+        crate::error::Error::Structured(crate::error::ErrorKind::LossyScalar {
+            body,
+            canonical,
+            ..
+        }) => {
+            assert_eq!(body, "0x1A");
+            assert_eq!(canonical, "26");
         }
         other => panic!("expected LossyScalar, got {other:?}"),
     }

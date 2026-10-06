@@ -272,12 +272,15 @@ pub(crate) fn try_parse_integer(s: &str) -> Option<i64> {
         return None; // sign only
     }
 
-    // Check for base prefix
+    // Check for base prefix. § 3.6 spells the prefixes lowercase only
+    // and § 5.2 rule 13 matches numeric literals case-sensitively, so
+    // `0X1A` / `0O17` / `0B101` must fall through to the decimal scan
+    // (which rejects them) and on to String.
     if bytes[i] == b'0' && i + 1 < bytes.len() {
         match bytes[i + 1] {
-            b'x' | b'X' => return parse_prefixed_int(&bytes[i + 2..], 16, negative),
-            b'o' | b'O' => return parse_prefixed_int(&bytes[i + 2..], 8, negative),
-            b'b' | b'B' => return parse_prefixed_int(&bytes[i + 2..], 2, negative),
+            b'x' => return parse_prefixed_int(&bytes[i + 2..], 16, negative),
+            b'o' => return parse_prefixed_int(&bytes[i + 2..], 8, negative),
+            b'b' => return parse_prefixed_int(&bytes[i + 2..], 2, negative),
             _ => {}
         }
     }
@@ -615,12 +618,14 @@ fn matches_integer_grammar_syntax(s: &str) -> bool {
     if i >= bytes.len() {
         return false;
     }
-    // Check for base prefix
+    // Check for base prefix — lowercase only, mirroring `try_parse_integer`
+    // above: the writer must not force `::` onto a String like `0X1A`,
+    // because a bare `0X1A` re-parses as that same String.
     if bytes[i] == b'0' && i + 1 < bytes.len() {
         match bytes[i + 1] {
-            b'x' | b'X' => return check_prefixed_digits(&bytes[i + 2..], 16),
-            b'o' | b'O' => return check_prefixed_digits(&bytes[i + 2..], 8),
-            b'b' | b'B' => return check_prefixed_digits(&bytes[i + 2..], 2),
+            b'x' => return check_prefixed_digits(&bytes[i + 2..], 16),
+            b'o' => return check_prefixed_digits(&bytes[i + 2..], 8),
+            b'b' => return check_prefixed_digits(&bytes[i + 2..], 2),
             _ => {}
         }
     }

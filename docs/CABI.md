@@ -124,7 +124,12 @@ serde_json failures and the top-level check, which are wrapped as
 `body` carries the `Message`/`Syntax` payload verbatim. When the input
 was a JSON wire value, the source passed to the envelope is empty and
 the position fields are honest nulls; when the input was Ktav source
-text, `line`, `line_text` and `span` populate.
+text, `line`, `line_text` and `span` populate. Source text that is not
+valid UTF-8 reports `InvalidUtf8` (spec § 6.15), never `Message`: `line`
+counts LF / lone CR / CRLF terminators over the raw bytes before BOM
+removal, `span` covers the offending sequence — through end-of-input
+when the sequence is truncated at EOF — and an EOF-detected
+`UnclosedCompound` carries the line derived from its opener span.
 
 ## Operation semantics
 

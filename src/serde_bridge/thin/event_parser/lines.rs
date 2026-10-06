@@ -121,6 +121,21 @@ impl<'a> EventParser<'a> {
                 span: Span::new(start, eof_offset),
             }));
         }
+        // Spec § 6.1: an explicit root (§ 5.0.1 rules 4-5) left open
+        // at EOF is an `UnclosedCompound` -- unlike an implicit root it
+        // does NOT EOF-close. A deeper unclosed child was already
+        // reported by the `stack.len() > 1` branch above.
+        if self.root_is_explicit_compound && !self.root_consumed {
+            let kind = match self.stack.last().unwrap() {
+                Frame::Object { .. } => CompoundKind::Object,
+                Frame::Array => CompoundKind::Array,
+            };
+            let start = *self.opener_offsets.last().unwrap();
+            return Err(Error::Structured(ErrorKind::UnclosedCompound {
+                kind,
+                span: Span::new(start, eof_offset),
+            }));
+        }
         // § 5.0.1 rules 2-3: an inline root's events were already
         // emitted at line 1; rules 4-5: a closed explicit root's End
         // event was emitted by `close_frame`. Nothing more to emit.
@@ -133,9 +148,9 @@ impl<'a> EventParser<'a> {
         }
         // Close all synthetics still open in the root frame (only
         // applies to Object roots), then emit the matching close
-        // event for whichever kind the root was. An explicit root
-        // opened but never closed EOF-closes identically to an
-        // implicit root (mirrors owned parser finish()).
+        // event for whichever kind the root was. Reaching here with a
+        // frame left means an IMPLICIT root -- an explicit root still
+        // open at EOF was rejected above (spec § 6.1).
         match self.stack.last() {
             Some(Frame::Object { .. }) => {
                 self.close_synthetics_until(0, events);

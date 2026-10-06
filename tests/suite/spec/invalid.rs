@@ -153,3 +153,63 @@ fn invalid_fixtures_categories_match_oracles_via_thin_api() {
         invalid_utf8
     );
 }
+
+#[test]
+fn invalid_fixtures_are_rejected_by_format_str() {
+    let Some(spec_root) = resolve_spec_root() else {
+        eprintln!("skipping spec_conformance::invalid (format_str): spec dir not found");
+        return;
+    };
+    let fixtures = collect_invalid_fixtures(&spec_root);
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut skipped_non_utf8 = 0;
+
+    for fixture in &fixtures {
+        // `format_str` takes `&str`, so byte-level spec 6.15 fixtures are
+        // outside its domain -- covered by `from_file` in the owned-API
+        // runner above.
+        let Ok(text) = std::str::from_utf8(&fixture.bytes) else {
+            skipped_non_utf8 += 1;
+            continue;
+        };
+        match ktav::format_str(text) {
+            Ok(_) => failures.push(format!(
+                "format_str accepted invalid fixture {}, expected {} rejection",
+                fixture.rel, fixture.expected
+            )),
+            Err(e) => match &e {
+                ktav::Error::Structured(kind) => {
+                    let actual = kind.code_name();
+                    if actual != fixture.expected {
+                        failures.push(format!(
+                            "invalid fixture {}: format_str category {}, expected {} ({})",
+                            fixture.rel, actual, fixture.expected, e
+                        ));
+                    }
+                }
+                other => failures.push(format!(
+                    "invalid fixture {}: format_str returned non-structured error: {}",
+                    fixture.rel, other
+                )),
+            },
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "{} of {} invalid fixture(s) failed (format_str):\n{}",
+            failures.len(),
+            fixtures.len() - skipped_non_utf8,
+            failures.join(
+                "
+"
+            )
+        );
+    }
+    eprintln!(
+        "spec_conformance::invalid (format_str): {} fixtures rejected with matching categories ({} invalid-UTF-8 fixtures are byte-entry-only)",
+        fixtures.len() - skipped_non_utf8,
+        skipped_non_utf8
+    );
+}

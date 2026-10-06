@@ -89,6 +89,22 @@ impl<'a> Parser<'a> {
                 span: Span::new(start, eof_offset),
             }));
         }
+        // Spec § 6.1: an explicit root (§ 5.0.1 rules 4-5) left open
+        // at EOF is an `UnclosedCompound`. The guard must be "explicit
+        // root opened and not yet closed", not "a frame remains": an
+        // implicit root frame legitimately stays on the stack, and a
+        // closed explicit root keeps its frame with `root_consumed` set.
+        if self.root_is_explicit_compound && !self.root_consumed {
+            let kind = match self.stack.last().unwrap() {
+                Frame::Object { .. } => CompoundKind::Object,
+                Frame::Array { .. } => CompoundKind::Array,
+            };
+            let start = *self.opener_offsets.last().unwrap();
+            return Err(Error::Structured(ErrorKind::UnclosedCompound {
+                kind,
+                span: Span::new(start, eof_offset),
+            }));
+        }
         // If root was a top-level inline compound, return the stored value.
         if let Some(v) = self.root_inline_value {
             return Ok(v);

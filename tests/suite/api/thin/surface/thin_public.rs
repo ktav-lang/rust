@@ -367,3 +367,46 @@ fn float_negative_underflow_is_negative_zero_event() {
         ]
     );
 }
+
+/// Spec § 3.6 / § 5.2 rule 13: base prefixes are lowercase-only, so the
+/// thin path must emit `0X1A` as a String event and never deserialize it
+/// into an integer field; the lowercase control stays an Integer.
+#[test]
+fn thin_uppercase_prefix_is_string_not_integer() {
+    assert_eq!(
+        collect("x: 0X1A"),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("x".into()),
+            Owned::Str("0X1A".into()),
+            Owned::EndObject,
+        ]
+    );
+    assert_eq!(
+        collect("x: 0x1A"),
+        vec![
+            Owned::BeginObject,
+            Owned::Key("x".into()),
+            Owned::Integer("26".into()),
+            Owned::EndObject,
+        ]
+    );
+
+    #[derive(serde::Deserialize)]
+    struct StrField {
+        x: String,
+    }
+    let s: StrField = ktav::from_str("x: 0X1A").unwrap();
+    assert_eq!(s.x, "0X1A");
+
+    // A typed integer field must refuse the uppercase form: the event
+    // stream hands serde a String where an integer was promised.
+    #[derive(Debug, serde::Deserialize)]
+    struct IntField {
+        x: i64,
+    }
+    ktav::from_str::<IntField>("x: 0X1A").unwrap_err();
+
+    let i: IntField = ktav::from_str("x: 0x1A").unwrap();
+    assert_eq!(i.x, 26);
+}

@@ -107,6 +107,22 @@ impl<'a> PositionedParser<'a> {
             }));
         }
 
+        // Spec § 6.1: an explicit root (§ 5.0.1 rules 4-5) left open
+        // at EOF is an `UnclosedCompound`. Not "a frame remains":
+        // implicit roots legitimately keep theirs, and a closed
+        // explicit root keeps its frame with `root_consumed` set.
+        if self.root_is_explicit_compound && !self.root_consumed {
+            let kind = match self.stack.last().unwrap() {
+                PFrame::Object { .. } => CompoundKind::Object,
+                PFrame::Array { .. } => CompoundKind::Array,
+            };
+            let start = *self.opener_offsets.last().unwrap();
+            return Err(Error::Structured(ErrorKind::UnclosedCompound {
+                kind,
+                span: Span::new(start, eof_offset),
+            }));
+        }
+
         let eof_trivia = trim_trailing_blanks(std::mem::take(&mut self.pending_trivia));
 
         if let Some(mut v) = self.root_inline_value.take() {

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use ktav::error::ErrorKind;
 use ktav::thin::{parse_events, ParseEvent};
-use ktav::Error;
+use ktav::{CompoundKind, Error, Span};
 
 #[derive(Debug, PartialEq)]
 enum Ev {
@@ -172,19 +172,60 @@ fn bare_closer_first_line_is_unbalanced() {
 }
 
 #[test]
-fn explicit_root_unclosed_at_eof_closes_like_implicit() {
+fn explicit_root_unclosed_at_eof_is_unclosed_compound() {
+    // Spec § 6.1: an explicit root (§ 5.0.1 rules 4-5) left open at
+    // EOF is an `UnclosedCompound` in every parser family -- the thin
+    // event stream, the owned parser, and serde `from_str` alike.
+    let err = collect("{\n    a: 1\n").unwrap_err();
+    match &err {
+        Error::Structured(ErrorKind::UnclosedCompound { kind, span }) => {
+            assert_eq!(*kind, CompoundKind::Object);
+            assert_eq!(*span, Span::new(0, 11)); // opener `{` .. EOF
+        }
+        other => panic!("expected UnclosedCompound, got {other:?}"),
+    }
+    code_name("{\n    a: 1\n", "UnclosedCompound");
+    assert!(ktav::from_str::<HashMap<String, i64>>("{\n    a: 1\n").is_err());
+}
+
+#[test]
+fn explicit_root_unclosed_at_eof_matrix_thin() {
+    let cases: &[(&str, CompoundKind)] = &[
+        ("{", CompoundKind::Object),
+        ("[", CompoundKind::Array),
+        ("{\n", CompoundKind::Object),
+        ("[\r\n", CompoundKind::Array),
+        ("{\na: 1\n", CompoundKind::Object),
+        ("[\n1\n2\n", CompoundKind::Array),
+        // Inner compound closed, root still open at EOF.
+        ("{\na: {\n    b: 1\n}\n", CompoundKind::Object),
+    ];
+    for &(src, kind) in cases {
+        let err = match collect(src) {
+            Ok(_) => panic!("thin accepted unclosed explicit root {src:?}"),
+            Err(e) => e,
+        };
+        match &err {
+            Error::Structured(ErrorKind::UnclosedCompound { kind: k, .. }) => {
+                assert_eq!(*k, kind, "kind mismatch for {src:?}");
+            }
+            other => panic!("expected UnclosedCompound for {src:?}, got {other:?}"),
+        }
+        // The owned parser must agree on the category.
+        code_name(src, "UnclosedCompound");
+    }
+}
+
+#[test]
+fn explicit_root_closed_forms_still_stream_thin() {
     assert_eq!(
-        collect("{\n    a: 1\n").unwrap(),
-        vec![
-            Ev::BeginObject,
-            Ev::Key("a".into()),
-            Ev::Integer("1".into()),
-            Ev::EndObject
-        ]
+        collect("{\n}\n").unwrap(),
+        vec![Ev::BeginObject, Ev::EndObject]
     );
-    assert!(ktav::parse("{\n    a: 1\n").is_ok());
-    let m: HashMap<String, i64> = ktav::from_str("{\n    a: 1\n").unwrap();
-    assert_eq!(m["a"], 1);
+    assert_eq!(
+        collect("[\n]\n").unwrap(),
+        vec![Ev::BeginArray, Ev::EndArray]
+    );
 }
 
 #[test]
