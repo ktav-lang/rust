@@ -10,6 +10,20 @@ the Cargo convention that a minor bump is breaking while pre-1.0.
 For the format specification's own history, see the
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) repository.
 
+## [0.8.1] — 2026-10-21
+
+### Fixed
+
+- Uppercase `0X` / `0O` / `0B` prefixes remain Strings, including signed and inline forms. Strict parsing accepts them as Strings, and formatting no longer rewrites them into numbers. Lowercase numeric prefixes and uppercase hex digits remain supported.
+- An explicit root left open at EOF is rejected as `UnclosedCompound` by the owned parser, thin parser and formatter. Closed explicit roots and implicit roots retain their behaviour.
+- C ABI source operations report `InvalidUtf8`, not `Message`, with a 1-based line counted over original bytes and a non-empty covering span. C ABI EOF errors with spans obtain the opener line.
+
+### Verification and compatibility
+
+- The pinned spec corpus includes 228 valid and 90 invalid fixtures. Invalid fixtures also exercise the formatter and C ABI; focused tests cover UTF-8 locations.
+- Public Rust error variants, exported signatures and C ABI version are unchanged. These are corrections to existing specification requirements, not new language rules.
+- **Known limitation:** direct Rust `InvalidUtf8` errors still have `line() == None` and an empty insertion-point span; direct EOF `UnclosedCompound` errors still lack a line. Public `ErrorEnvelope::from_error` preserves those accessor values. Tracked in [#15](https://github.com/ktav-lang/rust/issues/15). The corrected diagnostic locations apply to C ABI source operations; this release does not claim full diagnostic conformance of the direct Rust API.
+
 ## [0.8.0] — 2026-09-23
 
 Two things ship together. A decimal with a redundant leading zero no

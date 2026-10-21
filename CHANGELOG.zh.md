@@ -10,6 +10,20 @@
 格式规范自身的历史,请见
 [`ktav-lang/spec`](https://github.com/ktav-lang/spec) 仓库。
 
+## [0.8.1] — 2026-10-21
+
+### 修复
+
+- 大写 `0X` / `0O` / `0B` 前缀保持 String 类型，包括带符号和 inline 形式。严格解析将其作为 String 接受，格式化不再将其改写为数值。小写数值前缀和大写十六进制数字仍受支持。
+- Owned 解析器、thin 解析器和 formatter 将到 EOF 仍未闭合的显式根拒绝为 `UnclosedCompound`。已闭合显式根和隐式根的行为保持不变。
+- C ABI 源操作将无效 UTF-8 报告为 `InvalidUtf8`，而非 `Message`，并提供按原始字节计算的从 1 开始的行号及非空覆盖 span。带 span 的 C ABI EOF 错误获得开启符所在行。
+
+### 验证与兼容性
+
+- 固定的规范语料库包含 228 个 valid 和 90 个 invalid fixtures。Invalid fixtures 也覆盖 formatter 和 C ABI；专项测试覆盖 UTF-8 错误位置。
+- 公开 Rust 错误变体、导出签名和 C ABI 版本不变。这些修复落实已有规范要求，并非新增语言规则。
+- **已知限制：**直接 Rust `InvalidUtf8` 错误仍返回 `line() == None` 和空的插入点 span；直接 EOF `UnclosedCompound` 错误仍无行号。公开的 `ErrorEnvelope::from_error` 保留这些 accessor 值。后续工作见 [#15](https://github.com/ktav-lang/rust/issues/15)。修正后的诊断位置适用于 C ABI 源操作；本版本不声称直接 Rust API 完全符合诊断契约。
+
 ## [0.8.0] —— 2026-09-23
 
 本次发布同时带来两件事。带冗余前导零的十进制数不再被推断为数字 ——
