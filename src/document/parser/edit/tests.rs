@@ -99,7 +99,8 @@ fn nested_inline_compound() {
     let t = "a: {x: 1, y: [2, 3]}\n";
     let root = build(t).unwrap();
     let a = descend(&root, &["a"]);
-    assert!(a.inline, "a должен быть inline-узлом");
+    assert!(!a.inline, "a находится в строковой паре");
+    assert!(descend(&root, &["a", "x"]).inline);
     assert_eq!(pair_body(&root, t, &["a", "x"]), "1");
     let y = descend(&root, &["a", "y"]);
     assert!(y.inline);
