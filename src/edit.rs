@@ -85,7 +85,7 @@ pub enum EditError {
 /// ```
 pub fn edit_value(text: &str, path: &str, replacement: &Value) -> Result<String, EditError> {
     let segments = parse_path(path)?;
-    edit_value_segments(text, &segments, replacement)
+    crate::document::parser::edit::splice::apply(text, &segments, replacement)
 }
 
 /// [`edit_value`] with pre-decoded literal segments: no additional

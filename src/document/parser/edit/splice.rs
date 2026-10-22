@@ -7,6 +7,8 @@
 //! `Unsupported` ДО сплайса; совпадающее значение — byte-identical
 //! no-op. После патча — обязательная семантическая верификация.
 
+use std::fmt::Write as _;
+
 use crate::edit::EditError;
 use crate::render::helpers::{
     bare_item_is_pair_candidate, item_needs_raw_marker, needs_raw_marker, push_escaped_key_segment,
@@ -71,18 +73,15 @@ pub(crate) fn apply(
     let original_value = crate::parse(text).map_err(|e| EditError::Unsupported {
         reason: format!("source text does not parse: {e}"),
     })?;
+    let target = lookup_value(&original_value, segments).ok_or(EditError::NotFound)?;
+    if target == replacement {
+        return Ok(text.to_string());
+    }
     let (root, root_explicit) =
         tree::build_with_meta(text).map_err(|e| EditError::Unsupported {
             reason: format!("source text does not parse: {e}"),
         })?;
     let (node, ctx) = descend(&root, segments, root_explicit)?;
-
-    // No-op: целевое значение уже равно replacement — исходный текст
-    // возвращается дословно (лексика источника, комментарии и
-    // noncontiguous-слоты не трогаются).
-    if lookup_value(&original_value, segments) == Some(replacement) {
-        return Ok(text.to_string());
-    }
 
     let slot = node.slot().ok_or_else(|| EditError::Unsupported {
         reason: "target is a noncontiguous value (dotted-key/reopen intermediate); \
@@ -235,7 +234,12 @@ pub(crate) fn apply(
         });
     }
 
-    let mut result = String::with_capacity(text.len() + insertion.len());
+    let capacity = (text.len() - (b1 - from))
+        .checked_add(insertion.len())
+        .ok_or_else(|| EditError::Unsupported {
+            reason: "patched document length overflows usize".to_string(),
+        })?;
+    let mut result = String::with_capacity(capacity);
     result.push_str(&text[..from]);
     result.push_str(&insertion);
     result.push_str(&text[b1..]);
@@ -463,22 +467,20 @@ fn inline_body(replacement: &Value, force_string: bool) -> Result<String, EditEr
 /// тело получает String-провенанс через `\uXXXX` первого символа
 /// (escapes форсируют String; см. parse_inline_value_raw).
 fn encode_inline(s: &str, force_string: bool) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let last = chars.len().saturating_sub(1);
     let mut out = String::with_capacity(s.len() + 8);
-    // String-провенанс: первый символ — \uXXXX-escape (пустое тело
-    // декодируется в String и без него).
-    if force_string && !chars.is_empty() {
-        out.push_str(&format!("\\u{:04X}", chars[0] as u32));
-        for (i, &c) in chars.iter().enumerate().skip(1) {
-            encode_inline_char(&mut out, c, i, last);
-        }
-        return out;
-    }
-    for (i, &c) in chars.iter().enumerate() {
-        encode_inline_char(&mut out, c, i, last);
-    }
+    push_inline_string(s, force_string, &mut out);
     out
+}
+
+fn push_inline_string(s: &str, force_string: bool, out: &mut String) {
+    let last = s.char_indices().next_back().map_or(0, |(index, _)| index);
+    for (index, c) in s.char_indices() {
+        if force_string && index == 0 {
+            write!(out, "\\u{:04X}", c as u32).expect("writing to String cannot fail");
+        } else {
+            encode_inline_char(out, c, index, last);
+        }
+    }
 }
 
 fn encode_inline_char(out: &mut String, c: char, i: usize, last: usize) {
@@ -494,7 +496,7 @@ fn encode_inline_char(out: &mut String, c: char, i: usize, last: usize) {
         _ if (i == 0 || i == last) && is_ktav_whitespace(c) => {
             // Все члены § 3.3 ≤ U+3000 — четырёх hex-цифр хватает
             // (§ 3.7.1, uppercase).
-            out.push_str(&format!("\\u{:04X}", c as u32));
+            write!(out, "\\u{:04X}", c as u32).expect("writing to String cannot fail");
         }
         _ => out.push(c),
     }
@@ -504,49 +506,54 @@ fn encode_inline_char(out: &mut String, c: char, i: usize, last: usize) {
 /// ключи — через общий эмиттер § 5.9.10 (bare/quoted + re-escape),
 /// значения — рекурсивно с тем же лимитом глубины, что и у парсера.
 fn inline_compound_body(v: &Value, depth: usize) -> Result<String, EditError> {
+    let mut out = String::new();
+    push_inline_value(v, depth, &mut out)?;
+    Ok(out)
+}
+
+fn push_inline_value(v: &Value, depth: usize, out: &mut String) -> Result<(), EditError> {
     if depth > crate::parser::inline::MAX_INLINE_DEPTH {
         return Err(EditError::Unsupported {
             reason: "replacement nesting exceeds inline depth limit (128)".to_string(),
         });
     }
-    Ok(match v {
+    match v {
         Value::Object(o) => {
-            let mut parts = Vec::with_capacity(o.len());
-            for (k, val) in o {
-                let mut part = String::new();
-                push_escaped_key_segment(k, false, &mut part);
-                part.push_str(": ");
-                // Значение пары: пустая строка — пустое тело (валилно);
-                // прочие — с типосохраняющим кодированием.
-                match val {
-                    Value::String(s) if s.is_empty() => {}
-                    Value::String(s) => {
-                        part.push_str(&encode_inline(s, needs_raw_marker(s)));
-                    }
-                    _ => part.push_str(&inline_compound_body(val, depth + 1)?),
+            out.push('{');
+            for (index, (key, value)) in o.iter().enumerate() {
+                if index != 0 {
+                    out.push_str(", ");
                 }
-                parts.push(part);
+                push_escaped_key_segment(key, false, out);
+                out.push_str(": ");
+                match value {
+                    Value::String(s) => push_inline_string(s, needs_raw_marker(s), out),
+                    _ => push_inline_value(value, depth + 1, out)?,
+                }
             }
-            format!("{{{}}}", parts.join(", "))
+            out.push('}');
         }
         Value::Array(a) => {
-            let mut parts = Vec::with_capacity(a.len());
-            for val in a {
-                // Элемент массива: пустая строка → `()` (иначе пустая
-                // строка стала бы blank-линией внутри inline-массива).
-                match val {
-                    Value::String(s) if s.is_empty() => parts.push("()".to_string()),
-                    Value::String(s) => {
-                        parts.push(encode_inline(s, needs_raw_marker(s)));
-                    }
-                    _ => parts.push(inline_compound_body(val, depth + 1)?),
+            out.push('[');
+            for (index, value) in a.iter().enumerate() {
+                if index != 0 {
+                    out.push_str(", ");
+                }
+                match value {
+                    Value::String(s) if s.is_empty() => out.push_str("()"),
+                    Value::String(s) => push_inline_string(s, needs_raw_marker(s), out),
+                    _ => push_inline_value(value, depth + 1, out)?,
                 }
             }
-            format!("[{}]", parts.join(", "))
+            out.push(']');
         }
-        Value::String(s) => encode_inline(s, needs_raw_marker(s)),
-        _ => scalar_text(v)?,
-    })
+        Value::String(s) => push_inline_string(s, needs_raw_marker(s), out),
+        Value::Null => out.push_str("null"),
+        Value::Bool(true) => out.push_str("true"),
+        Value::Bool(false) => out.push_str("false"),
+        Value::Integer(s) | Value::Float(s) => out.push_str(s),
+    }
+    Ok(())
 }
 
 /// План замены: (тело значения БЕЗ маркерного префикса пары/элемента,

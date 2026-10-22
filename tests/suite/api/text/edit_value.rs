@@ -980,3 +980,50 @@ fn unicode_whitespace_comment_detected_and_preserved() {
         t.replace("x: 1", "x: 2")
     );
 }
+
+#[test]
+fn shrinking_large_value_does_not_retain_source_capacity() {
+    let source = format!("target:: {}\n", "x".repeat(64 * 1024));
+    let edited = edit_value(&source, "target", &Value::Integer("1".into())).unwrap();
+    assert_eq!(edited, "target: 1\n");
+    assert!(
+        edited.capacity() <= 64,
+        "retained {} bytes",
+        edited.capacity()
+    );
+}
+
+#[test]
+fn missing_path_still_validates_source_before_lookup() {
+    assert!(matches!(
+        edit_value("a: {\n", "missing", &Value::Null),
+        Err(EditError::Unsupported { .. })
+    ));
+}
+
+#[test]
+fn streaming_inline_writer_preserves_mixed_values() {
+    let mut object = ktav::ObjectMap::default();
+    object.insert("flag".into(), s("true"));
+    object.insert(
+        "items".into(),
+        Value::Array(vec![
+            s(""),
+            Value::Bool(false),
+            Value::Null,
+            Value::Integer("2".into()),
+        ]),
+    );
+    assert_eq!(
+        edit_value("a: {x: old}\n", "a.x", &Value::Object(object)).unwrap(),
+        "a: {x: {flag: \\u0074rue, items: [(), false, null, 2]}}\n"
+    );
+}
+
+#[test]
+fn streaming_inline_writer_preserves_utf8_edge_whitespace() {
+    assert_eq!(
+        edit_value("a: {x: old}\n", "a.x", &s(" café\u{00a0}")).unwrap(),
+        "a: {x: \\u0020café\\u00A0}\n"
+    );
+}
