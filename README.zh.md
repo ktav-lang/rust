@@ -819,6 +819,30 @@ ktav-fmt -                   read one document from stdin
 `--check` 不写入任何内容,只打印每个尚未格式化的文件路径,因此可以
 直接放进 CI,紧挨着 `cargo fmt --check`。
 
+## 源文本编辑（尚未发布）
+
+此 API 正在开发中，**不包含在已发布的 0.8.1 crate 中**。
+与 `format_str` 不同，`ktav::edit` 不会重新格式化文档，而是在原始文本中替换已有值。注释、空行、键的写法、顺序、缩进、BOM、原有换行符以及替换范围之外的字节保持不变。仅在新值需要时调整 raw 标记。输入以借用方式传入；成功时返回新的 `String`，出错时原文不变。
+
+```rust
+use ktav::edit::{edit_value, edit_value_segments};
+use ktav::Value;
+
+let source = "## top\n\na: 1\n\n## end\n";
+let replacement = Value::Integer("2".into());
+let expected = "## top\n\na: 2\n\n## end\n";
+assert_eq!(edit_value(source, "a", &replacement)?, expected);
+assert_eq!(edit_value_segments(source, &["a"], &replacement)?, expected);
+let path = vec![String::from("a")];
+assert_eq!(edit_value_segments(source, &path, &replacement)?, expected);
+```
+
+文本路径 `key1.key2.0.key4` 使用 `.` 分隔各段。键名中的点写作 `\.`，反斜杠写作 `\\`；其他转义、未完成的转义和空文本段均为错误。对于字面键名 `a.b`，Rust 路径参数写作 `r"a\.b"` 或 `"a\\.b"`。切片/向量 API 接受已解码的名称（`&["a.b"]`），无需路径转义。在对象中，`0` 表示键 `"0"`；在数组中，它表示索引零。数组索引只能包含 ASCII 数字，允许前导零，不允许正负号。
+
+仅支持替换已有值，不会自动创建容器，也不支持删除或重命名。若值未改变，则返回原始文本，包括原有的数字写法。新值以 `Value` 传入；看起来像数字的 `Value::String` 仍是字符串，必要时使用 raw 标记。
+
+`EditError::InvalidPath` 报告文本路径错误及字节偏移；`NotFound` 表示键不存在、数组索引无效或越界，或试图穿过标量继续访问。`Unsupported` 拒绝无效源文档、无法表示的新值，或当前实现无法在保留周围文本的前提下完成的替换。例如，由分散的点分键或重新打开的定义构成的整个对象没有单一替换范围；替换容器也不能删除其内部注释，但其中的叶子值仍可编辑。行内值使用转义表示 CR 和 LF。在行内复合值之外，含 CR 的字符串及部分依赖上下文的多行/容器替换会被拒绝，而不会被静默改写。所有成功返回的文本都经过解析，并与预期值树比较；错误不会返回部分编辑的文档。
+
 ## 面向其他语言的 C ABI
 
 六个语言绑定——Go、Java、PHP、C#、JS 与 Python——加载一个构建在

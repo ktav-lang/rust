@@ -10,6 +10,7 @@ export default [
   "examples",
   "round-trip",
   "formatting",
+  "editing",
   "cabi",
   "architecture",
   "not-do",

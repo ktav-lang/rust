@@ -9,6 +9,7 @@
 //! crate still writes `crate::parser::classify` and friends.
 
 mod build;
+pub(crate) mod edit;
 pub(crate) mod fmt_parser;
 pub(crate) mod inline;
 mod parser;

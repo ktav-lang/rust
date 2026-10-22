@@ -875,6 +875,30 @@ ktav-fmt -                   read one document from stdin
 not already formatted, so it drops straight into CI next to
 `cargo fmt --check`.
 
+## Source editing (unreleased)
+
+This API is under development and is **not included in the published 0.8.1 crate**.
+Unlike `format_str`, `ktav::edit` does not reformat the document: it replaces an existing value in the original text. Comments, blank lines, key spelling, ordering, indentation, BOM, existing line endings and bytes outside the replacement remain unchanged. A raw marker is adjusted only when the new value requires it. The input is borrowed; success returns a new `String`, and an error leaves the input untouched.
+
+```rust
+use ktav::edit::{edit_value, edit_value_segments};
+use ktav::Value;
+
+let source = "## top\n\na: 1\n\n## end\n";
+let replacement = Value::Integer("2".into());
+let expected = "## top\n\na: 2\n\n## end\n";
+assert_eq!(edit_value(source, "a", &replacement)?, expected);
+assert_eq!(edit_value_segments(source, &["a"], &replacement)?, expected);
+let path = vec![String::from("a")];
+assert_eq!(edit_value_segments(source, &path, &replacement)?, expected);
+```
+
+The textual path `key1.key2.0.key4` uses `.` as a separator. Escape a literal dot as `\.` and a backslash as `\\`; other escapes, an unfinished escape and empty textual segments are errors. For a literal key `a.b`, the Rust path argument is `r"a\.b"` or `"a\\.b"`. The slice/vector API takes decoded names (`&["a.b"]`), without path escaping. In an object, `0` means the key `"0"`; in an array, it means index zero. Array indexes contain only ASCII digits; leading zeroes are accepted, signs are not.
+
+Only existing values can be replaced: no automatic container creation, removal or renaming. An unchanged value returns the original text, including its original numeric spelling. New values are supplied as `Value`; a numeric-looking `Value::String` stays a string, using a raw marker where necessary.
+
+`EditError::InvalidPath` reports a malformed textual path and byte offset; `NotFound` covers missing keys, invalid/out-of-range array indexes and descent through a scalar. `Unsupported` rejects an invalid source, an unrepresentable replacement or a replacement for which this implementation cannot preserve the surrounding text. In particular, a whole object assembled from separate dotted/reopened definitions has no single replacement range, and replacing a container must not delete its internal comments. Its individual leaves remain editable. Inline values use escapes for CR and LF. Outside inline compounds, CR-containing strings and some context-dependent multiline/container replacements are rejected rather than silently rewritten. Every returned patch is parsed and checked against the intended value tree; errors never return a partially edited document.
+
 ## The C ABI for other languages
 
 Six language bindings — Go, Java, PHP, C#, JS and Python — load a
