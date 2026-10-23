@@ -1027,3 +1027,39 @@ fn streaming_inline_writer_preserves_utf8_edge_whitespace() {
         "a: {x: \\u0020café\\u00A0}\n"
     );
 }
+
+#[test]
+fn clone_free_verification_still_checks_target_type() {
+    assert!(matches!(
+        edit_value("a: 1\n", "a", &Value::Integer("not_numeric".into())),
+        Err(EditError::Unsupported { .. })
+    ));
+}
+
+#[test]
+fn clone_free_verification_preserves_null_siblings() {
+    assert_eq!(
+        edit_value("a: [1, null]\nb: keep\n", "a.0", &Value::Null).unwrap(),
+        "a: [null, null]\nb: keep\n"
+    );
+}
+
+#[test]
+fn span_only_multiline_state_preserves_data_and_following_offsets() {
+    for (open, close) in [("(", ")"), ("((", "))")] {
+        let source = format!("blob: {open}\n## data\n[not a bracket\n{close}\nouter: {{x: 1}}\n");
+        let expected = source.replace("x: 1", "x: 2");
+        assert_eq!(
+            edit_value(&source, "outer.x", &Value::Integer("2".into())).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn shape_only_inline_root_preserves_quoted_keys_and_crlf() {
+    assert_eq!(
+        edit_value("{\"a.b\": [1, {x: old}]}\r\n", r"a\.b.1.x", &s("new")).unwrap(),
+        "{\"a.b\": [1, {x: new}]}\r\n"
+    );
+}

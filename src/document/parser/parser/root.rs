@@ -22,6 +22,28 @@ pub(in crate::document::parser) enum RootResult {
     Array,
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::document::parser) enum RootShape {
+    InlineObject,
+    InlineArray,
+    ExplicitObject,
+    ExplicitArray,
+    Object,
+    Array,
+}
+
+/// Общий выбор формы корня; содержимое проверяет полноценный парсер.
+pub(in crate::document::parser) fn classify_root_shape(trimmed: &str) -> RootShape {
+    match trimmed {
+        "{" => RootShape::ExplicitObject,
+        "[" => RootShape::ExplicitArray,
+        _ if trimmed.starts_with('{') => RootShape::InlineObject,
+        _ if trimmed.starts_with('[') => RootShape::InlineArray,
+        _ if is_pair_shape(trimmed) => RootShape::Object,
+        _ => RootShape::Array,
+    }
+}
+
 /// Top-level kind detection (spec § 5.0.1, 0.5.0).
 ///
 /// Applies all 8 rules in order. Rules 1 (no content lines) and 8
@@ -32,35 +54,17 @@ pub(in crate::document::parser) fn classify_root_kind_050(
     trimmed_span: Span,
     strict: bool,
 ) -> Result<RootResult, Error> {
-    // Rule 4: lone `{`
-    if trimmed == "{" {
-        return Ok(RootResult::ExplicitObject);
-    }
-    // Rule 5: lone `[`
-    if trimmed == "[" {
-        return Ok(RootResult::ExplicitArray);
-    }
-
-    // § 5.0.1 rules 2/3, plus the rules-2–5 addendum: a first content
-    // line beginning with `{`/`[` is diagnosed by the same § 5.2 scan as
-    // a value body — closed at the end ⇒ the root IS the inline value;
-    // closer followed by content ⇒ MalformedInlineCompound (§ 6.12); no
-    // closer ⇒ UnterminatedInlineCompound (§ 6.11); BadEscapeSequence
-    // wins per the § 5.2 rules-6–9 preamble. This precedence applies
-    // before rule 6: such a line is never a pair candidate (`[bad]: 1`).
-    if trimmed.starts_with('{') {
-        return diagnose_root_inline(trimmed, b'{', b'}', line_num, trimmed_span, strict);
-    }
-    if trimmed.starts_with('[') {
-        return diagnose_root_inline(trimmed, b'[', b']', line_num, trimmed_span, strict);
-    }
-
-    // Rule 6/7: pair-shape vs array-item. Use the same heuristic
-    // as before.
-    if is_pair_shape(trimmed) {
-        Ok(RootResult::Object)
-    } else {
-        Ok(RootResult::Array)
+    match classify_root_shape(trimmed) {
+        RootShape::ExplicitObject => Ok(RootResult::ExplicitObject),
+        RootShape::ExplicitArray => Ok(RootResult::ExplicitArray),
+        RootShape::InlineObject => {
+            diagnose_root_inline(trimmed, b'{', b'}', line_num, trimmed_span, strict)
+        }
+        RootShape::InlineArray => {
+            diagnose_root_inline(trimmed, b'[', b']', line_num, trimmed_span, strict)
+        }
+        RootShape::Object => Ok(RootResult::Object),
+        RootShape::Array => Ok(RootResult::Array),
     }
 }
 

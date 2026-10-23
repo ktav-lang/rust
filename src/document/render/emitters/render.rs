@@ -29,6 +29,19 @@ pub fn render(value: &Value) -> Result<String> {
     render_document(value, false)
 }
 
+/// Заимствованный контейнер на прежнем уровне отступа source-edit.
+pub(crate) fn render_compound_item(value: &Value) -> Result<String> {
+    let mut out = String::with_capacity(estimate_size(value));
+    match render_array_item(value, 1, false, false, &mut out) {
+        Ok(()) => Ok(out),
+        Err(error) => Err(super::representable::attach_path(
+            &Value::Array(vec![value.clone()]),
+            error,
+            false,
+        )),
+    }
+}
+
 /// The body of both public entry points. `force_strings` is the
 /// [`to_string_force_strings`] mode: every leaf scalar is emitted as a
 /// String.

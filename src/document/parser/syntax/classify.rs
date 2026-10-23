@@ -18,6 +18,54 @@ use crate::whitespace::is_ktav_whitespace;
 use super::value_start::ValueStart;
 use crate::parser::inline;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::document::parser) enum ValueShape {
+    Scalar,
+    EmptyString,
+    OpenObject,
+    OpenArray,
+    EmptyObject,
+    EmptyArray,
+    OpenMultilineStripped,
+    OpenMultilineVerbatim,
+    InlineValue,
+}
+
+/// Общая структурная классификация без построения значения.
+pub(in crate::document::parser) fn classify_value_shape(text: &str) -> ValueShape {
+    let trimmed = text.trim_start_matches(is_ktav_whitespace);
+    match trimmed {
+        "{" => ValueShape::OpenObject,
+        "[" => ValueShape::OpenArray,
+        "(" => ValueShape::OpenMultilineStripped,
+        "((" => ValueShape::OpenMultilineVerbatim,
+        "()" | "(())" => ValueShape::EmptyString,
+        _ if trimmed.starts_with('{') => {
+            if trimmed.ends_with('}')
+                && trimmed[1..trimmed.len() - 1]
+                    .trim_matches(is_ktav_whitespace)
+                    .is_empty()
+            {
+                ValueShape::EmptyObject
+            } else {
+                ValueShape::InlineValue
+            }
+        }
+        _ if trimmed.starts_with('[') => {
+            if trimmed.ends_with(']')
+                && trimmed[1..trimmed.len() - 1]
+                    .trim_matches(is_ktav_whitespace)
+                    .is_empty()
+            {
+                ValueShape::EmptyArray
+            } else {
+                ValueShape::InlineValue
+            }
+        }
+        _ => ValueShape::Scalar,
+    }
+}
+
 /// `text` MUST already have trailing whitespace removed (guaranteed by
 /// `handle_line`'s `raw.trim_matches(is_ktav_whitespace)` at the top of
 /// the pipeline). Only leading whitespace — between `:` and the value — needs to be stripped here.
@@ -35,50 +83,23 @@ pub(in crate::document::parser) fn classify_value_start(
     // parity.
     let trimmed = text.trim_start_matches(is_ktav_whitespace);
 
-    if trimmed == "{" {
-        return Ok(ValueStart::OpenObject);
-    }
-    if trimmed == "[" {
-        return Ok(ValueStart::OpenArray);
-    }
-
-    // § 5.2 rules 6–9: inline compounds.
-    if trimmed.starts_with('{') {
-        // Empty object: `{}` or `{ }`
-        if trimmed.ends_with('}')
-            && trimmed[1..trimmed.len() - 1]
-                .trim_matches(is_ktav_whitespace)
-                .is_empty()
-        {
-            return Ok(ValueStart::EmptyObject);
+    match classify_value_shape(trimmed) {
+        ValueShape::OpenObject => return Ok(ValueStart::OpenObject),
+        ValueShape::OpenArray => return Ok(ValueStart::OpenArray),
+        ValueShape::EmptyObject => return Ok(ValueStart::EmptyObject),
+        ValueShape::EmptyArray => return Ok(ValueStart::EmptyArray),
+        ValueShape::OpenMultilineStripped => return Ok(ValueStart::OpenMultilineStripped),
+        ValueShape::OpenMultilineVerbatim => return Ok(ValueStart::OpenMultilineVerbatim),
+        ValueShape::EmptyString => return Ok(ValueStart::Scalar(Scalar::new(""))),
+        ValueShape::InlineValue => {
+            let (open, close) = if trimmed.starts_with('{') {
+                (b'{', b'}')
+            } else {
+                (b'[', b']')
+            };
+            return dispatch_inline_compound(trimmed, open, close, line_num, trimmed_span, strict);
         }
-        // § 5.2 rules 6–9: one shared § 5.8 quote-aware, escape-aware
-        // closer scan decides between the closed shape (rule 6), a
-        // closer followed by content (rule 8) and no closer (rule 9),
-        // with `BadEscapeSequence` (§ 6.13) taking precedence per the
-        // rules-6–9 preamble.
-        return dispatch_inline_compound(trimmed, b'{', b'}', line_num, trimmed_span, strict);
-    }
-
-    if trimmed.starts_with('[') {
-        // Empty array: `[]` or `[ ]`
-        if trimmed.ends_with(']')
-            && trimmed[1..trimmed.len() - 1]
-                .trim_matches(is_ktav_whitespace)
-                .is_empty()
-        {
-            return Ok(ValueStart::EmptyArray);
-        }
-        // § 5.2 rule 7 vs 8/9: same shared scan as the `{` branch.
-        return dispatch_inline_compound(trimmed, b'[', b']', line_num, trimmed_span, strict);
-    }
-
-    // Multi-line string openers — exact tokens only.
-    match trimmed {
-        "(" => return Ok(ValueStart::OpenMultilineStripped),
-        "((" => return Ok(ValueStart::OpenMultilineVerbatim),
-        "()" | "(())" => return Ok(ValueStart::Scalar(Scalar::new(""))),
-        _ => {}
+        ValueShape::Scalar => {}
     }
 
     // Spec 0.7 § 5.2: only the bare tokens `(` / `((` (followed by

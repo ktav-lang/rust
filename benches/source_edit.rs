@@ -117,6 +117,43 @@ fn cases() -> Vec<Case> {
             expected: Some(expected),
         });
     }
+    let inline_source = format!("outer: [0{}]\n", ", 2".repeat(17 * 1024));
+    cases.push(Case {
+        name: "inline_source_50k",
+        expected: Some(inline_source.replacen("[0", "[1", 1)),
+        source: inline_source,
+        path: "outer.0".into(),
+        replacement: Value::Integer("1".into()),
+    });
+    let multiline_source = format!(
+        "blob: (\n{})\ntarget: 0\n",
+        "  body line\n".repeat(47 * 1024)
+    );
+    cases.push(Case {
+        name: "multiline_source_500k",
+        expected: Some(multiline_source.replacen("target: 0", "target: 1", 1)),
+        source: multiline_source,
+        path: "target".into(),
+        replacement: Value::Integer("1".into()),
+    });
+    let payload = "x".repeat(500 * 1024);
+    cases.push(Case {
+        name: "grow_string_500k",
+        source: "target: old\n".into(),
+        path: "target".into(),
+        expected: Some(format!("target: {payload}\n")),
+        replacement: Value::String(payload.into()),
+    });
+    let payload = "x".repeat(128 * 1024);
+    let mut object = ktav::ObjectMap::default();
+    object.insert("payload".into(), Value::String(payload.clone().into()));
+    cases.push(Case {
+        name: "compound_block_128k",
+        source: "target: old\n".into(),
+        path: "target".into(),
+        expected: Some(format!("target: {{\n    payload: {payload}\n}}\n")),
+        replacement: Value::Object(object),
+    });
     cases
 }
 

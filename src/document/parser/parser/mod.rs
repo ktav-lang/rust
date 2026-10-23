@@ -637,5 +637,7 @@ pub(super) fn trimmed_span_in(raw: &str, trimmed: &str, line_start: u32) -> Span
 mod root;
 mod sep;
 
-pub(in crate::document::parser) use root::{classify_root_kind_050, RootResult};
+pub(in crate::document::parser) use root::{
+    classify_root_kind_050, classify_root_shape, RootResult, RootShape,
+};
 pub(in crate::document::parser) use sep::{classify_separator, require_sep_end, Separator};
