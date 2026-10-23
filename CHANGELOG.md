@@ -22,6 +22,7 @@ For the format specification's own history, see the
 
 - Reserve the edited document's actual output length instead of retaining removed source capacity. No-op and missing-path edits skip the positional tree after validating the original document.
 - Write nested inline replacements into one buffer; avoid temporary character vectors and a second copy of parsed textual path segments. Keep semantic verification and byte-preserving behavior. Add short paired benchmarks with separate compilation and an external 15-second process limit.
+- The positional pass shares structural classifiers with the parser without constructing unused values or multiline bodies. Verify the edited target and untouched tree without cloning the replacement; render borrowed block compounds without a temporary root wrapper. Preserve validation, writer error paths and byte-for-byte output, with focused regression tests and expanded paired benchmarks.
 
 ## [0.8.1] — 2026-10-21
 

@@ -244,15 +244,16 @@ pub(crate) fn apply(
     result.push_str(&insertion);
     result.push_str(&text[b1..]);
 
-    // Верификация: патч обязан парситься, а дерево результата —
-    // совпасть с деревом оригинала, у которого заменён только целевой
-    // узел (parse оригинала переиспользуется, без повторного parse).
-    let new_doc = crate::parse(&result).map_err(|e| EditError::Unsupported {
+    // Цель сравнивается отдельно; остальное дерево — с одинаковыми Null-слотами.
+    let mut new_doc = crate::parse(&result).map_err(|e| EditError::Unsupported {
         reason: format!("patch produced an invalid document: {e}"),
     })?;
+    let target_matches = take_target(&mut new_doc, segments)
+        .map(|actual| actual == *replacement)
+        .unwrap_or(false);
     let mut expected = original_value;
-    set_target(&mut expected, segments, replacement)?;
-    if new_doc != expected {
+    drop(take_target(&mut expected, segments)?);
+    if !target_matches || new_doc != expected {
         return Err(EditError::Unsupported {
             reason: "semantic mismatch after splice; no lossless patch produced".into(),
         });
@@ -336,9 +337,8 @@ fn lookup_value<'a>(v: &'a Value, segments: &[String]) -> Option<&'a Value> {
     Some(cur)
 }
 
-/// Заменить целевое значение в распарсенном оригинале (семантический
-/// оракул для верификации).
-fn set_target(v: &mut Value, segments: &[String], replacement: &Value) -> Result<(), EditError> {
+/// Извлечь цель из временного дерева без клонирования.
+fn take_target(v: &mut Value, segments: &[String]) -> Result<Value, EditError> {
     let (last, parents) = segments.split_last().ok_or(EditError::NotFound)?;
     let mut cur = v;
     for seg in parents {
@@ -359,8 +359,7 @@ fn set_target(v: &mut Value, segments: &[String], replacement: &Value) -> Result
         }
         _ => return Err(EditError::NotFound),
     };
-    *slot = replacement.clone();
-    Ok(())
+    Ok(std::mem::replace(slot, Value::Null))
 }
 
 fn parse_index(seg: &str) -> Result<usize, EditError> {
@@ -681,32 +680,11 @@ fn block_replacement(
     }
 }
 
-/// Pretty-рендер непустого контейнера вне inline: обёртка в
-/// одноэлементный Array даёт полный вид значения вместе с фигурными/
-/// квадратными скобками; внешние скобки и один уровень отступа
-/// (INDENT рендера — 4 пробела) снимаются.
+/// Pretty-рендер контейнера без копии Value и корневой обёртки.
 fn render_compound_body(v: &Value) -> Result<String, EditError> {
-    let wrapped = crate::render::render(&Value::Array(vec![v.clone()])).map_err(|e| {
-        EditError::Unsupported {
-            reason: format!("replacement is not representable: {e}"),
-        }
-    })?;
-    // Форма рендера корневой обёртки: "[\n" + элементы + "]\n"
-    // (render::render, emit_root — wrap-ветка для compound-элемента).
-    let inner = wrapped
-        .strip_prefix("[\n")
-        .and_then(|s| s.strip_suffix("]\n"))
-        .ok_or_else(|| EditError::Unsupported {
-            reason: "unexpected render output shape".to_string(),
-        })?;
-    Ok(dedent_prefix(inner, "    "))
-}
-
-fn dedent_prefix(s: &str, prefix: &str) -> String {
-    s.lines()
-        .map(|l| l.strip_prefix(prefix).unwrap_or(l))
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::render::render_compound_item(v).map_err(|e| EditError::Unsupported {
+        reason: format!("replacement is not representable: {e}"),
+    })
 }
 
 /// Переотступить pretty-рендер под строку цели. Строки ВНУТРИ
@@ -715,10 +693,10 @@ fn dedent_prefix(s: &str, prefix: &str) -> String {
 /// контекстно-зависима, но любой промах ловится обязательной
 /// семантической верификацией (fail closed), тишина невозможна.
 fn reindent(doc: &str, indent: &str, eol: &str) -> String {
-    let body = doc.strip_suffix('\n').unwrap_or(doc);
-    let mut out = String::new();
+    let mut out = String::with_capacity(doc.len());
     let mut in_verbatim = false;
-    for (i, line) in body.split('\n').enumerate() {
+    for (i, line) in doc.lines().enumerate() {
+        let line = line.strip_prefix("    ").unwrap_or(line);
         let verbatim_open = line.ends_with("((");
         let verbatim_close = line.trim_matches(|c: char| c == ' ' || c == '\t') == "))";
         if i > 0 {

@@ -2,8 +2,8 @@
 //! `PositionedParser` (fmt_parser), но вместо trivia записывающий
 //! byte-диапазоны значений. Диапазоны снимаются на тех же решениях
 //! line dispatch'а, что и у реального парсера: те же
-//! `scan_unescaped_colon` / `classify_separator` / `classify_value_start`
-//! / `classify_root_kind_050`, та же вставка через `insert_value`
+//! `scan_unescaped_colon` / `classify_separator` / `classify_value_shape`
+//! / `classify_root_shape`, та же вставка через `insert_value`
 //! (dotted-key expansion, reopen, duplicate/conflict).
 
 use std::borrow::Cow;
@@ -17,18 +17,16 @@ use crate::value::Scalar;
 use crate::whitespace::is_ktav_whitespace;
 
 use crate::parser::bracket::Bracket;
-use crate::parser::classify::classify_value_start;
-use crate::parser::collecting::{Collecting, MultilineMode};
+use crate::parser::classify::{classify_value_shape, ValueShape};
+use crate::parser::collecting::MultilineMode;
 use crate::parser::inline::{
     find_unescaped_colon_inline, has_quote_bytes, scan_inline_closer_with_bounds,
     scan_unescaped_colon, split_top_level, ColonScan, InlineBody, InlineBounds, MAX_INLINE_DEPTH,
 };
 use crate::parser::insert::{insert_value, InsertShape, InsertTable, OccupiedShape};
 use crate::parser::parser::{
-    classify_root_kind_050, classify_separator, require_sep_end, trimmed_span_in, RootResult,
-    Separator,
+    classify_root_shape, classify_separator, require_sep_end, trimmed_span_in, RootShape, Separator,
 };
-use crate::parser::value_start::ValueStart;
 
 // ---------------------------------------------------------------------------
 // Узлы дерева
@@ -224,7 +222,7 @@ enum Frame<'a> {
 
 struct Builder<'a> {
     stack: Vec<Frame<'a>>,
-    collecting: Option<Collecting<'a>>,
+    collecting: Option<MultilineMode>,
     /// Байт opener'а `(` / `((` текущей multiline-строки.
     collecting_opener: u32,
     root_initialized: bool,
@@ -500,12 +498,9 @@ pub(crate) fn build_with_meta(text: &str) -> Result<(Node, bool), Error> {
 
 impl<'a> Builder<'a> {
     fn handle_line(&mut self, raw: &'a str, line_num: usize, line_start: u32) -> Result<(), Error> {
-        // Локальная копия Option, чтобы не конфликтовать с `&mut self`
-        // (двойной заём `self.collecting` даёт E0499).
-        if let Some(mut collecting) = self.collecting.take() {
+        if let Some(mode) = self.collecting.take() {
             let trimmed = raw.trim_matches(is_ktav_whitespace);
-            if collecting.is_terminator(trimmed) {
-                let _ = collecting.finish();
+            if trimmed == mode.terminator() {
                 let opener = self.collecting_opener;
                 // Терминатор `)`/`))` может нести ведущий отступ — его
                 // конец считаем от фактического положения trimmed в raw.
@@ -517,8 +512,7 @@ impl<'a> Builder<'a> {
                 });
                 return self.attach_scalar(node, line_num, line_start);
             }
-            collecting.lines.push(raw);
-            self.collecting = Some(collecting);
+            self.collecting = Some(mode);
             return Ok(());
         }
 
@@ -540,8 +534,8 @@ impl<'a> Builder<'a> {
         if !self.root_initialized {
             self.root_initialized = true;
             if trimmed != "}" && trimmed != "]" {
-                match classify_root_kind_050(trimmed, line_num, ts, false)? {
-                    RootResult::InlineObject(_) | RootResult::InlineArray(_) => {
+                match classify_root_shape(trimmed) {
+                    RootShape::InlineObject | RootShape::InlineArray => {
                         self.root_consumed = true;
                         // Позиционируем inline-корень: тело — вся
                         // trimmed-строка, база — ts.start.
@@ -550,7 +544,7 @@ impl<'a> Builder<'a> {
                         self.root_inline = Some(node);
                         return Ok(());
                     }
-                    RootResult::ExplicitObject => {
+                    RootShape::ExplicitObject => {
                         self.root_is_explicit = true;
                         self.push_frame(
                             Frame::Object {
@@ -564,7 +558,7 @@ impl<'a> Builder<'a> {
                         );
                         return Ok(());
                     }
-                    RootResult::ExplicitArray => {
+                    RootShape::ExplicitArray => {
                         self.root_is_explicit = true;
                         self.push_frame(
                             Frame::Array {
@@ -575,7 +569,7 @@ impl<'a> Builder<'a> {
                         );
                         return Ok(());
                     }
-                    RootResult::Object => {
+                    RootShape::Object => {
                         self.push_frame(
                             Frame::Object {
                                 table: ObjTable::default(),
@@ -587,7 +581,7 @@ impl<'a> Builder<'a> {
                             0,
                         );
                     }
-                    RootResult::Array => {
+                    RootShape::Array => {
                         self.push_frame(
                             Frame::Array {
                                 items: Vec::new(),
@@ -664,20 +658,16 @@ impl<'a> Builder<'a> {
                 let after_trimmed = after.trim_start_matches(is_ktav_whitespace);
                 let value_start = off_in_line(line, ts.start, after_trimmed);
                 // Один classify на ветку (двойной вызов — дефект).
-                let vs = classify_value_start(after, line_num, ts, false)?;
+                let vs = classify_value_shape(after);
                 match &vs {
-                    ValueStart::Scalar(_)
-                    | ValueStart::Null
-                    | ValueStart::Bool(_)
-                    | ValueStart::Integer(_)
-                    | ValueStart::Float(_) => {
+                    ValueShape::Scalar | ValueShape::EmptyString => {
                         let node = Node::scalar(Slot::Pair {
                             colon: colon_off,
                             body: (value_start, ts.end),
                         });
                         self.insert_pair(key, node, line_num, key_span)
                     }
-                    ValueStart::EmptyObject => self.insert_pair(
+                    ValueShape::EmptyObject => self.insert_pair(
                         key,
                         Node::empty_object(Slot::Pair {
                             colon: colon_off,
@@ -686,7 +676,7 @@ impl<'a> Builder<'a> {
                         line_num,
                         key_span,
                     ),
-                    ValueStart::EmptyArray => self.insert_pair(
+                    ValueShape::EmptyArray => self.insert_pair(
                         key,
                         Node::empty_array(Slot::Pair {
                             colon: colon_off,
@@ -695,8 +685,8 @@ impl<'a> Builder<'a> {
                         line_num,
                         key_span,
                     ),
-                    ValueStart::OpenObject | ValueStart::OpenArray => {
-                        let is_obj = matches!(vs, ValueStart::OpenObject);
+                    ValueShape::OpenObject | ValueShape::OpenArray => {
+                        let is_obj = matches!(vs, ValueShape::OpenObject);
                         self.set_pending(key, key_span, Some(colon_off))?;
                         let frame = if is_obj {
                             Frame::Object {
@@ -715,19 +705,19 @@ impl<'a> Builder<'a> {
                         self.stack.push(frame);
                         Ok(())
                     }
-                    ValueStart::OpenMultilineStripped => {
+                    ValueShape::OpenMultilineStripped => {
                         self.set_pending(key, key_span, Some(colon_off))?;
-                        self.collecting = Some(Collecting::new(MultilineMode::Stripped));
+                        self.collecting = Some(MultilineMode::Stripped);
                         self.collecting_opener = value_start;
                         Ok(())
                     }
-                    ValueStart::OpenMultilineVerbatim => {
+                    ValueShape::OpenMultilineVerbatim => {
                         self.set_pending(key, key_span, Some(colon_off))?;
-                        self.collecting = Some(Collecting::new(MultilineMode::Verbatim));
+                        self.collecting = Some(MultilineMode::Verbatim);
                         self.collecting_opener = value_start;
                         Ok(())
                     }
-                    ValueStart::InlineValue(_) => {
+                    ValueShape::InlineValue => {
                         // Тело inline — срез trimmed-строки от значения до
                         // её конца; начинается `{`/`[`.
                         let is_obj = after_trimmed.starts_with('{');
@@ -761,30 +751,28 @@ impl<'a> Builder<'a> {
             return self.push_item(node);
         }
 
-        let vs = classify_value_start(line, line_num, ts, false)?;
+        let vs = classify_value_shape(line);
         let body_start = off_in_line(
             line,
             line_start,
             line.trim_start_matches(is_ktav_whitespace),
         );
         match vs {
-            ValueStart::Scalar(_)
-            | ValueStart::Null
-            | ValueStart::Bool(_)
-            | ValueStart::Integer(_)
-            | ValueStart::Float(_) => self.push_item(Node::scalar(Slot::Item {
+            ValueShape::Scalar | ValueShape::EmptyString => {
+                self.push_item(Node::scalar(Slot::Item {
+                    start: ts.start,
+                    body: (body_start, ts.end),
+                }))
+            }
+            ValueShape::EmptyObject => self.push_item(Node::empty_object(Slot::Item {
                 start: ts.start,
                 body: (body_start, ts.end),
             })),
-            ValueStart::EmptyObject => self.push_item(Node::empty_object(Slot::Item {
+            ValueShape::EmptyArray => self.push_item(Node::empty_array(Slot::Item {
                 start: ts.start,
                 body: (body_start, ts.end),
             })),
-            ValueStart::EmptyArray => self.push_item(Node::empty_array(Slot::Item {
-                start: ts.start,
-                body: (body_start, ts.end),
-            })),
-            ValueStart::OpenObject => {
+            ValueShape::OpenObject => {
                 self.stack.push(Frame::Object {
                     table: ObjTable::default(),
                     pending_key: None,
@@ -794,24 +782,24 @@ impl<'a> Builder<'a> {
                 });
                 Ok(())
             }
-            ValueStart::OpenArray => {
+            ValueShape::OpenArray => {
                 self.stack.push(Frame::Array {
                     items: Vec::new(),
                     range_start: body_start,
                 });
                 Ok(())
             }
-            ValueStart::OpenMultilineStripped => {
-                self.collecting = Some(Collecting::new(MultilineMode::Stripped));
+            ValueShape::OpenMultilineStripped => {
+                self.collecting = Some(MultilineMode::Stripped);
                 self.collecting_opener = body_start;
                 Ok(())
             }
-            ValueStart::OpenMultilineVerbatim => {
-                self.collecting = Some(Collecting::new(MultilineMode::Verbatim));
+            ValueShape::OpenMultilineVerbatim => {
+                self.collecting = Some(MultilineMode::Verbatim);
                 self.collecting_opener = body_start;
                 Ok(())
             }
-            ValueStart::InlineValue(_) => {
+            ValueShape::InlineValue => {
                 let is_obj = line.trim_start_matches(is_ktav_whitespace).starts_with('{');
                 let mut node = position_inline_top(
                     line.trim_start_matches(is_ktav_whitespace),

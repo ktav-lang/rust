@@ -11,6 +11,7 @@
 
 - Reserve the edited document's actual output length instead of retaining removed source capacity. No-op and missing-path edits skip the positional tree after validating the original document.
 - Write nested inline replacements into one buffer; avoid temporary character vectors and a second copy of parsed textual path segments. Keep semantic verification and byte-preserving behavior. Add short paired benchmarks with separate compilation and an external 15-second process limit.
+- The positional pass shares structural classifiers with the parser without constructing unused values or multiline bodies. Verify the edited target and untouched tree without cloning the replacement; render borrowed block compounds without a temporary root wrapper. Preserve validation, writer error paths and byte-for-byte output, with focused regression tests and expanded paired benchmarks.
 
 >>>>> lang=ru
 ## [Не выпущено]
@@ -25,6 +26,7 @@
 
 - Буфер результата резервируется по фактической длине, без удержания памяти удалённого исходного значения. No-op и отсутствующий путь обходятся без позиционного дерева после проверки исходного документа.
 - Вложенные inline-замены пишутся в один буфер, без временного вектора символов и повторного копирования разобранных сегментов текстового пути. Семантическая проверка и сохранение исходных байтов остаются. Добавлены короткие парные benchmarks с отдельной компиляцией и внешним лимитом 15 секунд на процесс.
+- Позиционный проход использует общие с parser структурные классификаторы без построения ненужных значений и multiline-тел. Проверка цели и неизменной части дерева обходится без клонирования replacement; блочные контейнеры рендерятся по заимствованию без временной корневой обёртки. Валидация, пути writer-ошибок и точные выходные байты сохранены; добавлены регрессии и расширены парные benchmarks.
 
 >>>>> lang=zh
 ## [尚未发布]
@@ -39,4 +41,5 @@
 
 - 按编辑后实际长度预留输出缓冲区，不再保留已删除源值占用的容量。验证原文后，值不变或路径不存在时不再构建位置树。
 - 将嵌套行内替换直接写入同一缓冲区，避免临时字符向量及文本路径段的二次复制。保留语义验证和原始字节保护。新增短时配对基准，编译独立进行，每个进程由外部工具限制为 15 秒。
+- 位置扫描与解析器共用结构分类，不再构造无用值或多行正文。验证目标和未修改的树时不再克隆替换值；以借用方式渲染块容器，避免临时根包装。保留验证、writer 错误路径和逐字节输出，并增加专项回归测试及配对基准场景。
 

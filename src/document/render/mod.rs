@@ -21,8 +21,11 @@ mod pair;
 mod render;
 
 pub use canonical::emit_canonical;
+pub(crate) use render::render_compound_item;
 pub use render::{render, to_string_force_strings};
 
+#[cfg(test)]
+mod compound_item_tests;
 #[cfg(test)]
 #[path = "emitters/tests.rs"]
 mod tests;
