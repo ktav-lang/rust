@@ -1063,3 +1063,204 @@ fn shape_only_inline_root_preserves_quoted_keys_and_crlf() {
         "{\"a.b\": [1, {x: new}]}\r\n"
     );
 }
+
+// --- borrowed-segments regression: заимствованные пути ------------------------
+// Проверяют буквальные сегменты и UTF-8 byte offsets, не число аллокаций.
+
+#[test]
+fn segments_str_slices_borrowed() {
+    let t = "srv: {\n  host: a\n  port: 1\n}\n";
+    let segs = ["srv", "host"];
+    assert_eq!(
+        edit_value_segments(t, &segs, &s("b.example")).unwrap(),
+        "srv: {\n  host: b.example\n  port: 1\n}\n"
+    );
+}
+
+#[test]
+fn segments_owned_and_str_slices_match_str_api() {
+    // Обе формы (owned String и заимствованный &str) — одинаковый
+    // результат: сегменты literal, без повторного unescaping.
+    let t = "\"a.b\": 1\n";
+    let owned: Vec<String> = vec![String::from("a.b")];
+    let borrowed = ["a.b"];
+    assert_eq!(
+        edit_value_segments(t, &owned, &Value::Integer("2".into())).unwrap(),
+        "\"a.b\": 2\n"
+    );
+    assert_eq!(
+        edit_value_segments(t, &borrowed, &Value::Integer("2".into())).unwrap(),
+        "\"a.b\": 2\n"
+    );
+}
+
+#[test]
+fn segments_cow_slice_borrowed() {
+    // Cow-срез (Borrowed и Owned варианты) проходит без копий.
+    let t = "\"a.b\": 1\n";
+    let segs = [std::borrow::Cow::<str>::Borrowed("a.b")];
+    assert_eq!(
+        edit_value_segments(t, &segs, &Value::Integer("2".into())).unwrap(),
+        "\"a.b\": 2\n"
+    );
+    let owned_seg = [std::borrow::Cow::<str>::Owned(String::from("a.b"))];
+    assert_eq!(
+        edit_value_segments(t, &owned_seg, &Value::Integer("2".into())).unwrap(),
+        "\"a.b\": 2\n"
+    );
+}
+
+#[test]
+fn segments_literal_segments_have_no_extra_unescaping() {
+    // Сегмент "a\\b" — literal ключ `a\\b` (два символа backslash),
+    // НЕ декодируется в `a\b`: segments-API принимает уже-декодированные
+    // сегменты. Ловит мутацию, добавляющую unescape поверх literal.
+    let t = "\"a\\\\\\\\b\": 1\n";
+    let segs = ["a\\\\b"];
+    assert_eq!(
+        edit_value_segments(t, &segs, &Value::Integer("2".into())).unwrap(),
+        "\"a\\\\\\\\b\": 2\n"
+    );
+}
+
+#[test]
+fn segments_unicode_key_borrowed() {
+    let t = "ключ: значение\n";
+    let segs = ["ключ"];
+    assert_eq!(
+        edit_value_segments(t, &segs, &s("число")).unwrap(),
+        "ключ: число\n"
+    );
+}
+
+#[test]
+fn path_unicode_escaped_dot_byte_offset() {
+    // Текстовый путь с Unicode и `\\.`: literal точка — часть ключа;
+    // соседний ключ без точки не задевается.
+    let t = "\"ключ.точка\": 1\nключ: 2\n";
+    assert_eq!(
+        edit_value(t, "ключ\\.точка", &Value::Integer("9".into())).unwrap(),
+        "\"ключ.точка\": 9\nключ: 2\n"
+    );
+    // Пустой сегмент после Unicode: offset в байтах ('ключ' = 8 байт).
+    assert!(matches!(
+        edit_value(t, "ключ..точка", &s("v")),
+        Err(EditError::InvalidPath { offset: 9 })
+    ));
+}
+
+#[test]
+fn segments_marker_preserving_and_noop_borrowed() {
+    // Borrowed-путь: raw-маркер сохраняется, no-op — byte-identical.
+    let t = "k:: v1\n";
+    let segs = ["k"];
+    assert_eq!(edit_value_segments(t, &segs, &s("v2")).unwrap(), "k:: v2\n");
+    assert_eq!(edit_value_segments(t, &segs, &s("v1")).unwrap(), t);
+}
+
+// --- verbatim-блок: CRLF / Unicode-края / '))'-отказ с отступом ---------------
+
+#[test]
+fn multiline_replacement_uses_document_crlf() {
+    // '\n' в replacement конвертируются в EOL документа (CRLF),
+    // окружение не тронуто.
+    let t = "s: (\r\n hi\r\n)\r\n";
+    assert_eq!(
+        edit_value(t, "s", &s("a\nb")).unwrap(),
+        "s: ((\r\na\r\nb\r\n))\r\n"
+    );
+}
+
+#[test]
+fn multiline_replacement_trailing_lf_in_crlf_doc() {
+    // Хвостовой LF replacement — пустая строка перед `))` (в EOL
+    // документа), без потери и без дубля.
+    let t = "s: (\r\n hi\r\n)\r\n";
+    assert_eq!(
+        edit_value(t, "s", &s("a\n")).unwrap(),
+        "s: ((\r\na\r\n\r\n))\r\n"
+    );
+}
+
+#[test]
+fn multiline_replacement_unicode_edge_whitespace_verbatim() {
+    // Краевой § 3.3-whitespace (U+00A0) — причина verbatim-блока и
+    // дословные байты контента.
+    let t = "s: (\nx\n)\n";
+    assert_eq!(
+        edit_value(t, "s", &s("\u{00A0}café ")).unwrap(),
+        "s: ((\n\u{00A0}café \n))\n"
+    );
+}
+
+#[test]
+fn multiline_replacement_indented_closer_line_rejected() {
+    // Отказ '))' учитывает только пробелы/табы вокруг: '  ))' и
+    // '\t))' тоже не выражаемы verbatim; '))x' — данные.
+    let t = "s: (\nx\n)\n";
+    assert!(matches!(
+        edit_value(t, "s", &s("x\n  ))")),
+        Err(EditError::Unsupported { .. })
+    ));
+    assert!(matches!(
+        edit_value(t, "s", &s("x\n\t))")),
+        Err(EditError::Unsupported { .. })
+    ));
+    assert_eq!(
+        edit_value(t, "s", &s("x\n))x")).unwrap(),
+        "s: ((\nx\n))x\n))\n"
+    );
+}
+
+// --- маркерные переходы: табы/пробелы пары и элемента, точные байты -------------
+
+#[test]
+fn plain_to_raw_pair_keeps_tab_spaces_exactly() {
+    // 'k: \tv' → 'k:: \t42': второй ':' за первым, исходный WS — как был.
+    let t = "k: \tv\n";
+    assert_eq!(edit_value(t, "k", &s("42")).unwrap(), "k:: \t42\n");
+}
+
+#[test]
+fn plain_to_raw_item_inserts_exact_marker() {
+    // Item plain→raw: ':: ' перед телом, отступ не тронут.
+    let t = "  5\nsecond\n";
+    assert_eq!(
+        edit_value(t, "0", &s("## c")).unwrap(),
+        "  :: ## c\nsecond\n"
+    );
+}
+
+#[test]
+fn raw_to_plain_pair_keeps_wide_ws_exactly() {
+    // 'k::  \tv' → 'k:  \t9': снят только второй ':'.
+    let t = "k::  \tv\n";
+    assert_eq!(
+        edit_value(t, "k", &Value::Integer("9".into())).unwrap(),
+        "k:  \t9\n"
+    );
+}
+
+// --- смешанный путь: escape + суффикс + Unicode --------------------------------
+
+#[test]
+fn mixed_path_escape_suffix_unicode_segments() {
+    // 'a\.b' — escape + обычный суффикс 'b' в одном сегменте, далее
+    // unescaped 'c' и Unicode 'ключ': ловит потерю суффикса после escape.
+    let t = "\"a.b\": {\n  c: {\n    ключ: 1\n  }\n  ключ: 2\n}\n";
+    assert_eq!(
+        edit_value(t, "a\\.b.c.ключ", &Value::Integer("9".into())).unwrap(),
+        "\"a.b\": {\n  c: {\n    ключ: 9\n  }\n  ключ: 2\n}\n"
+    );
+}
+
+#[test]
+fn mixed_path_escaped_backslash_then_suffix() {
+    // 'x\\y' (escaped backslash + суффикс) + unescaped 'tail': иная
+    // ветка той же мутации потери суффикса.
+    let t = "\"x\\\\y\": {\n  tail: 1\n}\n";
+    assert_eq!(
+        edit_value(t, "x\\\\y.tail", &Value::Integer("2".into())).unwrap(),
+        "\"x\\\\y\": {\n  tail: 2\n}\n"
+    );
+}
