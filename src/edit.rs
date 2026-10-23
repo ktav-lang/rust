@@ -41,6 +41,8 @@
 //! resulting tree must equal the original tree with exactly the target
 //! replaced, so a silent corruption is never returned.
 
+use std::borrow::Cow;
+
 use crate::value::Value;
 
 /// Everything that can go wrong with a lossless source edit.
@@ -99,8 +101,9 @@ pub fn edit_value_segments<S: AsRef<str>>(
     if path.is_empty() {
         return Err(EditError::NotFound);
     }
-    let segments: Vec<String> = path.iter().map(|s| s.as_ref().to_string()).collect();
-    crate::document::parser::edit::splice::apply(text, &segments, replacement)
+    // Сегменты уже декодированы; передача заимствованных кусков без
+    // промежуточного Vec<String>.
+    crate::document::parser::edit::splice::apply(text, path, replacement)
 }
 
 impl std::fmt::Display for EditError {
@@ -124,30 +127,35 @@ impl std::error::Error for EditError {}
 
 /// Разбор текстового пути: '.' — разделитель; `\.` — literal точка;
 /// `\\` — literal backslash; прочие escape и хвостовой `\` — ошибка.
-fn parse_path(path: &str) -> Result<Vec<String>, EditError> {
+/// Сегменты без escapes возвращаются заимствованными срезами входа.
+fn parse_path(path: &str) -> Result<Vec<Cow<'_, str>>, EditError> {
     if path.is_empty() {
         return Err(EditError::InvalidPath { offset: 0 });
     }
     let bytes = path.as_bytes();
     let mut segments = Vec::new();
-    let mut cur = String::new();
+    let mut seg_start = 0usize;
+    // Owned-аккумулятор появляется только после первого escape в
+    // сегменте; до того сегмент остаётся borrowed срезом.
+    let mut cur: Option<String> = None;
     let mut i = 0usize;
     while i < bytes.len() {
         match bytes[i] {
             b'.' => {
-                if cur.is_empty() {
+                if seg_start == i && cur.is_none() {
                     return Err(EditError::InvalidPath { offset: i });
                 }
-                segments.push(std::mem::take(&mut cur));
+                segments.push(match cur.take() {
+                    Some(s) => Cow::Owned(s),
+                    None => Cow::Borrowed(&path[seg_start..i]),
+                });
+                seg_start = i + 1;
                 i += 1;
             }
             b'\\' => match bytes.get(i + 1) {
-                Some(b'.') => {
-                    cur.push('.');
-                    i += 2;
-                }
-                Some(b'\\') => {
-                    cur.push('\\');
+                Some(b'.') | Some(b'\\') => {
+                    let cur = cur.get_or_insert_with(|| String::from(&path[seg_start..i]));
+                    cur.push(if bytes[i + 1] == b'.' { '.' } else { '\\' });
                     i += 2;
                 }
                 _ => {
@@ -156,18 +164,23 @@ fn parse_path(path: &str) -> Result<Vec<String>, EditError> {
             },
             _ => {
                 let ch_len = utf8_len(bytes[i]);
-                cur.push_str(&path[i..i + ch_len]);
+                if let Some(cur) = cur.as_mut() {
+                    cur.push_str(&path[i..i + ch_len]);
+                }
                 i += ch_len;
             }
         }
     }
-    if cur.is_empty() {
+    if seg_start == bytes.len() && cur.is_none() {
         // Пустой последний сегмент (хвост '.').
         return Err(EditError::InvalidPath {
             offset: bytes.len(),
         });
     }
-    segments.push(cur);
+    segments.push(match cur {
+        Some(s) => Cow::Owned(s),
+        None => Cow::Borrowed(&path[seg_start..]),
+    });
     Ok(segments)
 }
 

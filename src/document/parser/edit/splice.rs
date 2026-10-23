@@ -56,9 +56,38 @@ struct PlanCtx<'t> {
     eol: &'t str,
 }
 
-pub(crate) fn apply(
+/// Тело вставки: заимствованное (scalar literal, дословное String) или
+/// владеющее (encoded inline, compound, verbatim) — без копии replacement.
+enum Body<'r> {
+    Borrowed(&'r str),
+    Owned(String),
+}
+
+impl Body<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            Body::Borrowed(s) => s,
+            Body::Owned(s) => s,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.as_str().len()
+    }
+}
+
+/// Компактный план сплайса: заимствованные куски маркерной зоны +
+/// [`Body`]; строка собирается один раз, без промежуточных format!.
+struct SplicePlan<'t, 'r> {
+    from: usize,
+    /// Куски перед телом (второй `:` / исходные пробелы маркерной зоны).
+    prefix: [&'t str; 2],
+    body: Body<'r>,
+}
+
+pub(crate) fn apply<S: AsRef<str>>(
     text: &str,
-    segments: &[String],
+    segments: &[S],
     replacement: &Value,
 ) -> Result<String, EditError> {
     // Границы u32-офсетов позиционного дерева — до любых кастов.
@@ -177,71 +206,117 @@ pub(crate) fn apply(
             .to_string()
     };
 
-    let (from, insertion): (usize, String) = if ctx.inline {
+    let plan: SplicePlan<'_, '_> = if ctx.inline {
         // Физически inline.
         match (slot_kind, replacement) {
             // Inline-элемент: `::` — literal-данные, маркера нет; тело
             // целиком с типосохраняющим кодированием; пустая строка —
             // `()` (голая пустая строка стала бы blank-линией).
-            (SlotKind::Item, Value::String(s)) if s.is_empty() => (b0, "()".to_string()),
-            (SlotKind::Item, _) => (b0, inline_body(replacement, true)?),
+            (SlotKind::Item, Value::String(s)) if s.is_empty() => SplicePlan {
+                from: b0,
+                prefix: ["", ""],
+                body: Body::Borrowed("()"),
+            },
+            (SlotKind::Item, _) => SplicePlan {
+                from: b0,
+                prefix: ["", ""],
+                body: inline_body(replacement, true)?,
+            },
             // Inline-пара с не-String заменой при существующем raw:
             // raw-тело literal — контейнер не выражаем; снять только
             // ВТОРОЙ `:`, исходные пробелы сохранить.
-            (SlotKind::Pair, value) if existing_raw && !matches!(value, Value::String(_)) => (
-                a + 1,
-                format!("{}{}", ws_raw, inline_body(replacement, false)?),
-            ),
+            (SlotKind::Pair, value) if existing_raw && !matches!(value, Value::String(_)) => {
+                SplicePlan {
+                    from: a + 1,
+                    prefix: [ws_raw, ""],
+                    body: inline_body(replacement, false)?,
+                }
+            }
             // Остальное: маркер не меняется; encoder обеспечивает
             // String-провенанс при необходимости (см. encode_inline).
-            _ => (b0, inline_body(replacement, !existing_raw)?),
+            _ => SplicePlan {
+                from: b0,
+                prefix: ["", ""],
+                body: inline_body(replacement, !existing_raw)?,
+            },
         }
     } else if slot_kind == SlotKind::Block {
         block_replacement(replacement, &pc, a, b0, &ws_pair_block)?
     } else {
         // Линейные слоты: план (тело + желаемый маркер), затем
         // минимальный маркерный переход.
-        let (body_text, desired_raw) = plan_value(replacement, &pc)?;
+        let (body, desired_raw) = plan_value(replacement, &pc)?;
         match (existing_raw, desired_raw) {
             // Маркер верен — меняется только тело (b0 уже после
             // исходных пробелов; пустое тело — один пробел-разделитель).
             (true, true) | (false, false) => {
-                (b0, sep_if_empty_body(b0, b1, ws_plain, ws_raw, body_text))
+                let prefix = if b0 == b1 && ws_plain.is_empty() && ws_raw.is_empty() {
+                    " "
+                } else {
+                    ""
+                };
+                SplicePlan {
+                    from: b0,
+                    prefix: [prefix, ""],
+                    body,
+                }
             }
             // raw → plain:
             //   Pair: снять только ВТОРОЙ `:` ('k:: x' → 'k: x'),
             //   пробелы после `::` сохраняются.
             //   Item: убрать `::` целиком, СОХРАНИВ исходный WS между
             //   маркером и телом (он остаётся ведущим после отступа).
-            (true, false) if slot_kind == SlotKind::Pair => {
-                (a + 1, format!("{}{}", sep_raw(b0, b1, ws_raw), body_text))
-            }
-            (true, false) => (a, format!("{}{}", ws_raw, body_text)),
+            (true, false) if slot_kind == SlotKind::Pair => SplicePlan {
+                from: a + 1,
+                prefix: [sep_ws(b0, b1, ws_raw), ""],
+                body,
+            },
+            (true, false) => SplicePlan {
+                from: a,
+                prefix: [ws_raw, ""],
+                body,
+            },
             // plain → raw:
             //   Pair: добавить только ВТОРОЙ `:` за первым ('k: 5' →
             //   'k:: 42'), исходные пробелы — как были.
             //   Item: вставить `:: ` перед телом (anchor == b0).
-            (false, true) if slot_kind == SlotKind::Pair => (
-                a + 1,
-                format!(":{}{}{}", sep_plain(b0, b1, ws_plain), body_text, ""),
-            ),
-            (false, true) => (a, format!(":: {}", body_text)),
+            (false, true) if slot_kind == SlotKind::Pair => SplicePlan {
+                from: a + 1,
+                prefix: [":", sep_ws(b0, b1, ws_plain)],
+                body,
+            },
+            (false, true) => SplicePlan {
+                from: a,
+                prefix: [":: ", ""],
+                body,
+            },
         }
     };
+    let from = plan.from;
     if text.get(from..b1).is_none() {
         return Err(EditError::Unsupported {
             reason: "internal: splice range out of bounds".to_string(),
         });
     }
 
+    let insertion_len = plan
+        .prefix
+        .iter()
+        .map(|piece| piece.len())
+        .try_fold(plan.body.len(), usize::checked_add)
+        .ok_or_else(|| EditError::Unsupported {
+            reason: "patched document length overflows usize".to_string(),
+        })?;
     let capacity = (text.len() - (b1 - from))
-        .checked_add(insertion.len())
+        .checked_add(insertion_len)
         .ok_or_else(|| EditError::Unsupported {
             reason: "patched document length overflows usize".to_string(),
         })?;
     let mut result = String::with_capacity(capacity);
     result.push_str(&text[..from]);
-    result.push_str(&insertion);
+    result.push_str(plan.prefix[0]);
+    result.push_str(plan.prefix[1]);
+    result.push_str(plan.body.as_str());
     result.push_str(&text[b1..]);
 
     // Цель сравнивается отдельно; остальное дерево — с одинаковыми Null-слотами.
@@ -261,30 +336,13 @@ pub(crate) fn apply(
     Ok(result)
 }
 
-/// Разделитель для веток с неизменным маркером: тела вставляются от
-/// b0 (уже после исходных пробелов); пустое тело источника требует
-/// ровно один пробел, чтобы новое тело не склеилось с маркером.
-fn sep_if_empty_body(b0: usize, b1: usize, ws_plain: &str, ws_raw: &str, body: String) -> String {
-    if b0 == b1 && ws_plain.is_empty() && ws_raw.is_empty() {
-        format!(" {}", body)
+/// Маркерная зона ветки с неизменным маркером: " " на пустом теле
+/// источника, иначе исходный WS — без копий.
+fn sep_ws(b0: usize, b1: usize, ws: &str) -> &str {
+    if b0 == b1 && ws.is_empty() {
+        " "
     } else {
-        body
-    }
-}
-
-fn sep_raw(b0: usize, b1: usize, ws_raw: &str) -> String {
-    if b0 == b1 && ws_raw.is_empty() {
-        " ".to_string()
-    } else {
-        ws_raw.to_string()
-    }
-}
-
-fn sep_plain(b0: usize, b1: usize, ws_plain: &str) -> String {
-    if b0 == b1 && ws_plain.is_empty() {
-        " ".to_string()
-    } else {
-        ws_plain.to_string()
+        ws
     }
 }
 
@@ -292,15 +350,16 @@ fn sep_plain(b0: usize, b1: usize, ws_plain: &str) -> String {
 /// сегмент — строковый ключ, в Array — zero-based индекс. Контекст
 /// берётся с самого целевого листа (физический inline) и из факта
 /// «последний шаг — элемент 0 неявного корня-массива».
-fn descend<'n>(
+fn descend<'n, S: AsRef<str>>(
     root: &'n Node,
-    segments: &[String],
+    segments: &[S],
     root_explicit: bool,
 ) -> Result<(&'n Node, TargetCtx), EditError> {
     let mut container_is_root = true;
     let mut cur: &Node = root;
     let mut root_first = false;
     for seg in segments {
+        let seg = seg.as_ref();
         cur = match &cur.kind {
             Kind::Object(_) => {
                 root_first = false;
@@ -325,11 +384,12 @@ fn descend<'n>(
 }
 
 /// Значение цели в распарсенном оригинале (для no-op и верификации).
-fn lookup_value<'a>(v: &'a Value, segments: &[String]) -> Option<&'a Value> {
+fn lookup_value<'a, S: AsRef<str>>(v: &'a Value, segments: &[S]) -> Option<&'a Value> {
     let mut cur = v;
     for seg in segments {
+        let seg = seg.as_ref();
         cur = match cur {
-            Value::Object(o) => o.get(seg.as_str())?,
+            Value::Object(o) => o.get(seg)?,
             Value::Array(a) => a.get(parse_index(seg).ok()?)?,
             _ => return None,
         };
@@ -338,12 +398,14 @@ fn lookup_value<'a>(v: &'a Value, segments: &[String]) -> Option<&'a Value> {
 }
 
 /// Извлечь цель из временного дерева без клонирования.
-fn take_target(v: &mut Value, segments: &[String]) -> Result<Value, EditError> {
+fn take_target<S: AsRef<str>>(v: &mut Value, segments: &[S]) -> Result<Value, EditError> {
     let (last, parents) = segments.split_last().ok_or(EditError::NotFound)?;
+    let last = last.as_ref();
     let mut cur = v;
     for seg in parents {
+        let seg = seg.as_ref();
         cur = match cur {
-            Value::Object(o) => o.get_mut(seg.as_str()).ok_or(EditError::NotFound)?,
+            Value::Object(o) => o.get_mut(seg).ok_or(EditError::NotFound)?,
             Value::Array(a) => {
                 let idx = parse_index(seg)?;
                 a.get_mut(idx).ok_or(EditError::NotFound)?
@@ -352,7 +414,7 @@ fn take_target(v: &mut Value, segments: &[String]) -> Result<Value, EditError> {
         };
     }
     let slot = match cur {
-        Value::Object(o) => o.get_mut(last.as_str()).ok_or(EditError::NotFound)?,
+        Value::Object(o) => o.get_mut(last).ok_or(EditError::NotFound)?,
         Value::Array(a) => {
             let idx = parse_index(last)?;
             a.get_mut(idx).ok_or(EditError::NotFound)?
@@ -433,16 +495,16 @@ fn has_comment_line(text: &str, from: usize, to: usize, skip: &mut [(u32, u32)])
     false
 }
 
-/// Тело нетривиального скаляра: только скалярные варианты; вызов с
-/// контейнером — типизированная ошибка, не молчаливый fallback.
-fn scalar_text(v: &Value) -> Result<String, EditError> {
+/// Тело нетривиального скаляра (только скалярные варианты); лексика
+/// заимствуется у replacement.
+fn scalar_body(v: &Value) -> Result<Body<'_>, EditError> {
     match v {
-        Value::Null => Ok("null".to_string()),
-        Value::Bool(true) => Ok("true".to_string()),
-        Value::Bool(false) => Ok("false".to_string()),
-        Value::Integer(s) | Value::Float(s) => Ok(s.to_string()),
+        Value::Null => Ok(Body::Borrowed("null")),
+        Value::Bool(true) => Ok(Body::Borrowed("true")),
+        Value::Bool(false) => Ok(Body::Borrowed("false")),
+        Value::Integer(s) | Value::Float(s) => Ok(Body::Borrowed(s.as_str())),
         _ => Err(EditError::Unsupported {
-            reason: "internal: scalar_text called on a compound value".to_string(),
+            reason: "internal: scalar_body called on a compound value".to_string(),
         }),
     }
 }
@@ -450,11 +512,14 @@ fn scalar_text(v: &Value) -> Result<String, EditError> {
 /// Физически inline-значение. `force_string` — для plain-маркера:
 /// числоподобное/keyword-подобное тело обязано получить String-
 /// провенанс (первый символ через \uXXXX).
-fn inline_body(replacement: &Value, force_string: bool) -> Result<String, EditError> {
+fn inline_body(replacement: &Value, force_string: bool) -> Result<Body<'_>, EditError> {
     match replacement {
-        Value::String(s) => Ok(encode_inline(s, force_string && needs_raw_marker(s))),
-        Value::Object(_) | Value::Array(_) => inline_compound_body(replacement, 0),
-        _ => scalar_text(replacement),
+        Value::String(s) => Ok(Body::Owned(encode_inline(
+            s,
+            force_string && needs_raw_marker(s),
+        ))),
+        Value::Object(_) | Value::Array(_) => inline_compound_body(replacement, 0).map(Body::Owned),
+        _ => scalar_body(replacement),
     }
 }
 
@@ -555,26 +620,25 @@ fn push_inline_value(v: &Value, depth: usize, out: &mut String) -> Result<(), Ed
     Ok(())
 }
 
-/// План замены: (тело значения БЕЗ маркерного префикса пары/элемента,
-/// нужен ли raw-маркер). Рендер — по НОВОМУ значению; контекст — по
-/// слоту. Пустой контейнер — inline `{}`/`[]`.
-fn plan_value(replacement: &Value, pc: &PlanCtx) -> Result<(String, bool), EditError> {
+/// План замены: (тело без маркерного префикса, нужен ли raw-маркер);
+/// scalar/String-лексика без escapes заимствуется.
+fn plan_value<'r>(replacement: &'r Value, pc: &PlanCtx) -> Result<(Body<'r>, bool), EditError> {
     match replacement {
         Value::String(s) => plan_string(s, pc),
         Value::Null | Value::Bool(_) | Value::Integer(_) | Value::Float(_) => {
-            Ok((scalar_text(replacement)?, false))
+            Ok((scalar_body(replacement)?, false))
         }
-        Value::Object(o) if o.is_empty() => Ok(("{}".to_string(), false)),
-        Value::Array(a) if a.is_empty() => Ok(("[]".to_string(), false)),
+        Value::Object(o) if o.is_empty() => Ok((Body::Borrowed("{}"), false)),
+        Value::Array(a) if a.is_empty() => Ok((Body::Borrowed("[]"), false)),
         Value::Object(_) | Value::Array(_) => {
             let body = render_compound_body(replacement)?;
-            Ok((reindent(&body, pc.indent, pc.eol), false))
+            Ok((Body::Owned(reindent(&body, pc.indent, pc.eol)), false))
         }
     }
 }
 
 /// План String-замены для линейных слотов вне inline.
-fn plan_string(s: &str, pc: &PlanCtx) -> Result<(String, bool), EditError> {
+fn plan_string<'r>(s: &'r str, pc: &PlanCtx) -> Result<(Body<'r>, bool), EditError> {
     if s.contains('\r') {
         return Err(EditError::Unsupported {
             reason: "replacement string contains CR (U+000D)".to_string(),
@@ -585,7 +649,10 @@ fn plan_string(s: &str, pc: &PlanCtx) -> Result<(String, bool), EditError> {
     if s.contains('\n') || edge_ws {
         // plain-маркер обязателен: raw не открывает multiline-блок
         // ('k:: ((' — literal строка '((', а не блок) и триммирует края.
-        return Ok((verbatim_block_body(s, pc.indent, pc.eol)?, false));
+        return Ok((
+            Body::Owned(verbatim_block_body(s, pc.indent, pc.eol)?),
+            false,
+        ));
     }
     let mut desired_raw = if pc.slot == SlotKind::Item {
         item_needs_raw_marker(s) || s.is_empty()
@@ -603,12 +670,12 @@ fn plan_string(s: &str, pc: &PlanCtx) -> Result<(String, bool), EditError> {
     if pc.existing_raw {
         desired_raw = true;
     }
-    Ok((s.to_string(), desired_raw))
+    Ok((Body::Borrowed(s), desired_raw))
 }
 
-/// Verbatim-блок `(( ... ))`: контент дословно, '\n' конвертируются в
-/// EOL документа, финальный перевод строки сохраняется пустой строкой
-/// перед `))` (verbatim join коллекционера).
+/// Verbatim-блок `(( ... ))`: контент дословно, '\n' → EOL документа,
+/// финальный LF — пустая строка перед `))`. Один буфер, checked
+/// capacity; для LF-документов контент копируется одним push_str.
 fn verbatim_block_body(s: &str, indent: &str, eol: &str) -> Result<String, EditError> {
     for line in s.lines() {
         if line.trim_matches(|c: char| c == ' ' || c == '\t') == "))" {
@@ -619,8 +686,47 @@ fn verbatim_block_body(s: &str, indent: &str, eol: &str) -> Result<String, EditE
             });
         }
     }
-    let content = s.replace('\n', eol);
-    Ok(format!("(({}{}{}{}))", eol, content, eol, indent))
+    // Расширение (1 байт '\n' → 2 байта eol) считается только для не-LF;
+    // рамка: opener/closer + 2 eol + отступ.
+    let newlines = if eol == "\n" {
+        0
+    } else {
+        memchr::memchr_iter(b'\n', s.as_bytes()).count()
+    };
+    let extra_per_nl = eol.len() - 1;
+    let capacity =
+        s.len()
+            .checked_add(newlines.checked_mul(extra_per_nl).ok_or_else(|| {
+                EditError::Unsupported {
+                    reason: "patched document length overflows usize".to_string(),
+                }
+            })?)
+            .and_then(|n| n.checked_add(2 * eol.len()))
+            .and_then(|n| n.checked_add(indent.len()))
+            .and_then(|n| n.checked_add(4))
+            .ok_or_else(|| EditError::Unsupported {
+                reason: "patched document length overflows usize".to_string(),
+            })?;
+    let mut out = String::with_capacity(capacity);
+    out.push_str("((");
+    out.push_str(eol);
+    if eol == "\n" {
+        out.push_str(s);
+    } else {
+        // split('\n') сохраняет хвостовой LF пустой последней строкой.
+        let mut first = true;
+        for line in s.split('\n') {
+            if !first {
+                out.push_str(eol);
+            }
+            first = false;
+            out.push_str(line);
+        }
+    }
+    out.push_str(eol);
+    out.push_str(indent);
+    out.push_str("))");
+    Ok(out)
 }
 
 /// Замена в multiline-БЛОКЕ; роль задаёт форму результата:
@@ -632,13 +738,13 @@ fn verbatim_block_body(s: &str, indent: &str, eol: &str) -> Result<String, EditE
 ///   (parsed Scalar("")), item-сырое `:: …` для нуждающихся, multiline
 ///   — verbatim-блок; root-dispatch первого элемента неявного корня
 ///   сохраняется.
-fn block_replacement(
-    replacement: &Value,
-    pc: &PlanCtx,
+fn block_replacement<'t, 'r>(
+    replacement: &'r Value,
+    pc: &PlanCtx<'t>,
     a: usize,
     b0: usize,
-    ws_pair: &str,
-) -> Result<(usize, String), EditError> {
+    ws_pair: &'t str,
+) -> Result<SplicePlan<'t, 'r>, EditError> {
     match replacement {
         Value::String(s) => {
             if s.contains('\r') {
@@ -650,12 +756,20 @@ fn block_replacement(
                 || s.chars().next().is_some_and(is_ktav_whitespace)
                 || s.chars().last().is_some_and(is_ktav_whitespace);
             if multiline {
-                return Ok((b0, verbatim_block_body(s, pc.indent, pc.eol)?));
+                return Ok(SplicePlan {
+                    from: b0,
+                    prefix: ["", ""],
+                    body: Body::Owned(verbatim_block_body(s, pc.indent, pc.eol)?),
+                });
             }
             // Item-роль: пустая строка → `()` (парсится как Scalar(""),
             // голая пустая строка была бы blank-линией).
             if pc.role_item_block && s.is_empty() {
-                return Ok((b0, "()".to_string()));
+                return Ok(SplicePlan {
+                    from: b0,
+                    prefix: ["", ""],
+                    body: Body::Borrowed("()"),
+                });
             }
             let item_raw = pc.role_item_block
                 && (item_needs_raw_marker(s)
@@ -663,19 +777,36 @@ fn block_replacement(
                         && (bare_item_is_pair_candidate(s) || s.starts_with('\u{FEFF}'))));
             let pair_raw = !pc.role_item_block && needs_raw_marker(s);
             if item_raw {
-                Ok((b0, format!(":: {}", s)))
+                Ok(SplicePlan {
+                    from: b0,
+                    prefix: [":: ", ""],
+                    body: Body::Borrowed(s),
+                })
             } else if pair_raw {
                 // Сменить маркер пары на raw: второй `:` + исходные
                 // пробелы + тело.
-                Ok((a + 1, format!(":{}{}{}", ws_pair, s, "")))
+                Ok(SplicePlan {
+                    from: a + 1,
+                    prefix: [":", ws_pair],
+                    body: Body::Borrowed(s),
+                })
             } else {
-                Ok((b0, s.to_string()))
+                Ok(SplicePlan {
+                    from: b0,
+                    prefix: ["", ""],
+                    body: Body::Borrowed(s),
+                })
             }
         }
         _ => {
             let mut pc = *pc;
             pc.slot = SlotKind::Block;
-            Ok((b0, plan_value(replacement, &pc)?.0))
+            let (body, _) = plan_value(replacement, &pc)?;
+            Ok(SplicePlan {
+                from: b0,
+                prefix: ["", ""],
+                body,
+            })
         }
     }
 }
