@@ -106,6 +106,7 @@
 
 #[cfg(feature = "cabi")]
 pub mod cabi;
+pub mod edit;
 pub mod error;
 
 mod document;

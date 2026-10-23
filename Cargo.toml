@@ -103,3 +103,7 @@ harness = false
 [[bench]]
 name = "emit"
 harness = false
+
+[[bench]]
+name = "source_edit"
+harness = false
