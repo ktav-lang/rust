@@ -107,3 +107,7 @@ harness = false
 [[bench]]
 name = "source_edit"
 harness = false
+
+[[bench]]
+name = "runtime_paths"
+harness = false

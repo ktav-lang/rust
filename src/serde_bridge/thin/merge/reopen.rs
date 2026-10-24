@@ -36,7 +36,7 @@ fn is_open(ev: &Event<'_>) -> bool {
 pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> EventStream<'a> {
     let mut bufs: Vec<Buf<'a>> = vec![Buf {
         items: BumpVec::with_capacity_in(src.len(), bump),
-        seen: BumpVec::with_capacity_in(8, bump),
+        seen: BumpVec::new_in(bump),
         index: None,
     }];
     // Index 0 is the document root, pre-created above. `root_open`
@@ -66,7 +66,7 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
             // entry and the `Key` item.
             ev @ (Event::BeginObject | Event::BeginArray) => {
                 let idx = bufs.len();
-                bufs.push(new_buf(bump, src.len()));
+                bufs.push(new_buf(bump));
                 bufs[stack_top(&stack)]
                     .items
                     .push(Item::Obj { buf: idx, open: ev });
@@ -83,7 +83,7 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
                         // rejected as duplicates by the parser (§ 6.3),
                         // so this is always fresh. No `seen` entry.
                         let idx = bufs.len();
-                        bufs.push(new_buf(bump, src.len()));
+                        bufs.push(new_buf(bump));
                         bufs[stack_top(&stack)].items.push(Item::Ev(Event::Key(k)));
                         bufs[stack_top(&stack)]
                             .items
@@ -108,7 +108,7 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
                             }
                             None => {
                                 let idx = bufs.len();
-                                bufs.push(new_buf(bump, src.len()));
+                                bufs.push(new_buf(bump));
                                 bufs[top].seen_insert(bump, k, idx);
                                 bufs[top].items.push(Item::Ev(Event::Key(k)));
                                 bufs[top].items.push(Item::Obj { buf: idx, open });
@@ -169,10 +169,21 @@ pub(crate) fn merge_reopened<'a>(src: &EventStream<'a>, bump: &'a Bump) -> Event
     out
 }
 
-fn new_buf<'a>(bump: &'a Bump, hint: usize) -> Buf<'a> {
+#[cfg(test)]
+#[test]
+fn empty_child_buffer_has_no_arena_allocation() {
+    let bump = Bump::new();
+    let before = bump.allocated_bytes();
+    let buffer = new_buf(&bump);
+    assert_eq!(bump.allocated_bytes(), before);
+    assert!(buffer.items.is_empty());
+    assert!(buffer.seen.is_empty());
+}
+
+fn new_buf<'a>(bump: &'a Bump) -> Buf<'a> {
     Buf {
-        items: BumpVec::with_capacity_in(hint.min(64), bump),
-        seen: BumpVec::with_capacity_in(8, bump),
+        items: BumpVec::new_in(bump),
+        seen: BumpVec::new_in(bump),
         index: None,
     }
 }
