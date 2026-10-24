@@ -288,19 +288,11 @@ fn line_text_at(source: &str, pos: usize) -> Option<String> {
         return None;
     }
     let bytes = source.as_bytes();
-    let line_start = bytes[..pos]
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map_or(0, |i| i + 1);
-    let line_end = bytes[pos..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .map_or(source.len(), |i| pos + i);
-    let mut line = &source[line_start..line_end];
-    if line.ends_with('\r') {
-        line = &line[..line.len() - 1];
-    }
-    Some(line.to_string())
+    let (_, column) = crate::error::source::line_col(bytes, pos);
+    let line_start = pos - column as usize;
+    let line_end = memchr::memchr2(b'\r', b'\n', &bytes[line_start..])
+        .map_or(source.len(), |offset| line_start + offset);
+    Some(source[line_start..line_end].to_string())
 }
 
 /// Decode the raw key-path text carried by `DuplicateKey` /

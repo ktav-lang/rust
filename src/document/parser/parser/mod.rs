@@ -66,7 +66,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn finish(mut self, eof_offset: u32) -> Result<Value, Error> {
+    pub(super) fn finish(mut self, eof_offset: u32, source: &str) -> Result<Value, Error> {
         if let Some(c) = &self.collecting {
             let kind = match c.mode {
                 MultilineMode::Stripped => CompoundKind::MultilineStripped,
@@ -75,6 +75,7 @@ impl<'a> Parser<'a> {
             let start = self.multiline_opener.unwrap_or(eof_offset);
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }
@@ -86,6 +87,7 @@ impl<'a> Parser<'a> {
             let start = *self.opener_offsets.last().unwrap();
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }
@@ -102,6 +104,7 @@ impl<'a> Parser<'a> {
             let start = *self.opener_offsets.last().unwrap();
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }

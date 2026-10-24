@@ -83,26 +83,14 @@ impl Span {
         Some(&input[start..end])
     }
 
-    /// Compute the 1-based line and 0-based column corresponding to
-    /// this span's `start` offset within `input`. Counts `\n` as a
-    /// line break; `\r` is treated as part of the previous line.
+    /// Compute the 1-based line and 0-based byte column at `start`.
+    /// LF, lone CR and CRLF each count as one line terminator.
     /// Out-of-range start clamps to `input.len()`.
     ///
     /// The returned column is a **0-based byte column** (bytes since
     /// the last line break), not a character or UTF-16 column.
     pub fn line_col(&self, input: &str) -> (u32, u32) {
-        let start = (self.start as usize).min(input.len());
-        let bytes = input.as_bytes();
-        let mut line: u32 = 1;
-        let mut last_nl: usize = 0;
-        for (i, &b) in bytes.iter().enumerate().take(start) {
-            if b == b'\n' {
-                line += 1;
-                last_nl = i + 1;
-            }
-        }
-        let col = (start - last_nl) as u32;
-        (line, col)
+        crate::error::source::line_col(input.as_bytes(), self.start as usize)
     }
 }
 
@@ -162,20 +150,16 @@ pub enum Error {
         /// Decoded key path from the root to the offending pair's key.
         path: Vec<String>,
     },
-    /// A byte-level input (currently only [`crate::from_file`]) is not
-    /// valid UTF-8 (spec 0.7 § 6.15). This is a top-level variant rather
-    /// than an [`ErrorKind`] case because the check runs before any
-    /// line-oriented processing — there is no meaningful line number,
-    /// exactly as for `Unrepresentable`. The `&str`-taking entry points
-    /// (`parse`, `parse_strict`, `from_str`, `parse_events`) cannot
-    /// produce this error: a Rust `&str` is valid UTF-8 by construction.
+    /// Byte-level input is not valid UTF-8; validation precedes grammar.
+    /// Locations refer to original bytes, including BOM and line endings.
+    /// Entry points accepting `&str` cannot produce this error.
     InvalidUtf8 {
-        /// Byte offset of the first invalid UTF-8 sequence — the input
-        /// is valid UTF-8 up to this point
-        /// (`std::str::Utf8Error::valid_up_to`). The spec's error-span
-        /// SHOULD points here; [`Error::span`] reports it as an
-        /// insertion-point [`Span`].
+        /// Byte offset of the first invalid UTF-8 sequence.
         valid_up_to: usize,
+        /// 1-based line of the invalid sequence.
+        line: u32,
+        /// Non-empty byte range covering the invalid sequence.
+        span: Span,
     },
 }
 
@@ -286,10 +270,13 @@ pub enum ErrorKind {
     /// A key contained an invalid byte (whitespace, `[`, `]`, `{`, `}`,
     /// `:`, `#`) or was empty after segmentation.
     InvalidKey { line: u32, key: String, span: Span },
-    /// The document ended while a compound (object, array, multi-line
-    /// string) was still open. `span` covers from the opener through
-    /// EOF (or `Span::EMPTY` if the opener wasn't tracked).
-    UnclosedCompound { kind: CompoundKind, span: Span },
+    /// EOF before a compound closed. `span` covers opener..EOF;
+    /// `line` is the 1-based line containing that opener.
+    UnclosedCompound {
+        kind: CompoundKind,
+        line: u32,
+        span: Span,
+    },
     /// A closer (`}` or `]`) appeared without a matching open compound,
     /// or with the wrong shape relative to the open one.
     /// `expected` records what was actually open (or could be opened),

@@ -1,6 +1,10 @@
 >>>>> lang=en
 ## [Unreleased]
 
+### Changed
+
+- **Breaking in 0.9.0:** `InvalidUtf8` gains `line`/`span`; `UnclosedCompound` gains the opener's `line`. Downstream constructors and exhaustive field patterns must migrate. Direct Rust errors, public envelopes and C ABI source operations share raw-byte locations; UTF-8 spans are non-empty and EOF spans cover the innermost opener through EOF. LF, lone CR, CRLF and BOM offsets are preserved, including `Span::line_col` and envelope `line_text`. The ten-field JSON schema and I/O/writer location rules are unchanged. New regression oracles live only in the draft spec `versions/0.9/tests` and run across source entry points; CI refuses to skip a missing corpus. Version 0.9.0 is in preparation, not published.
+
 ### Added
 
 - Rust-only source-editing API: `ktav::edit::edit_value` accepts an escaped dotted path, and `edit_value_segments` accepts a slice/vector of literal segments. Both replace an existing value without reformatting the document, preserve surrounding bytes and comments, and return a new `String`.
@@ -17,6 +21,10 @@
 >>>>> lang=ru
 ## [Не выпущено]
 
+### Изменено
+
+- **Breaking в 0.9.0:** в `InvalidUtf8` добавлены `line`/`span`, в `UnclosedCompound` — `line` открывающего маркера. Downstream-конструкторы и patterns, перечисляющие все поля, требуют миграции. Прямые Rust-ошибки, публичный envelope и C ABI source operations используют общие координаты исходных байтов; UTF-8 spans непустые, EOF spans охватывают самый внутренний незакрытый opener до EOF. LF, одиночный CR, CRLF и BOM учитываются без нормализации, в том числе в `Span::line_col` и envelope `line_text`. Схема JSON из десяти полей и отсутствие позиций у I/O/writer не меняются. Новые regression oracles находятся только в draft спеки `versions/0.9/tests` и проверяются через source entry points; CI запрещает пропуск отсутствующего corpus. Версия 0.9.0 готовится, но не опубликована.
+
 ### Добавлено
 
 - Rust API редактирования исходного текста: `ktav::edit::edit_value` принимает экранированный dotted-путь, `edit_value_segments` — слайс/вектор буквальных сегментов. Обе функции заменяют существующее значение без форматирования документа, сохраняют окружающие байты и комментарии и возвращают новый `String`.
@@ -32,6 +40,10 @@
 
 >>>>> lang=zh
 ## [尚未发布]
+
+### 变更
+
+- **0.9.0 破坏性变更：** `InvalidUtf8` 新增 `line`/`span`，`UnclosedCompound` 新增起始标记的 `line`。下游构造器及枚举全部字段的模式需要迁移。直接 Rust 错误、公开 envelope 和 C ABI 源操作共用原始字节坐标；UTF-8 区间非空，EOF 区间覆盖最内层未闭合起始标记至 EOF。LF、单独 CR、CRLF 及 BOM 均不经规范化，`Span::line_col` 和 envelope 的 `line_text` 同样遵守该规则。十字段 JSON 格式及 I/O/writer 无源位置的规则不变。新增回归 oracle 仅位于规范草案 `versions/0.9/tests`，由各源入口执行；CI 不允许因语料缺失而跳过。0.9.0 尚在准备中，未发布。
 
 ### 新增
 

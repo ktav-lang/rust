@@ -48,13 +48,17 @@ fn line_text_edges() {
     assert_eq!(e.line_text, None);
     assert_eq!(e.span, None);
 
-    // InvalidUtf8: insertion-point span at valid_up_to, no line
-    let err = Error::InvalidUtf8 { valid_up_to: 7 };
+    // Координаты сохраняются при публичном преобразовании в envelope.
+    let err = Error::InvalidUtf8 {
+        valid_up_to: 7,
+        line: 1,
+        span: Span::new(7, 8),
+    };
     let e = env(&err, "0123456789");
     assert_eq!(e.error, "InvalidUtf8");
-    assert_eq!(e.span, Some(Span::new(7, 7)));
+    assert_eq!(e.span, Some(Span::new(7, 8)));
     assert_eq!(e.line_text, Some("0123456789".to_string()));
-    assert_eq!(e.line, None);
+    assert_eq!(e.line, Some(1));
     assert_eq!(e.spec_section, Some("§6.15".to_string()));
 }
 
@@ -103,6 +107,7 @@ fn every_error_kind_maps_onto_envelope() {
         },
         ErrorKind::UnclosedCompound {
             kind: ktav::CompoundKind::Object,
+            line: 1,
             span,
         },
         ErrorKind::UnbalancedBracket {

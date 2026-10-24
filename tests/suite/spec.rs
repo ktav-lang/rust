@@ -23,6 +23,8 @@
 //!   4. if none contains a `versions/` dir, the test logs and returns —
 //!      it does not fail, so CI without the spec checkout stays green.
 
+#[path = "spec/diagnostics.rs"]
+mod diagnostics;
 #[path = "spec/invalid.rs"]
 mod invalid;
 #[path = "spec/manifest.rs"]

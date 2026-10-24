@@ -159,7 +159,7 @@ impl Display for Error {
                 }
                 Ok(())
             }
-            Error::InvalidUtf8 { valid_up_to } => write!(
+            Error::InvalidUtf8 { valid_up_to, .. } => write!(
                 f,
                 "InvalidUtf8: input is not valid UTF-8; first invalid byte sequence at byte offset {}",
                 valid_up_to

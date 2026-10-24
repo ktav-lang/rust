@@ -74,7 +74,7 @@ pub(crate) fn parse_with_trivia(text: &str) -> Result<FmtDoc> {
             }
             line_start = end + 1;
         }
-        return parser.finish(bytes.len() as u32);
+        return parser.finish(bytes.len() as u32, text);
     }
 
     let mut line_start: usize = start;
@@ -105,5 +105,5 @@ pub(crate) fn parse_with_trivia(text: &str) -> Result<FmtDoc> {
         parser.handle_line(line, line_num, line_start as u32)?;
         line_start = next_start;
     }
-    parser.finish(bytes.len() as u32)
+    parser.finish(bytes.len() as u32, text)
 }

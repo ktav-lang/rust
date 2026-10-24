@@ -75,6 +75,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo test
+        env:
+          KTAV_REQUIRE_SPEC: '1'
         run: cargo test --all-features --no-fail-fast
 
   msrv:
@@ -113,4 +115,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo test
+        env:
+          KTAV_REQUIRE_SPEC: '1'
         run: cargo test --locked --all-features --no-fail-fast

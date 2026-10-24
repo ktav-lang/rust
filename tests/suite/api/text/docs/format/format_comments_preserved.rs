@@ -173,7 +173,7 @@ fn no_comments_inside_multiline_string_block_are_not_comments() {
 // Corpus fixtures
 // ---------------------------------------------------------------------------
 
-const SPEC_VERSION: &str = "0.8";
+const SPEC_VERSION: &str = "0.9";
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));

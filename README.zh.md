@@ -13,11 +13,10 @@
 
 **演练场：** 在浏览器中互转 JSON / YAML / TOML / INI ⇄ Ktav — **[ktav-lang.github.io](https://ktav-lang.github.io/)**。
 
-**规范:** 本 crate 实现 **Ktav 0.8.0**,即 `Cargo.toml` 中
-`[package.metadata.ktav] spec-version` 所指定的版本。格式与 crate 彼此
-独立地版本化与维护,两个号码会有意分开——不改变格式行为的 crate 发布会
-让 `spec-version` 保持原样。规范正文见
-[`ktav-lang/spec`](https://github.com/ktav-lang/spec),crate 的历史见
+**0.9.0 正在准备中，尚未发布。** 本分支同时包含按路径无损编辑源文本
+及新的源错误坐标模型。`Cargo.toml` 指向规范草案语料 `versions/0.9/tests`；
+已发布的 0.8.1 保持不变。规范见
+[`ktav-lang/spec`](https://github.com/ktav-lang/spec)，迁移说明见
 [`CHANGELOG.zh.md`](CHANGELOG.zh.md)。
 
 ---
@@ -466,6 +465,18 @@ Rust 数值类型(`u8`..`u128`、`i8`..`i128`、`usize`、`isize`、`f32`、
 (例如用 `::` 强制的)仍通过 `FromStr` 接受。`NaN` / `±Infinity` 会被
 序列化器拒绝(Ktav 不表示这些值)。
 
+## 错误模型迁移（0.9）
+
+**0.9 迁移（破坏性变更）：** `Error::InvalidUtf8` 现在包含
+`{ valid_up_to, line, span }`，`ErrorKind::UnclosedCompound` 包含
+`{ kind, line, span }`。下游构造器需要填写新增字段；只关注部分字段时，
+模式应使用 `..`。两种错误的 `line()` 都返回源行号。UTF-8 区间覆盖原始
+错误字节；EOF 诊断覆盖最内层未闭合起始标记至 EOF，并报告起始标记所在行。
+坐标保留 BOM 及 LF/CR/CRLF；`Span::line_col` 和 envelope 的 `line_text`
+识别全部三种换行形式。I/O 及 writer 错误仍不携带源位置。下述十字段 JSON
+格式不变。新增位置 oracle 位于规范草案的 `versions/0.9/tests`；
+当前工作版本尚未发布。
+
 ## 示例:Ktav → JSON5
 
 右侧使用 JSON5,因为它读起来像普通 JavaScript,允许注释,并且
@@ -899,9 +910,12 @@ ktav/
 
 ## 安装
 
+下面的依赖为已发布的 0.8.1，不包含新增路径编辑 API 或 0.9 错误模型。
+准备中的 0.9.0 目前需要使用本源代码 checkout。
+
 ```toml
 [dependencies]
-ktav = "0.8.0"
+ktav = "0.8.1"
 serde = { version = "1", features = ["derive"] }
 ```
 

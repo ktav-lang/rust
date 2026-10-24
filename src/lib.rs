@@ -207,9 +207,8 @@ pub fn from_str<T: DeserializeOwned>(s: &str) -> Result<T> {
 /// failures (file not found, permission denied) remain [`Error::Io`].
 pub fn from_file<T: DeserializeOwned, P: AsRef<Path>>(path: P) -> Result<T> {
     let bytes = fs::read(path)?;
-    let text = std::str::from_utf8(&bytes).map_err(|e| Error::InvalidUtf8 {
-        valid_up_to: e.valid_up_to(),
-    })?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|error| crate::error::source::invalid_utf8(&bytes, error))?;
     from_str(text)
 }
 

@@ -16,13 +16,10 @@ use std::path::{Path, PathBuf};
 
 use ktav::{CompoundKind, Error, ErrorKind, Span};
 
-const SPEC_VERSION: &str = "0.8";
+const SPEC_VERSION: &str = "0.9";
 
-/// Floor on the number of fixtures the walk must reach. The 0.7 corpus
-/// holds 74; this is deliberately exact-ish rather than "> 0", because
-/// the failure mode being guarded against is running a *smaller* corpus
-/// than intended and calling it a pass.
-const MIN_INVALID_FIXTURES: usize = 74;
+/// Не допускать неполный или устаревший corpus 0.9.
+const MIN_INVALID_FIXTURES: usize = 162;
 
 fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));

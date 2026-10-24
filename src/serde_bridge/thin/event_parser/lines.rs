@@ -86,7 +86,7 @@ pub(crate) fn parse_events<'a>(text: &'a str, bump: &'a Bump) -> Result<(EventSt
         }
     }
 
-    p.finish(bytes.len() as u32, &mut events)?;
+    p.finish(bytes.len() as u32, text, &mut events)?;
     Ok((events, p.reopens))
 }
 // ---------------------------------------------------------------------------
@@ -97,6 +97,7 @@ impl<'a> EventParser<'a> {
     pub(crate) fn finish<S: EventSink<'a>>(
         &mut self,
         eof_offset: u32,
+        source: &str,
         events: &mut S,
     ) -> Result<()> {
         if let Some(c) = &self.collecting {
@@ -107,6 +108,7 @@ impl<'a> EventParser<'a> {
             let start = self.multiline_opener.unwrap_or(eof_offset);
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }
@@ -118,6 +120,7 @@ impl<'a> EventParser<'a> {
             let start = *self.opener_offsets.last().unwrap();
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }
@@ -133,6 +136,7 @@ impl<'a> EventParser<'a> {
             let start = *self.opener_offsets.last().unwrap();
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }

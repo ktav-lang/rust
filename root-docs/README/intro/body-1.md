@@ -15,13 +15,11 @@
 
 **Playground:** convert JSON / YAML / TOML / INI ⇄ Ktav in your browser at **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Specification:** this crate implements **Ktav 0.8.0**, the version
-named by `[package.metadata.ktav] spec-version` in `Cargo.toml`. The
-format is versioned and maintained independently of this crate — the two
-numbers move apart on purpose, since a crate release that changes no
-format behaviour leaves `spec-version` where it was. See
-[`ktav-lang/spec`](https://github.com/ktav-lang/spec) for the formal
-document, and [`CHANGELOG.md`](CHANGELOG.md) for this crate's history.
+**Version in preparation: 0.9.0, not published.** This branch combines
+lossless source editing by path and the new source-error location model.
+`Cargo.toml` targets the draft spec corpus `versions/0.9/tests`; published
+0.8.1 remains unchanged. See [`ktav-lang/spec`](https://github.com/ktav-lang/spec)
+for the specification and [`CHANGELOG.md`](CHANGELOG.md) for the migration.
 
 ---
 
@@ -42,13 +40,12 @@ document, and [`CHANGELOG.md`](CHANGELOG.md) for this crate's history.
 
 **Песочница:** конвертация JSON / YAML / TOML / INI ⇄ Ktav прямо в браузере — **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Спецификация:** этот crate реализует **Ktav 0.8.0** — версию,
-указанную в `[package.metadata.ktav] spec-version` в `Cargo.toml`.
-Формат версионируется и поддерживается независимо от crate-а, и два
-номера намеренно расходятся: выпуск crate-а, не меняющий поведение
-формата, оставляет `spec-version` на месте. См.
-[`ktav-lang/spec`](https://github.com/ktav-lang/spec) для канонического
-документа и [`CHANGELOG.ru.md`](CHANGELOG.ru.md) — историю crate-а.
+**Готовится версия 0.9.0, ещё не опубликована.** Эта ветка объединяет
+lossless-редактирование исходного текста по пути и новую модель координат
+ошибок. `Cargo.toml` указывает на draft corpus спеки `versions/0.9/tests`;
+опубликованная 0.8.1 не меняется. Спецификация —
+[`ktav-lang/spec`](https://github.com/ktav-lang/spec), миграция —
+[`CHANGELOG.ru.md`](CHANGELOG.ru.md).
 
 ---
 
@@ -68,11 +65,10 @@ document, and [`CHANGELOG.md`](CHANGELOG.md) for this crate's history.
 
 **演练场：** 在浏览器中互转 JSON / YAML / TOML / INI ⇄ Ktav — **[ktav-lang.github.io](https://ktav-lang.github.io/)**。
 
-**规范:** 本 crate 实现 **Ktav 0.8.0**,即 `Cargo.toml` 中
-`[package.metadata.ktav] spec-version` 所指定的版本。格式与 crate 彼此
-独立地版本化与维护,两个号码会有意分开——不改变格式行为的 crate 发布会
-让 `spec-version` 保持原样。规范正文见
-[`ktav-lang/spec`](https://github.com/ktav-lang/spec),crate 的历史见
+**0.9.0 正在准备中，尚未发布。** 本分支同时包含按路径无损编辑源文本
+及新的源错误坐标模型。`Cargo.toml` 指向规范草案语料 `versions/0.9/tests`；
+已发布的 0.8.1 保持不变。规范见
+[`ktav-lang/spec`](https://github.com/ktav-lang/spec)，迁移说明见
 [`CHANGELOG.zh.md`](CHANGELOG.zh.md)。
 
 ---

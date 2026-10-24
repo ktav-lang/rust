@@ -178,7 +178,7 @@ fn explicit_root_unclosed_at_eof_is_unclosed_compound() {
     // event stream, the owned parser, and serde `from_str` alike.
     let err = collect("{\n    a: 1\n").unwrap_err();
     match &err {
-        Error::Structured(ErrorKind::UnclosedCompound { kind, span }) => {
+        Error::Structured(ErrorKind::UnclosedCompound { kind, span, .. }) => {
             assert_eq!(*kind, CompoundKind::Object);
             assert_eq!(*span, Span::new(0, 11)); // opener `{` .. EOF
         }

@@ -14,13 +14,11 @@
 
 **Playground:** convert JSON / YAML / TOML / INI ⇄ Ktav in your browser at **[ktav-lang.github.io](https://ktav-lang.github.io/)**.
 
-**Specification:** this crate implements **Ktav 0.8.0**, the version
-named by `[package.metadata.ktav] spec-version` in `Cargo.toml`. The
-format is versioned and maintained independently of this crate — the two
-numbers move apart on purpose, since a crate release that changes no
-format behaviour leaves `spec-version` where it was. See
-[`ktav-lang/spec`](https://github.com/ktav-lang/spec) for the formal
-document, and [`CHANGELOG.md`](CHANGELOG.md) for this crate's history.
+**Version in preparation: 0.9.0, not published.** This branch combines
+lossless source editing by path and the new source-error location model.
+`Cargo.toml` targets the draft spec corpus `versions/0.9/tests`; published
+0.8.1 remains unchanged. See [`ktav-lang/spec`](https://github.com/ktav-lang/spec)
+for the specification and [`CHANGELOG.md`](CHANGELOG.md) for the migration.
 
 ---
 
@@ -503,6 +501,20 @@ the target numeric type; a value that arrived as a string (e.g. forced
 with `::`) is still accepted via `FromStr`. `NaN` / `±Infinity` are
 rejected by the serializer (Ktav does not represent them).
 
+## Error model migration (0.9)
+
+**0.9 migration (breaking):** `Error::InvalidUtf8` now contains
+`{ valid_up_to, line, span }`; `ErrorKind::UnclosedCompound` contains
+`{ kind, line, span }`. Update downstream constructors with the new fields;
+use `..` in patterns when only selected fields matter. `line()` now returns
+the source line for both errors. UTF-8 spans cover original malformed bytes;
+EOF diagnostics cover the innermost opener through EOF and report its line.
+Coordinates preserve BOM and LF/CR/CRLF; `Span::line_col` and envelope
+`line_text` recognize all three terminators. I/O and writer failures retain
+absent source positions. The ten-field JSON schema below is unchanged.
+The new location oracles live in the draft `versions/0.9/tests` spec corpus;
+this working version has not been published.
+
 ## Examples: Ktav → JSON5
 
 JSON5 is on the right because it reads like ordinary JavaScript, allows
@@ -961,9 +973,12 @@ their parent module.
 
 ## Installation
 
+The published dependency below is 0.8.1; it does not include the new path
+editing or 0.9 error model. Version 0.9.0 currently requires this source checkout.
+
 ```toml
 [dependencies]
-ktav = "0.8.0"
+ktav = "0.8.1"
 serde = { version = "1", features = ["derive"] }
 ```
 

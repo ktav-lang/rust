@@ -989,18 +989,21 @@ impl<'a> Builder<'a> {
         if self.collecting.is_some() {
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind: CompoundKind::MultilineVerbatim,
+                line: 1,
                 span: Span::new(0, eof_offset),
             }));
         }
         if self.stack.len() > 1 {
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind: CompoundKind::Object,
+                line: 1,
                 span: Span::new(0, eof_offset),
             }));
         }
         if self.root_is_explicit && !self.root_consumed {
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind: CompoundKind::Object,
+                line: 1,
                 span: Span::new(0, eof_offset),
             }));
         }

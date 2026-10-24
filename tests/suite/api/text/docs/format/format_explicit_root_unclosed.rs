@@ -13,7 +13,7 @@ fn expect_unclosed(src: &str, kind: CompoundKind, start: u32, end: u32) {
         Err(e) => e,
     };
     match &err {
-        Error::Structured(ErrorKind::UnclosedCompound { kind: k, span }) => {
+        Error::Structured(ErrorKind::UnclosedCompound { kind: k, span, .. }) => {
             assert_eq!(*k, kind, "kind mismatch for {src:?}");
             assert_eq!(*span, Span::new(start, end), "span mismatch for {src:?}");
         }

@@ -10,7 +10,7 @@ release within a few days.
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.8.x   | ✅                 |
+| 0.9.x   | ✅                 |
 | older   | ❌ — upgrade first |
 
 ## Reporting a vulnerability

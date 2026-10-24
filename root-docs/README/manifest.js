@@ -7,6 +7,7 @@ export default [
   "compounds",
   "corners",
   "rust-usage",
+  "error-migration",
   "examples",
   "round-trip",
   "formatting",
