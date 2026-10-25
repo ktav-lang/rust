@@ -12,6 +12,8 @@ export default [
   "round-trip",
   "formatting",
   "editing",
+  "editing-cookbook",
+  "diagnostics09",
   "cabi",
   "architecture",
   "not-do",
