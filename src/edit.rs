@@ -1,11 +1,14 @@
-//! Lossless source-level editing: replace the value at a key path,
-//! touching only the target's own bytes.
+//! Lossless-замена значения по пути без форматирования всего документа.
 //!
-//! Unlike [`parse`](crate::parse) → mutate → serialize round-trips,
-//! `edit_value` splices the source text at the exact byte range of the
-//! target value. Comments, blank lines, indentation, key spelling,
-//! BOM, line-ending style (LF / CR / CRLF), ordering, and EOF are
-//! preserved byte-for-byte; only the target value's own bytes change.
+//! Обычно меняются только байты цели. Dotted-, inline- и блочная формы
+//! сохраняются. Inline-предки раскрываются при многострочном тексте,
+//! росте строки сверх max(100, прежняя длина в Unicode scalar values)
+//! или не менее четырёх escapes с накладными расходами от 25%.
+//! Раскрытие затрагивает только необходимую цепочку обёрток; переносимые
+//! скаляры перекодируются при необходимости. Если lossless-блок невозможен,
+//! сохраняется inline. Комментарии и байты вне диапазона правки, BOM,
+//! существующие EOL и наличие/отсутствие финального EOL сохраняются.
+//! Новые уровни блока используют четыре пробела. No-op всегда byte-identical.
 //!
 //! # Paths
 //!
@@ -73,8 +76,8 @@ pub enum EditError {
     },
 }
 
-/// Replace the value at `path` in the Ktav source `text`, returning the
-/// patched document with every byte outside the target value unchanged.
+/// Заменить значение по `path` в исходном `text`. Байты вне цели или
+/// необходимых раскрываемых inline-обёрток сохраняются; см. [правила](self).
 ///
 /// `path` is the textual dotted form (`a.b\.c.0`); see the [module
 /// docs](self) for the escape rules. For pre-decoded segments use

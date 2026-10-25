@@ -890,7 +890,7 @@ not already formatted, so it drops straight into CI next to
 ## Source editing (unreleased)
 
 This API is under development and is **not included in the published 0.8.1 crate**.
-Unlike `format_str`, `ktav::edit` does not reformat the document: it replaces an existing value in the original text. Comments, blank lines, key spelling, ordering, indentation, BOM, existing line endings and bytes outside the replacement remain unchanged. A raw marker is adjusted only when the new value requires it. The input is borrowed; success returns a new `String`, and an error leaves the input untouched.
+Unlike `format_str`, `ktav::edit` does not reformat the whole document: it replaces an existing value in the original text. Bytes outside the effective edit range remain unchanged, including comments, blank lines, key spelling, ordering, indentation, BOM and existing line endings. The range normally contains only the target; when readability requires expanding inline ancestors, it includes those wrappers. A raw marker is adjusted only when the new value requires it. The input is borrowed; success returns a new `String`, and an error leaves the input untouched.
 
 ```rust
 use ktav::edit::{edit_value, edit_value_segments};
@@ -906,6 +906,14 @@ assert_eq!(edit_value_segments(source, &path, &replacement)?, expected);
 ```
 
 The textual path `key1.key2.0.key4` uses `.` as a separator. Escape a literal dot as `\.` and a backslash as `\\`; other escapes, an unfinished escape and empty textual segments are errors. For a literal key `a.b`, the Rust path argument is `r"a\.b"` or `"a\\.b"`. The slice/vector API takes decoded names (`&["a.b"]`), without path escaping. In an object, `0` means the key `"0"`; in an array, it means index zero. Array indexes contain only ASCII digits; leading zeroes are accepted, signs are not.
+
+### Preserving the source form
+
+Dotted keys stay dotted, inline objects/arrays stay inline, and block objects/arrays stay blocks, including when emptied. This applies to deep edits inside arrays too. Replacing a scalar with a new container uses a block outside an inline parent; replacing a whole inline container preserves its inline form when readable. A type change does not by itself reformat ancestors. No-op edits bypass all readability rules.
+
+An edited inline line is expanded only when the replacement contains a multiline string, the line grows beyond `max(100, original line length)`, or a replacement string needs at least four inline escapes with at least 25% extra encoded characters. Length means Unicode scalar values, not UTF-8 bytes or terminal columns; the escape overhead is compared with the decoded string length. Existing long lines are not expanded unless they grow.
+
+Expansion opens the containing inline wrapper and only the affected nested wrappers still needing expansion; untouched nested branches may stay inline. Key spelling and order are preserved. Moved scalar spellings and raw markers change only when standalone syntax needs a different encoding. New block levels use four spaces and the source EOL style; no final newline is added. If a lossless standalone encoding is unavailable, for example because a string contains CR or a line equal to `))`, the valid inline representation is retained instead. Readability never authorizes comment loss or semantic changes. These fixed rules add no configuration mode.
 
 A short paired benchmark lives in `benches/source_edit.rs`. Build it separately with `cargo bench --bench source_edit --no-run --message-format=json`, then run the reported executable with `baseline` or `candidate` as its argument. Apply an external 15-second process timeout (for example, `caps 15 <benchmark-executable> candidate` on Windows). Each case uses a 20 ms warmup and a 300 ms sample; setup and exact-output validation are outside the measured interval. Compare alternating A/B and B/A runs on the same toolchain; short-run wall-clock results are not a CI regression gate.
 
