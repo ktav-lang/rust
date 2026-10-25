@@ -12,9 +12,7 @@ use crate::value::{ObjectMap, Value};
 /// was a wire value, not Ktav text, so envelopes are built against an
 /// empty source (honest nulls for `line` / `line_text` / `span`).
 pub(super) fn wire_to_value(src: &[u8]) -> Result<Value, String> {
-    let wire: WireValue = serde_json::from_slice(src)
-        .map_err(|err| message_envelope(format!("input JSON: {err}"), ""))?;
-    let value = wire.into_value().map_err(|e| message_envelope(e, ""))?;
+    let value = wire_to_any_value(src)?;
     if !matches!(value, Value::Object(_) | Value::Array(_)) {
         return Err(message_envelope(
             "top-level Ktav document must be an object or array",
@@ -22,6 +20,13 @@ pub(super) fn wire_to_value(src: &[u8]) -> Result<Value, String> {
         ));
     }
     Ok(value)
+}
+
+/// Wire-значение для source-edit: корень может быть скаляром.
+pub(super) fn wire_to_any_value(src: &[u8]) -> Result<Value, String> {
+    let wire: WireValue = serde_json::from_slice(src)
+        .map_err(|err| message_envelope(format!("input JSON: {err}"), ""))?;
+    wire.into_value().map_err(|e| message_envelope(e, ""))
 }
 
 pub(super) fn value_to_json(v: &Value) -> Json {

@@ -120,6 +120,8 @@ fn source_cabi_diagnostics_match_same_fixture_oracles() {
         ktav::cabi::loads_strict,
         ktav::cabi::format,
         ktav::cabi::canonical_from_source,
+        |source| ktav::cabi::edit_value(source, b"target", b"null"),
+        |source| ktav::cabi::edit_value_segments(source, br#"["target"]"#, b"null"),
     ];
     let fixtures = collect_invalid_fixtures(&root);
     let mut checked = 0;

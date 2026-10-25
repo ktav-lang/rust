@@ -866,27 +866,20 @@ assert_eq!(edit_value_segments(source, &path, &replacement)?, expected);
 
 ## 面向其他语言的 C ABI
 
-六个语言绑定——Go、Java、PHP、C#、JS 与 Python——加载一个构建在
-本 crate 之上的小型原生库。垫片中可共享的一半位于默认关闭的
-`cabi` feature 之后:`ktav::cabi` 模块承载 wire 解码、七项文档
-操作与错误编码,而绑定 cdylib 中的一次宏调用即可展开全部导出符号。
+Go、Java、PHP、C#、JS 和 Python 绑定共用 Rust 核心。默认关闭的 `cabi` feature 提供 wire 解码、文档操作和错误编码；绑定的 `cdylib` 中一次宏调用即可导出 C 符号。PyO3 和 N-API 等直接 Rust 桥接可以调用相同的安全操作，无需增加 FFI 层。
 
 ```text
-// crates/cabi/src/lib.rs of a binding — the whole body:
+// 绑定的 crates/cabi/src/lib.rs：
 ktav::declare_cabi!();
 ```
 
-展开导出十个符号:七个文档操作函数(`ktav_loads`、
-`ktav_loads_strict`、`ktav_dumps`、`ktav_dumps_force_strings`、
-`ktav_emit_canonical`、`ktav_format`、
-`ktav_canonical_from_source`)、`ktav_free`、`ktav_version`
-与 `ktav_abi_version`。每个错误都以十字段 JSON
-信封传递,宿主无需嗅探它是纯文本还是 JSON;`ktav_abi_version()`
-让宿主拒绝过期的原生库而不是破坏内存。完整契约——签名、所有权、
-错误编码、产物命名约定(`ktav_cabi-windows-amd64.dll`、
-`libktav_cabi-darwin-arm64.dylib`、`libktav_cabi-linux-amd64.so`、
-`$KTAV_LIB_PATH` 覆盖)——见
-[docs/CABI.md](docs/CABI.md)。
+**尚未发布的 0.9 准备版本使用 ABI 2**，包含十二个符号：九个文档函数（`ktav_loads`、`ktav_loads_strict`、`ktav_dumps`、`ktav_dumps_force_strings`、`ktav_emit_canonical`、`ktav_format`、`ktav_canonical_from_source`、`ktav_edit_value`、`ktav_edit_value_segments`）、`ktav_free`、`ktav_version` 和 `ktav_abi_version`。宿主必须拒绝 ABI 1 二进制文件，不得静默切换后端。这不会发布或更改绑定包版本。
+
+两个编辑函数均接受三个带长度的字节输入：Ktav 源文档、路径及 JSON wire 替换值。第一个路径为 UTF-8 点分文本；第二个为字面解码字符串的 JSON 数组。带标记的数字（`$i` / `$f`）保留标量类型和精度；替换值本身可以是标量。成功返回 UTF-8 Ktav 源文本，而非 JSON 字符串，遵守与 `ktav::edit` 相同的无损编辑和可读性规则。
+
+所有错误仍使用十字段 JSON envelope。源诊断保留 0.9 原始字节坐标。编辑错误为 `EditInvalidPath`、`EditNotFound` 或 `EditUnsupported`，不编造源位置：`body` 对应十进制路径字节偏移、拒绝原因或 null。源文档之外的 JSON/UTF-8 传输错误使用 `Message`；宿主以 `message` 作为错误文本。
+
+完整签名、所有权及产物命名约定（`ktav_cabi-windows-amd64.dll`、`libktav_cabi-darwin-arm64.dylib`、`libktav_cabi-linux-amd64.so`、`$KTAV_LIB_PATH`）见 [docs/CABI.md](docs/CABI.md)。
 
 ## 架构
 

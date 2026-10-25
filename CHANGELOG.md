@@ -14,6 +14,8 @@ For the format specification's own history, see the
 
 ### Changed
 
+- **C ABI 2 (0.9 preparation):** add `ktav_edit_value` and `ktav_edit_value_segments` with source/path/replacement-wire byte inputs and the existing output ownership contract. Replacement wire values may be scalars; edit failures use `EditInvalidPath`, `EditNotFound` and `EditUnsupported` in the unchanged ten-field envelope. Source parse/UTF-8 diagnostics retain their 0.9 locations and execute the versioned diagnostic fixtures through both new operations. Native loaders must reject ABI 1. This is not a package release or a binding package-version bump.
+
 - **Breaking in 0.9.0:** `InvalidUtf8` gains `line`/`span`; `UnclosedCompound` gains the opener's `line`. Downstream constructors and exhaustive field patterns must migrate. Direct Rust errors, public envelopes and C ABI source operations share raw-byte locations; UTF-8 spans are non-empty and EOF spans cover the innermost opener through EOF. LF, lone CR, CRLF and BOM offsets are preserved, including `Span::line_col` and envelope `line_text`. The ten-field JSON schema and I/O/writer location rules are unchanged. New regression oracles live only in the draft spec `versions/0.9/tests` and run across source entry points; CI refuses to skip a missing corpus. Version 0.9.0 is in preparation, not published.
 
 - Source editing preserves dotted/inline/block container forms, including deep array edits and empty containers. Expand only the necessary inline wrappers for multiline text, growth past `max(100, original character length)`, or at least four escapes adding 25% overhead. Preserve unrelated branches and comments; retain inline when a lossless block is unavailable. Add exact-output and semantic regressions for both path APIs, Unicode thresholds, escaped siblings and BOM/EOL/EOF.
@@ -22,7 +24,7 @@ For the format specification's own history, see the
 
 - Rust-only source-editing API: `ktav::edit::edit_value` accepts an escaped dotted path, and `edit_value_segments` accepts a slice/vector of literal segments. Both replace an existing value without reformatting the document, preserve surrounding bytes and comments, and return a new `String`.
 - Context-sensitive object keys and array indexes, `\.`/`\\` path escapes, minimal raw-marker transitions, unchanged-value no-ops and post-edit semantic verification. Typed `EditError` rejects malformed paths, missing targets and unsupported lossless replacements, including whole noncontiguous objects and structural changes that would discard comments.
-- Exact-text regression tests and EN/RU/ZH usage examples. No syntax, existing parser/formatter API, C ABI version or package-version change; this feature is not part of the published 0.8.1 crate.
+- Exact-text regression tests and EN/RU/ZH usage examples. No syntax, existing parser/formatter API or package-version change; this feature is not part of the published 0.8.1 crate.
 
 ### Performance
 
