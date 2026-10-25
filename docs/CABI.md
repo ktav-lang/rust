@@ -1,4 +1,8 @@
-# The Ktav C ABI (0.8.0)
+# The Ktav C ABI (0.9 preparation, ABI 2)
+
+ABI 2 is not published yet. Before the 0.9 release, consumers must use an
+immutable preparation commit containing the new operations; published 0.8.1
+native binaries use ABI 1 and must be rejected by ABI-2 loaders.
 
 This document specifies the C ABI that the Ktav language bindings
 (Go, Java, PHP, C#, JS, Python) load and call. It is written for the
@@ -9,10 +13,10 @@ being re-derived per language.
 The contract is split between two pieces of the `ktav` crate:
 
 - **`ktav::cabi`** (behind the off-by-default `cabi` feature) is the
-  safe half: wire decoding, the seven document operations, the error
+  safe half: wire decoding, the nine document operations, the error
   envelope, `ABI_VERSION` and `library_file_name`. It contains no
   exported symbols.
-- **`ktav::declare_cabi!()`** expands the ten exported `#[no_mangle]`
+- **`ktav::declare_cabi!()`** expands the twelve exported `#[no_mangle]`
   symbols *into the calling cdylib*. The export is guaranteed by
   construction: symbols defined in a dependency rlib are not guaranteed
   to survive into a downstream cdylib, symbols defined in the cdylib's
@@ -22,7 +26,9 @@ Getting started:
 
 ```toml
 # Cargo.toml of the binding's native crate:
-#   [dependencies] ktav = { version = "0.8", features = ["cabi"] }
+# After 0.9 publication:
+#   [dependencies] ktav = { version = "0.9", features = ["cabi"] }
+# Until then, use an immutable preparation commit rather than a moving branch.
 #   [lib] crate-type = ["cdylib"]
 ```
 
@@ -33,7 +39,7 @@ ktav::declare_cabi!();
 
 ## Symbols
 
-The macro exports exactly ten symbols. The seven document functions
+The macro exports exactly twelve symbols. The seven original document functions
 share one signature (shown for `ktav_loads`; the others differ only in
 name):
 
@@ -52,6 +58,8 @@ int ktav_loads(const uint8_t* src, size_t src_len,
 | `ktav_emit_canonical` | shared signature | JSON wire in → canonical Ktav text out (spec § 5.9) |
 | `ktav_format` | shared signature | Ktav source text in → formatted Ktav text out |
 | `ktav_canonical_from_source` | shared signature | Ktav source text in → canonical Ktav text out, without passing through a host value |
+| `ktav_edit_value` | edit signature below | source + UTF-8 textual path + replacement wire value → edited source |
+| `ktav_edit_value_segments` | edit signature below | source + JSON literal path segments + replacement wire value → edited source |
 | `ktav_free` | `void ktav_free(uint8_t* ptr, size_t len)` | frees a returned buffer |
 | `ktav_version` | `const char* ktav_version(void)` | NUL-terminated crate version, static storage |
 | `ktav_abi_version` | `uint32_t ktav_abi_version(void)` | see [ABI version](#abi-version) |
@@ -60,6 +68,44 @@ Every document function returns `0` on success and `1` on error. All
 four output pointers are nulled at entry, before any input is touched.
 Invalid UTF-8 input is an error (an envelope on `out_err`), never a
 panic and never a silent lossy replacement.
+
+### Editing existing values
+
+Both new functions use this signature (only the function name differs):
+
+```c
+int ktav_edit_value(const uint8_t* src, size_t src_len,
+                    const uint8_t* path, size_t path_len,
+                    const uint8_t* replacement, size_t replacement_len,
+                    uint8_t** out_buf, size_t* out_len,
+                    char** out_err, size_t* out_err_len);
+```
+
+The replacement uses the existing tagged JSON wire encoding and may be a
+scalar, unlike the document-root requirement of `ktav_dumps`. The success
+buffer contains UTF-8 Ktav source bytes, not a JSON string. Text paths use
+`.` separators with `\.` and `\\` escapes; segment paths are JSON arrays
+of literal decoded strings. Numeric segments address object keys or ASCII
+digit array indexes according to the target container. Only replacement of
+existing values is supported. See the README source-editing rules for
+byte preservation, no-op behavior, comment protection and minimal layout
+changes, including the 100-character and escape-density thresholds.
+
+Source UTF-8 validation and parsing happen before transport decoding, so
+source diagnostics retain their 0.9 error classes and raw-byte locations.
+Invalid path/replacement transport uses `Message` without source positions.
+Edit failures retain all ten envelope fields: `error` is `EditInvalidPath`,
+`EditNotFound` or `EditUnsupported`; `body` is respectively the decimal
+UTF-8 path byte offset string, null or the rejection reason. `reason`,
+`line`, `line_text`, `span`, `path`, `canonical` and `spec_section` are null.
+`message` is the error's human-readable text.
+
+All three input spans must be readable for the duration of the call. Null
+input pointers are accepted only for zero-length inputs. The four output
+slots must be writable, pairwise disjoint, and must not overlap any input.
+Unwinding Rust panics from edit operations are caught and encoded as
+`Message`; process-aborting failures and invalid non-null pointer provenance
+cannot be recovered. Buffer ownership is unchanged.
 
 ## Ownership contract
 
@@ -75,7 +121,7 @@ panic and never a silent lossy replacement.
 
 ## Wire format
 
-JSON in both directions. Ktav's Integer and Float scalars do not map
+Value transport uses JSON; text operations return UTF-8 source. Ktav's Integer and Float scalars do not map
 onto JSON numbers (JSON cannot represent arbitrary-precision integers
 and loses the Integer/Float distinction), so they travel as tagged
 wrappers:
@@ -158,7 +204,7 @@ when the sequence is truncated at EOF — and an EOF-detected
 
 ## ABI version
 
-`ktav::cabi::ABI_VERSION`, currently `1`, is exported as
+`ktav::cabi::ABI_VERSION`, currently `2`, is exported as
 `ktav_abi_version()`. Hosts **must** compare it at load time against
 the value they were built against and refuse to load on mismatch.
 

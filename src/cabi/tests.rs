@@ -44,7 +44,7 @@ mod tests {
     fn abi_version_is_deliberate() {
         // Changing this value is a breaking change for every host: update
         // this test and the module docs together with the bump.
-        assert_eq!(ABI_VERSION, 1);
+        assert_eq!(ABI_VERSION, 2);
     }
 
     #[test]

@@ -14,6 +14,8 @@
 
 ### 变更
 
+- **C ABI 2（0.9 准备版本）：** 新增 `ktav_edit_value` 和 `ktav_edit_value_segments`，接受源文档、路径及替换 wire 值的字节输入，沿用原有输出缓冲区所有权。替换值可以是标量；编辑错误使用 `EditInvalidPath`、`EditNotFound` 和 `EditUnsupported`，仍为十字段 envelope。源解析及 UTF-8 诊断保留 0.9 坐标，两个新操作也执行版本化诊断 fixtures。原生加载器必须拒绝 ABI 1。这不发布包，也不提高绑定包版本。
+
 - **0.9.0 破坏性变更：** `InvalidUtf8` 新增 `line`/`span`，`UnclosedCompound` 新增起始标记的 `line`。下游构造器及枚举全部字段的模式需要迁移。直接 Rust 错误、公开 envelope 和 C ABI 源操作共用原始字节坐标；UTF-8 区间非空，EOF 区间覆盖最内层未闭合起始标记至 EOF。LF、单独 CR、CRLF 及 BOM 均不经规范化，`Span::line_col` 和 envelope 的 `line_text` 同样遵守该规则。十字段 JSON 格式及 I/O/writer 无源位置的规则不变。新增回归 oracle 仅位于规范草案 `versions/0.9/tests`，由各源入口执行；CI 不允许因语料缺失而跳过。0.9.0 尚在准备中，未发布。
 
 - 源编辑保留点分键、行内及块容器形式，包括数组深层编辑和清空容器。仅在多行文本、行长增长超过 `max(100, 原始字符长度)`，或至少四次转义带来至少 25% 开销时展开必要的行内外层容器。保留无关分支和注释；无法无损转换为块时保留行内形式。为两种路径 API、Unicode 阈值、转义邻居及 BOM/EOL/EOF 增加精确输出和语义回归测试。
@@ -22,7 +24,7 @@
 
 - Rust 源文本编辑 API：`ktav::edit::edit_value` 接受带转义的点分路径，`edit_value_segments` 接受字面路径段切片/向量。两者均在不重新格式化文档的情况下替换已有值，保留周围字节与注释，并返回新的 `String`。
 - 按上下文区分对象键与数组索引，支持路径转义 `\.`/`\\`、最小化 raw 标记调整、值不变时保留原文，以及编辑后的语义验证。类型化的 `EditError` 拒绝错误路径、不存在的目标及不支持的无损替换，包括整个不连续对象和会丢失注释的结构修改。
-- 精确文本回归测试及 EN/RU/ZH 用法示例。不改变语法、现有解析器/formatter API、C ABI 版本或包版本；此功能不包含在已发布的 0.8.1 crate 中。
+- 精确文本回归测试及 EN/RU/ZH 用法示例。不改变语法、现有解析器/formatter API 或包版本；此功能不包含在已发布的 0.8.1 crate 中。
 
 ### 性能
 

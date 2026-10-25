@@ -2,7 +2,7 @@
 //!
 //! The six language bindings each used to keep a private copy of the same
 //! FFI shim around the `ktav` crate. This module carries the part of that
-//! shim that is genuinely shareable: the wire-value decoding, the six
+//! shim that is genuinely shareable: the wire-value decoding, the
 //! document operations, the error-envelope encoding, the ABI version and
 //! the native-library naming convention.
 //!
@@ -32,7 +32,7 @@
 //!
 //! # Error encoding
 //!
-//! Every `Err` payload of the six operations is already the
+//! Every `Err` payload of the document operations is already the
 //! [`crate::ErrorEnvelope`] JSON — `ErrorEnvelope::from_error(&err,
 //! source).to_json()`: ten fields, always all ten, in the fixed order
 //! `error, reason, line, line_text, span, path, body, canonical,
@@ -72,7 +72,7 @@
 /// Adding a *field* to the error envelope does not oblige a bump: the
 /// envelope's contract is already "every field always present,
 /// absent means null".
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// The crate version as a NUL-terminated byte string. The macro's
 /// `ktav_version()` returns a pointer into this static; the macro
@@ -113,14 +113,18 @@ pub fn library_file_name(os: &str, arch: &str) -> Option<String> {
 }
 
 mod declare;
+mod edit;
 mod envelope;
 mod ops;
 mod wire;
 
+pub use edit::{edit_value, edit_value_segments};
 pub use ops::{
     canonical_from_source, dumps, dumps_force_strings, emit_canonical, format, loads, loads_strict,
 };
 pub use wire::WireValue;
 
+#[cfg(test)]
+mod edit_tests;
 #[cfg(test)]
 mod tests;

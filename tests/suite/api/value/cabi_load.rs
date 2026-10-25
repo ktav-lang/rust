@@ -18,6 +18,18 @@ type DocFn = unsafe extern "C" fn(
     *mut *mut c_char,
     *mut usize,
 ) -> c_int;
+type EditFn = unsafe extern "C" fn(
+    *const u8,
+    usize,
+    *const u8,
+    usize,
+    *const u8,
+    usize,
+    *mut *mut u8,
+    *mut usize,
+    *mut *mut c_char,
+    *mut usize,
+) -> c_int;
 type FreeFn = unsafe extern "C" fn(*mut u8, usize);
 type VersionFn = unsafe extern "C" fn() -> *const c_char;
 type AbiVersionFn = unsafe extern "C" fn() -> u32;
@@ -108,17 +120,53 @@ fn call(lib: &libloading::Library, name: &[u8], src: &[u8]) -> (c_int, Vec<u8>, 
     (rc, out, err)
 }
 
+fn call_edit(
+    lib: &libloading::Library,
+    name: &[u8],
+    source: &[u8],
+    path: &[u8],
+    replacement: &[u8],
+) -> (c_int, Vec<u8>, String) {
+    // SAFETY: имя нового export и точная ABI2 сигнатура зафиксированы общим контрактом.
+    let f: libloading::Symbol<EditFn> = unsafe { lib.get(name).unwrap() };
+    let (mut out, mut out_len, mut err, mut err_len) =
+        (std::ptr::null_mut(), 0usize, std::ptr::null_mut(), 0usize);
+    // SAFETY: inputs читаемы; output slots раздельны и живут до конца вызова.
+    let rc = unsafe {
+        f(
+            source.as_ptr(),
+            source.len(),
+            path.as_ptr(),
+            path.len(),
+            replacement.as_ptr(),
+            replacement.len(),
+            &mut out,
+            &mut out_len,
+            &mut err,
+            &mut err_len,
+        )
+    };
+    if rc == 0 {
+        assert!(err.is_null());
+        assert_eq!(err_len, 0);
+    } else {
+        assert!(out.is_null());
+        assert_eq!(out_len, 0);
+    }
+    // SAFETY: каждый полученный buffer читается и освобождается ровно один раз той же library.
+    let bytes = unsafe { take_out(lib, out, out_len) };
+    // SAFETY: error buffer принадлежит той же library, length получена этим вызовом.
+    let error = unsafe { take_err(lib, err, err_len) };
+    (rc, bytes, error)
+}
+
 #[test]
 fn loads_fixture_and_exercises_the_abi() {
     let path = build_fixture();
     let lib = unsafe { libloading::Library::new(&path).expect("failed to dlopen the fixture") };
 
-    // Resolution itself is the assertion: all ten symbols must come
-    // out of the dlopened fixture cdylib. Ten rather than nine since
-    // ktav_canonical_from_source joined them — a dry run against the
-    // real bindings found that Deno resolves an FFI symbol table
-    // eagerly, so one missing symbol poisons the whole library handle
-    // rather than failing only the call that needs it.
+    // Все двенадцать ABI2 symbols должны разрешаться в реальном cdylib:
+    // eager-FFI loaders отклоняют library при отсутствии любого symbol.
     let _loads: libloading::Symbol<DocFn> = unsafe { lib.get(b"ktav_loads").unwrap() };
     let _loads_strict: libloading::Symbol<DocFn> =
         unsafe { lib.get(b"ktav_loads_strict").unwrap() };
@@ -134,7 +182,28 @@ fn loads_fixture_and_exercises_the_abi() {
     let version: libloading::Symbol<VersionFn> = unsafe { lib.get(b"ktav_version").unwrap() };
     let abi_version: libloading::Symbol<AbiVersionFn> =
         unsafe { lib.get(b"ktav_abi_version").unwrap() };
-    eprintln!("resolved all ten ktav_cabi symbols from {}", path.display());
+    for (name, edit_path) in [
+        (b"ktav_edit_value".as_slice(), b"a.0".as_slice()),
+        (
+            b"ktav_edit_value_segments".as_slice(),
+            br#"["a","0"]"#.as_slice(),
+        ),
+    ] {
+        let (rc, out, err) =
+            call_edit(&lib, name, b"a: [old, keep]\n", edit_path, br#""one\ntwo""#);
+        assert_eq!(rc, 0, "source-edit failed: {err}");
+        assert_eq!(out, b"a: [\n    ((\none\ntwo\n    ))\n    keep\n]\n");
+        let (rc, out, err) = call_edit(&lib, name, b"a: 1\n", edit_path, b"null");
+        assert_eq!(rc, 1);
+        assert!(out.is_empty());
+        let envelope: serde_json::Value = serde_json::from_str(&err).unwrap();
+        assert_eq!(envelope["error"], "EditNotFound");
+        assert!(envelope["span"].is_null());
+    }
+    eprintln!(
+        "resolved all twelve ktav_cabi symbols from {}",
+        path.display()
+    );
 
     // Silence the unused binding; resolution above is the assertion.
     let _ = &canonical_from_source;

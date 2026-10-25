@@ -3,6 +3,8 @@
 
 ### Changed
 
+- **C ABI 2 (0.9 preparation):** add `ktav_edit_value` and `ktav_edit_value_segments` with source/path/replacement-wire byte inputs and the existing output ownership contract. Replacement wire values may be scalars; edit failures use `EditInvalidPath`, `EditNotFound` and `EditUnsupported` in the unchanged ten-field envelope. Source parse/UTF-8 diagnostics retain their 0.9 locations and execute the versioned diagnostic fixtures through both new operations. Native loaders must reject ABI 1. This is not a package release or a binding package-version bump.
+
 - **Breaking in 0.9.0:** `InvalidUtf8` gains `line`/`span`; `UnclosedCompound` gains the opener's `line`. Downstream constructors and exhaustive field patterns must migrate. Direct Rust errors, public envelopes and C ABI source operations share raw-byte locations; UTF-8 spans are non-empty and EOF spans cover the innermost opener through EOF. LF, lone CR, CRLF and BOM offsets are preserved, including `Span::line_col` and envelope `line_text`. The ten-field JSON schema and I/O/writer location rules are unchanged. New regression oracles live only in the draft spec `versions/0.9/tests` and run across source entry points; CI refuses to skip a missing corpus. Version 0.9.0 is in preparation, not published.
 
 - Source editing preserves dotted/inline/block container forms, including deep array edits and empty containers. Expand only the necessary inline wrappers for multiline text, growth past `max(100, original character length)`, or at least four escapes adding 25% overhead. Preserve unrelated branches and comments; retain inline when a lossless block is unavailable. Add exact-output and semantic regressions for both path APIs, Unicode thresholds, escaped siblings and BOM/EOL/EOF.
@@ -11,7 +13,7 @@
 
 - Rust-only source-editing API: `ktav::edit::edit_value` accepts an escaped dotted path, and `edit_value_segments` accepts a slice/vector of literal segments. Both replace an existing value without reformatting the document, preserve surrounding bytes and comments, and return a new `String`.
 - Context-sensitive object keys and array indexes, `\.`/`\\` path escapes, minimal raw-marker transitions, unchanged-value no-ops and post-edit semantic verification. Typed `EditError` rejects malformed paths, missing targets and unsupported lossless replacements, including whole noncontiguous objects and structural changes that would discard comments.
-- Exact-text regression tests and EN/RU/ZH usage examples. No syntax, existing parser/formatter API, C ABI version or package-version change; this feature is not part of the published 0.8.1 crate.
+- Exact-text regression tests and EN/RU/ZH usage examples. No syntax, existing parser/formatter API or package-version change; this feature is not part of the published 0.8.1 crate.
 
 ### Performance
 
@@ -26,6 +28,8 @@
 
 ### Изменено
 
+- **C ABI 2 (подготовка 0.9):** добавлены `ktav_edit_value` и `ktav_edit_value_segments` с byte inputs исходника, пути и replacement wire при прежнем владении output buffers. Wire-замена может быть скаляром; edit-ошибки — `EditInvalidPath`, `EditNotFound` и `EditUnsupported` в неизменном envelope из десяти полей. Source parse/UTF-8 ошибки сохраняют координаты 0.9; versioned diagnostic fixtures исполняются и через обе новые операции. Native-загрузчики обязаны отклонять ABI 1. Это не публикация пакетов и не повышение версий биндингов.
+
 - **Breaking в 0.9.0:** в `InvalidUtf8` добавлены `line`/`span`, в `UnclosedCompound` — `line` открывающего маркера. Downstream-конструкторы и patterns, перечисляющие все поля, требуют миграции. Прямые Rust-ошибки, публичный envelope и C ABI source operations используют общие координаты исходных байтов; UTF-8 spans непустые, EOF spans охватывают самый внутренний незакрытый opener до EOF. LF, одиночный CR, CRLF и BOM учитываются без нормализации, в том числе в `Span::line_col` и envelope `line_text`. Схема JSON из десяти полей и отсутствие позиций у I/O/writer не меняются. Новые regression oracles находятся только в draft спеки `versions/0.9/tests` и проверяются через source entry points; CI запрещает пропуск отсутствующего corpus. Версия 0.9.0 готовится, но не опубликована.
 
 - Source-edit сохраняет dotted/inline/блочную форму контейнеров, в том числе при глубоких правках массивов и опустошении. Раскрываются только необходимые inline-обёртки: при многострочном тексте, росте сверх `max(100, прежняя длина в символах)` либо не менее четырёх escapes с накладными расходами от 25%. Незатронутые ветви и комментарии сохраняются; если lossless-блок невозможен, остаётся inline. Добавлены exact-output и семантические регрессии обоих path API, Unicode-порогов, экранированных соседей и BOM/EOL/EOF.
@@ -34,7 +38,7 @@
 
 - Rust API редактирования исходного текста: `ktav::edit::edit_value` принимает экранированный dotted-путь, `edit_value_segments` — слайс/вектор буквальных сегментов. Обе функции заменяют существующее значение без форматирования документа, сохраняют окружающие байты и комментарии и возвращают новый `String`.
 - Контекстное различение ключей объектов и индексов массивов, escape-последовательности пути `\.`/`\\`, минимальное переключение raw-маркера, неизменный текст при совпадении значений и семантическая проверка результата. Типизированный `EditError` отвергает ошибочные пути, отсутствующие цели и неподдерживаемые lossless-замены, включая целые noncontiguous-объекты и структурные правки с потерей комментариев.
-- Регрессионные тесты точного текста и примеры EN/RU/ZH. Синтаксис, существующий API парсера/formatter, версия C ABI и версия пакета не меняются; функционал не входит в опубликованный crate 0.8.1.
+- Регрессионные тесты точного текста и примеры EN/RU/ZH. Синтаксис, существующий API парсера/formatter и версия пакета не меняются; функционал не входит в опубликованный crate 0.8.1.
 
 ### Производительность
 
@@ -49,6 +53,8 @@
 
 ### 变更
 
+- **C ABI 2（0.9 准备版本）：** 新增 `ktav_edit_value` 和 `ktav_edit_value_segments`，接受源文档、路径及替换 wire 值的字节输入，沿用原有输出缓冲区所有权。替换值可以是标量；编辑错误使用 `EditInvalidPath`、`EditNotFound` 和 `EditUnsupported`，仍为十字段 envelope。源解析及 UTF-8 诊断保留 0.9 坐标，两个新操作也执行版本化诊断 fixtures。原生加载器必须拒绝 ABI 1。这不发布包，也不提高绑定包版本。
+
 - **0.9.0 破坏性变更：** `InvalidUtf8` 新增 `line`/`span`，`UnclosedCompound` 新增起始标记的 `line`。下游构造器及枚举全部字段的模式需要迁移。直接 Rust 错误、公开 envelope 和 C ABI 源操作共用原始字节坐标；UTF-8 区间非空，EOF 区间覆盖最内层未闭合起始标记至 EOF。LF、单独 CR、CRLF 及 BOM 均不经规范化，`Span::line_col` 和 envelope 的 `line_text` 同样遵守该规则。十字段 JSON 格式及 I/O/writer 无源位置的规则不变。新增回归 oracle 仅位于规范草案 `versions/0.9/tests`，由各源入口执行；CI 不允许因语料缺失而跳过。0.9.0 尚在准备中，未发布。
 
 - 源编辑保留点分键、行内及块容器形式，包括数组深层编辑和清空容器。仅在多行文本、行长增长超过 `max(100, 原始字符长度)`，或至少四次转义带来至少 25% 开销时展开必要的行内外层容器。保留无关分支和注释；无法无损转换为块时保留行内形式。为两种路径 API、Unicode 阈值、转义邻居及 BOM/EOL/EOF 增加精确输出和语义回归测试。
@@ -57,7 +63,7 @@
 
 - Rust 源文本编辑 API：`ktav::edit::edit_value` 接受带转义的点分路径，`edit_value_segments` 接受字面路径段切片/向量。两者均在不重新格式化文档的情况下替换已有值，保留周围字节与注释，并返回新的 `String`。
 - 按上下文区分对象键与数组索引，支持路径转义 `\.`/`\\`、最小化 raw 标记调整、值不变时保留原文，以及编辑后的语义验证。类型化的 `EditError` 拒绝错误路径、不存在的目标及不支持的无损替换，包括整个不连续对象和会丢失注释的结构修改。
-- 精确文本回归测试及 EN/RU/ZH 用法示例。不改变语法、现有解析器/formatter API、C ABI 版本或包版本；此功能不包含在已发布的 0.8.1 crate 中。
+- 精确文本回归测试及 EN/RU/ZH 用法示例。不改变语法、现有解析器/formatter API 或包版本；此功能不包含在已发布的 0.8.1 crate 中。
 
 ### 性能
 
