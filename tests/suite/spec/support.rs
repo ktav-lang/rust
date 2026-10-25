@@ -8,7 +8,7 @@ use super::manifest::RunnerManifest;
 use ktav::ReasonCode;
 use serde_json::Value as JsonValue;
 
-pub(crate) const SPEC_VERSION: &str = "0.8";
+pub(crate) const SPEC_VERSION: &str = "0.9";
 
 pub(crate) fn resolve_spec_root() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -26,7 +26,14 @@ pub(crate) fn resolve_spec_root() -> Option<PathBuf> {
     // gracefully skipping the suite.
     let root = candidates
         .into_iter()
-        .find(|p| p.join("versions").join(SPEC_VERSION).is_dir())?;
+        .find(|p| p.join("versions").join(SPEC_VERSION).is_dir());
+    if std::env::var_os("KTAV_REQUIRE_SPEC").is_some() {
+        assert!(
+            root.is_some(),
+            "required spec {SPEC_VERSION} corpus is missing"
+        );
+    }
+    let root = root?;
 
     // § 8.5: load and enforce the corpus manifest BEFORE any fixture is
     // enumerated. Every runner in this suite reaches its fixtures through
@@ -181,13 +188,14 @@ fn validate_error_fixture(fixture: &JsonValue, rel: impl std::fmt::Display) -> &
     let map = fixture
         .as_object()
         .unwrap_or_else(|| panic!("fixture {rel}: top-level JSON is not an object"));
-    if map.len() != 2 {
-        panic!(
-            "fixture {rel}: expected exactly the fields expected_error/note, \
-             found {} field(s)",
-            map.len()
-        );
-    }
+    assert!(
+        (map.len() == 2 || map.len() == 3)
+            && map.keys().all(|key| matches!(
+                key.as_str(),
+                "expected_error" | "note" | "expected_location"
+            )),
+        "fixture {rel}: unexpected invalid oracle fields"
+    );
     for required in ["expected_error", "note"] {
         if !map.contains_key(required) {
             panic!("fixture {rel}: missing required field {required:?}");
@@ -208,6 +216,15 @@ fn validate_error_fixture(fixture: &JsonValue, rel: impl std::fmt::Display) -> &
     expected
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExpectedLocation {
+    pub(crate) line: u32,
+    pub(crate) start: u32,
+    pub(crate) end: Option<u32>,
+    pub(crate) minimum_end: Option<u32>,
+}
+
 /// An invalid fixture with its validated oracle. `bytes` are read once
 /// here so both the owned-API and thin-API passes walk the identical
 /// corpus.
@@ -218,6 +235,7 @@ pub(crate) struct InvalidFixture {
     pub(crate) bytes: Vec<u8>,
     /// Validated `expected_error` category name.
     pub(crate) expected: String,
+    pub(crate) location: Option<ExpectedLocation>,
 }
 
 /// Collect every invalid fixture with its validated oracle. Panics if
@@ -259,11 +277,38 @@ pub(crate) fn collect_invalid_fixtures(spec_root: &Path) -> Vec<InvalidFixture> 
             Ok(b) => b,
             Err(e) => panic!("fixture {}: unreadable `.ktav` file: {}", rel, e),
         };
+        let location = fixture.get("expected_location").map(|value| {
+            let map = value
+                .as_object()
+                .expect("expected_location must be an object");
+            assert_eq!(
+                map.len(),
+                3,
+                "fixture {rel}: location requires three fields"
+            );
+            let location: ExpectedLocation = serde_json::from_value(value.clone())
+                .unwrap_or_else(|error| panic!("fixture {rel}: invalid location: {error}"));
+            assert!(
+                location.end.is_some() ^ location.minimum_end.is_some(),
+                "fixture {rel}: endpoint must be exclusive"
+            );
+            let end = location.end.or(location.minimum_end).unwrap();
+            assert!(
+                location.line > 0 && location.start < end && end as usize <= bytes.len(),
+                "fixture {rel}: invalid location bounds"
+            );
+            location
+        });
+        assert!(
+            !rel.replace('\\', "/").starts_with("diagnostics09/") || location.is_some(),
+            "fixture {rel}: required location oracle is missing"
+        );
         fixtures.push(InvalidFixture {
             rel,
             path: ktav_path.clone(),
             bytes,
             expected,
+            location,
         });
     }
     fixtures

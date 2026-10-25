@@ -32,7 +32,7 @@ fn parse_counters(doc: &str) -> (usize, usize, usize) {
         }
         line_start = end + 1;
     }
-    p.finish(bytes.len() as u32, &mut events).unwrap();
+    p.finish(bytes.len() as u32, doc, &mut events).unwrap();
     (p.dbg_node_allocs, p.dbg_index_probes, p.dbg_entry_compares)
 }
 
@@ -61,7 +61,7 @@ fn registration_scans(doc: &str) -> usize {
         }
         line_start = end + 1;
     }
-    p.finish(bytes.len() as u32, &mut events).unwrap();
+    p.finish(bytes.len() as u32, doc, &mut events).unwrap();
     p.dbg_reg_scans
 }
 

@@ -31,12 +31,12 @@ impl Error {
     /// Returns the 1-based line number associated with the error, if
     /// available. `None` for [`Error::Io`], [`Error::Message`], free-
     /// form [`Error::Syntax`], [`Error::Unrepresentable`],
-    /// [`Error::UnrepresentableAt`], [`Error::InvalidUtf8`],
-    /// EOF-detected `UnclosedCompound`, and
-    /// the parser-internal `Other` variants that lack a line number.
+    /// [`Error::UnrepresentableAt`] and parser-internal `Other` errors
+    /// that lack a line number.
     pub fn line(&self) -> Option<u32> {
         match self {
             Error::Structured(k) => k.line(),
+            Error::InvalidUtf8 { line, .. } => Some(*line),
             _ => None,
         }
     }
@@ -44,20 +44,14 @@ impl Error {
     /// Returns the byte-offset span associated with the error, if
     /// available. `None` for [`Error::Io`], [`Error::Message`],
     /// [`Error::Syntax`], [`Error::Unrepresentable`] and
-    /// [`Error::UnrepresentableAt`]. [`Error::InvalidUtf8`] returns an
-    /// insertion-point span at the byte offset of the first invalid
-    /// UTF-8 sequence. May return `Some(Span::EMPTY)` for an
+    /// [`Error::UnrepresentableAt`]. [`Error::InvalidUtf8`] covers the
+    /// first invalid UTF-8 sequence. May return `Some(Span::EMPTY)` for an
     /// internal-state structured error that has no meaningful source
     /// range.
     pub fn span(&self) -> Option<Span> {
         match self {
             Error::Structured(k) => Some(k.span()),
-            Error::InvalidUtf8 { valid_up_to } => {
-                // `Span` is u32-based; a >4 GiB document is beyond what
-                // `Span` can address anywhere in this crate, so saturate.
-                let offset = u32::try_from(*valid_up_to).unwrap_or(u32::MAX);
-                Some(Span::new(offset, offset))
-            }
+            Error::InvalidUtf8 { span, .. } => Some(*span),
             _ => None,
         }
     }
@@ -77,15 +71,14 @@ impl Error {
     /// [`Error::InvalidUtf8`] error, else `None`.
     pub fn valid_up_to(&self) -> Option<usize> {
         match self {
-            Error::InvalidUtf8 { valid_up_to } => Some(*valid_up_to),
+            Error::InvalidUtf8 { valid_up_to, .. } => Some(*valid_up_to),
             _ => None,
         }
     }
 }
 
 impl ErrorKind {
-    /// 1-based line number, or `None` for variants where the failure
-    /// is detected at EOF or carries no line context.
+    /// 1-based line number; `None` only for internal errors without context.
     pub fn line(&self) -> Option<u32> {
         match self {
             ErrorKind::MissingSeparatorSpace { line, .. }
@@ -102,8 +95,8 @@ impl ErrorKind {
             | ErrorKind::UnterminatedQuotedKey { line, .. }
             | ErrorKind::MalformedInlineCompound { line, .. }
             | ErrorKind::BadEscapeSequence { line, .. }
-            | ErrorKind::OrphanLineAfterTopLevelInline { line, .. } => Some(*line),
-            ErrorKind::UnclosedCompound { .. } => None,
+            | ErrorKind::OrphanLineAfterTopLevelInline { line, .. }
+            | ErrorKind::UnclosedCompound { line, .. } => Some(*line),
             ErrorKind::Other { line, .. } => *line,
         }
     }

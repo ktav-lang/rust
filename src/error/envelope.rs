@@ -288,19 +288,17 @@ fn line_text_at(source: &str, pos: usize) -> Option<String> {
         return None;
     }
     let bytes = source.as_bytes();
-    let line_start = bytes[..pos]
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map_or(0, |i| i + 1);
-    let line_end = bytes[pos..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .map_or(source.len(), |i| pos + i);
-    let mut line = &source[line_start..line_end];
-    if line.ends_with('\r') {
-        line = &line[..line.len() - 1];
-    }
-    Some(line.to_string())
+    // Позиция на LF внутри CRLF относится к строке перед всей парой.
+    let search_end = if pos > 0 && bytes[pos - 1] == b'\r' && bytes.get(pos) == Some(&b'\n') {
+        pos - 1
+    } else {
+        pos
+    };
+    let line_start =
+        memchr::memrchr2(b'\r', b'\n', &bytes[..search_end]).map_or(0, |offset| offset + 1);
+    let line_end = memchr::memchr2(b'\r', b'\n', &bytes[line_start..])
+        .map_or(source.len(), |offset| line_start + offset);
+    Some(source[line_start..line_end].to_string())
 }
 
 /// Decode the raw key-path text carried by `DuplicateKey` /
@@ -398,12 +396,73 @@ fn push_json_opt_string(out: &mut String, value: Option<&str>) {
     }
 }
 
-/// Push `s` as a `"…"`-quoted JSON string. RFC 8259 escaping:
-/// control characters as `\u00xx` with lowercase hex digits (matching
-/// serde_json's convention); DEL, non-ASCII and non-BMP characters
-/// pass through as raw UTF-8, which is valid JSON — a Rust `str`
-/// cannot hold lone surrogates, so no surrogate pairing is needed.
+fn requires_json_escape(bytes: &[u8]) -> bool {
+    const LOW: u64 = 0x0101_0101_0101_0101;
+    const HIGH: u64 = 0x8080_8080_8080_8080;
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_ne_bytes(chunk.try_into().expect("chunks_exact yields eight bytes"));
+        let quote = word ^ 0x2222_2222_2222_2222;
+        let slash = word ^ 0x5c5c_5c5c_5c5c_5c5c;
+        // Wrapping намеренный: packed-byte predicates дают только any-match.
+        let controls = word.wrapping_sub(0x2020_2020_2020_2020) & !word;
+        let quotes = quote.wrapping_sub(LOW) & !quote;
+        let slashes = slash.wrapping_sub(LOW) & !slash;
+        if (controls | quotes | slashes) & HIGH != 0 {
+            return true;
+        }
+    }
+    chunks
+        .remainder()
+        .iter()
+        .any(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\')
+}
+
+/// RFC 8259: строка без escapes переносится целиком, остальные — прежним encoder.
 fn push_json_string(out: &mut String, s: &str) {
+    if requires_json_escape(s.as_bytes()) {
+        if s.is_ascii() {
+            push_json_ascii_escaped(out, s);
+        } else {
+            push_json_escaped(out, s);
+        }
+    } else {
+        out.push('"');
+        out.push_str(s);
+        out.push('"');
+    }
+}
+
+// Вызывается только после проверки is_ascii().
+#[inline(never)]
+fn push_json_ascii_escaped(out: &mut String, s: &str) {
+    debug_assert!(s.is_ascii());
+    out.push('"');
+    for &byte in s.as_bytes() {
+        match byte {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            8 => out.push_str("\\b"),
+            12 => out.push_str("\\f"),
+            byte if byte < 0x20 => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push_str("\\u00");
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0xf) as usize] as char);
+            }
+            byte if byte.is_ascii() => out.push(char::from(byte)),
+            _ => unreachable!("ASCII input was checked before encoding"),
+        }
+    }
+    out.push('"');
+}
+
+// Сохранять escape-цикл отдельно от probe.
+#[inline(never)]
+fn push_json_escaped(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -425,4 +484,49 @@ fn push_json_string(out: &mut String, s: &str) {
         }
     }
     out.push('"');
+}
+
+#[cfg(test)]
+mod escape_probe_tests {
+    use super::requires_json_escape;
+
+    fn scalar(bytes: &[u8]) -> bool {
+        bytes
+            .iter()
+            .any(|&byte| byte < 32 || matches!(byte, b'"' | b'\\'))
+    }
+
+    #[test]
+    fn packed_probe_matches_every_byte_in_every_lane() {
+        for fill in [b'a', b' ', 0xff] {
+            for position in 0..8 {
+                for byte in 0..=255 {
+                    let mut bytes = [fill; 8];
+                    bytes[position] = byte;
+                    assert_eq!(
+                        requires_json_escape(&bytes),
+                        scalar(&bytes),
+                        "fill={fill}, lane={position}, byte={byte}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn packed_probe_matches_scalar_across_tail_lengths() {
+        for length in 0..=24 {
+            for byte in 0..=255 {
+                let mut bytes = vec![b'a'; length];
+                if let Some(last) = bytes.last_mut() {
+                    *last = byte;
+                }
+                assert_eq!(
+                    requires_json_escape(&bytes),
+                    scalar(&bytes),
+                    "length={length}, byte={byte}"
+                );
+            }
+        }
+    }
 }

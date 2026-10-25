@@ -13,6 +13,8 @@ mod helpers;
 mod message;
 #[path = "envelope/paths.rs"]
 mod paths;
+#[path = "envelope/performance_regressions.rs"]
+mod performance_regressions;
 #[path = "envelope/shape.rs"]
 mod shape;
 #[path = "envelope/spans.rs"]

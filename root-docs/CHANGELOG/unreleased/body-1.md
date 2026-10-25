@@ -1,6 +1,10 @@
 >>>>> lang=en
 ## [Unreleased]
 
+### Changed
+
+- **Breaking in 0.9.0:** `InvalidUtf8` gains `line`/`span`; `UnclosedCompound` gains the opener's `line`. Downstream constructors and exhaustive field patterns must migrate. Direct Rust errors, public envelopes and C ABI source operations share raw-byte locations; UTF-8 spans are non-empty and EOF spans cover the innermost opener through EOF. LF, lone CR, CRLF and BOM offsets are preserved, including `Span::line_col` and envelope `line_text`. The ten-field JSON schema and I/O/writer location rules are unchanged. New regression oracles live only in the draft spec `versions/0.9/tests` and run across source entry points; CI refuses to skip a missing corpus. Version 0.9.0 is in preparation, not published.
+
 ### Added
 
 - Rust-only source-editing API: `ktav::edit::edit_value` accepts an escaped dotted path, and `edit_value_segments` accepts a slice/vector of literal segments. Both replace an existing value without reformatting the document, preserve surrounding bytes and comments, and return a new `String`.
@@ -13,9 +17,14 @@
 - Write nested inline replacements into one buffer; avoid temporary character vectors and a second copy of parsed textual path segments. Keep semantic verification and byte-preserving behavior. Add short paired benchmarks with separate compilation and an external 15-second process limit.
 - The positional pass shares structural classifiers with the parser without constructing unused values or multiline bodies. Verify the edited target and untouched tree without cloning the replacement; render borrowed block compounds without a temporary root wrapper. Preserve validation, writer error paths and byte-for-byte output, with focused regression tests and expanded paired benchmarks.
 - Borrow literal path slices and unescaped textual segments instead of copying each segment. Assemble raw-marker prefixes and unchanged replacement bodies directly into the result; render verbatim replacements in one buffer without an intermediate EOL-converted string. Preserve exact output and full semantic verification; measure text and segment paths separately in short paired benchmarks.
+- Locate diagnostic line text by reverse terminator search instead of rescanning the document prefix. Probe JSON strings with safe eight-byte operations, bulk-copy unescaped UTF-8, specialize escaped ASCII and retain the Unicode encoder. Allocate reopen-merge child buffers and seen-key storage lazily. Preserve exact bytes and locations; add allocation/escaping regressions and paired runtime benchmarks with one external 15-second limit for the entire process batch.
 
 >>>>> lang=ru
 ## [Не выпущено]
+
+### Изменено
+
+- **Breaking в 0.9.0:** в `InvalidUtf8` добавлены `line`/`span`, в `UnclosedCompound` — `line` открывающего маркера. Downstream-конструкторы и patterns, перечисляющие все поля, требуют миграции. Прямые Rust-ошибки, публичный envelope и C ABI source operations используют общие координаты исходных байтов; UTF-8 spans непустые, EOF spans охватывают самый внутренний незакрытый opener до EOF. LF, одиночный CR, CRLF и BOM учитываются без нормализации, в том числе в `Span::line_col` и envelope `line_text`. Схема JSON из десяти полей и отсутствие позиций у I/O/writer не меняются. Новые regression oracles находятся только в draft спеки `versions/0.9/tests` и проверяются через source entry points; CI запрещает пропуск отсутствующего corpus. Версия 0.9.0 готовится, но не опубликована.
 
 ### Добавлено
 
@@ -29,9 +38,14 @@
 - Вложенные inline-замены пишутся в один буфер, без временного вектора символов и повторного копирования разобранных сегментов текстового пути. Семантическая проверка и сохранение исходных байтов остаются. Добавлены короткие парные benchmarks с отдельной компиляцией и внешним лимитом 15 секунд на процесс.
 - Позиционный проход использует общие с parser структурные классификаторы без построения ненужных значений и multiline-тел. Проверка цели и неизменной части дерева обходится без клонирования replacement; блочные контейнеры рендерятся по заимствованию без временной корневой обёртки. Валидация, пути writer-ошибок и точные выходные байты сохранены; добавлены регрессии и расширены парные benchmarks.
 - Буквальные сегменты пути и сегменты текстового пути без escape заимствуются без копирования каждого сегмента. Префиксы raw-маркера и тела замен, не требующие преобразования, переносятся непосредственно в результат; verbatim-замены рендерятся в один буфер без промежуточной строки с преобразованными EOL. Точные выходные байты и полная семантическая проверка сохранены; короткие парные benchmarks отдельно измеряют text- и segments-пути.
+- Строка диагностики находится обратным поиском терминатора без повторного прохода по префиксу документа. JSON-строки проверяются безопасными восьмибайтовыми операциями; UTF-8 без escapes переносится целиком, экранируемый ASCII обрабатывается специализированно, Unicode encoder сохраняется. Дочерние буферы и хранилища seen-ключей reopen-merge выделяются лениво. Точные байты и координаты сохранены; добавлены регрессии аллокаций/экранирования и парные runtime benchmarks с единым внешним лимитом 15 секунд на весь batch процессов.
 
 >>>>> lang=zh
 ## [尚未发布]
+
+### 变更
+
+- **0.9.0 破坏性变更：** `InvalidUtf8` 新增 `line`/`span`，`UnclosedCompound` 新增起始标记的 `line`。下游构造器及枚举全部字段的模式需要迁移。直接 Rust 错误、公开 envelope 和 C ABI 源操作共用原始字节坐标；UTF-8 区间非空，EOF 区间覆盖最内层未闭合起始标记至 EOF。LF、单独 CR、CRLF 及 BOM 均不经规范化，`Span::line_col` 和 envelope 的 `line_text` 同样遵守该规则。十字段 JSON 格式及 I/O/writer 无源位置的规则不变。新增回归 oracle 仅位于规范草案 `versions/0.9/tests`，由各源入口执行；CI 不允许因语料缺失而跳过。0.9.0 尚在准备中，未发布。
 
 ### 新增
 
@@ -45,4 +59,5 @@
 - 将嵌套行内替换直接写入同一缓冲区，避免临时字符向量及文本路径段的二次复制。保留语义验证和原始字节保护。新增短时配对基准，编译独立进行，每个进程由外部工具限制为 15 秒。
 - 位置扫描与解析器共用结构分类，不再构造无用值或多行正文。验证目标和未修改的树时不再克隆替换值；以借用方式渲染块容器，避免临时根包装。保留验证、writer 错误路径和逐字节输出，并增加专项回归测试及配对基准场景。
 - 借用字面路径段及不含转义的文本路径段，不再逐段复制。将 raw 标记前缀及无需转换的替换正文直接写入结果；verbatim 替换使用单一缓冲区，不再生成转换 EOL 的中间字符串。保留精确输出与完整语义验证；短时配对基准分别测量文本路径和路径段 API。
+- 通过反向查找换行符定位诊断行，不再重复扫描文档前缀。用安全的八字节运算检查 JSON 字符串，整体复制无需转义的 UTF-8，专门处理需转义的 ASCII，并保留 Unicode encoder。按需分配 reopen-merge 子缓冲区和 seen 键存储。保留精确字节与坐标；增加分配及转义回归测试，并提供配对 runtime 基准，整个进程 batch 共用一个外部 15 秒限制。
 

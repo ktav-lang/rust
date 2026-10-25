@@ -91,11 +91,9 @@ fn invalid_key_has_line_and_span() {
 }
 
 #[test]
-fn unclosed_compound_has_no_line_but_has_span() {
-    // EOF-detected: no line is meaningful, but the span covers
-    // opener..EOF.
+fn unclosed_compound_has_opener_line_and_span() {
     let e = parse_err("obj: {\n  a: 1\n");
-    assert_eq!(e.line(), None);
+    assert_eq!(e.line(), Some(1));
     let s = e.span().expect("span");
     assert!(s.end >= s.start);
 }
@@ -135,10 +133,10 @@ fn missing_separator_has_line_and_span() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn error_kind_line_is_none_for_unclosed_compound() {
+fn error_kind_line_is_opener_line_for_unclosed_compound() {
     let e = parse_err("obj: {\n");
     if let Error::Structured(k) = &e {
-        assert_eq!(k.line(), None);
+        assert_eq!(k.line(), Some(1));
         // Span is always populated, even if EMPTY.
         let _ = k.span();
     } else {

@@ -27,11 +27,8 @@ pub(super) struct Buf<'a> {
     pub(super) index: Option<BumpVec<'a, SeenSlot>>,
 }
 
-/// Buffers at or below this many keyed children never build the hash
-/// index: the linear scan over `seen` (whose preallocation is exactly
-/// 8 slots) is cheaper than hashing, the worst case is a bounded 28
-/// comparisons for all misses, and small buffers keep exactly the
-/// pre-index behavior.
+/// До восьми Object-ключей используется линейный поиск без hash index.
+/// `seen` выделяется лениво; число сравнений для всех промахов ≤ 28.
 const LINEAR_MAX: usize = 8;
 
 /// Sentinel `pos` of an empty index slot. Kept on `pos` (not `h`) so a

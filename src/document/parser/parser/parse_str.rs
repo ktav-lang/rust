@@ -57,7 +57,7 @@ fn parse_str_impl(text: &str, strict: bool) -> Result<Value, Error> {
             }
             line_start = end + 1;
         }
-        return parser.finish(bytes.len() as u32);
+        return parser.finish(bytes.len() as u32, text);
     }
 
     let mut line_start: usize = start;
@@ -96,5 +96,5 @@ fn parse_str_impl(text: &str, strict: bool) -> Result<Value, Error> {
         parser.handle_line(line, line_num, line_start as u32)?;
         line_start = next_start;
     }
-    parser.finish(bytes.len() as u32)
+    parser.finish(bytes.len() as u32, text)
 }

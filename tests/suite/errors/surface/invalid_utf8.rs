@@ -27,13 +27,13 @@ fn from_file_lone_continuation_byte_reports_invalid_utf8() {
         .expect_err("must reject invalid UTF-8");
     let _ = std::fs::remove_file(&path);
 
-    let Error::InvalidUtf8 { valid_up_to } = &err else {
+    let Error::InvalidUtf8 { valid_up_to, .. } = &err else {
         panic!("expected Error::InvalidUtf8, got {err:?}");
     };
     assert_eq!(*valid_up_to, 8);
     assert_eq!(err.valid_up_to(), Some(8));
-    assert_eq!(err.span(), Some(Span::new(8, 8)));
-    assert_eq!(err.line(), None);
+    assert_eq!(err.span(), Some(Span::new(8, 9)));
+    assert_eq!(err.line(), Some(2));
     assert!(err.to_string().starts_with("InvalidUtf8"));
 }
 
@@ -44,7 +44,7 @@ fn from_file_truncated_multibyte_sequence_reports_invalid_utf8() {
         .expect_err("must reject truncated sequence");
     let _ = std::fs::remove_file(&path);
 
-    let Error::InvalidUtf8 { valid_up_to: 3 } = &err else {
+    let Error::InvalidUtf8 { valid_up_to: 3, .. } = &err else {
         panic!("expected Error::InvalidUtf8 {{ valid_up_to: 3 }}, got {err:?}");
     };
 }

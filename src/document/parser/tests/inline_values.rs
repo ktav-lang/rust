@@ -409,7 +409,7 @@ fn parse_top_level_explicit_array() {
 fn expect_unclosed_root(src: &str, kind: crate::error::CompoundKind, start: u32, end: u32) {
     let err = crate::parse(src).unwrap_err();
     match err {
-        crate::Error::Structured(crate::ErrorKind::UnclosedCompound { kind: k, span }) => {
+        crate::Error::Structured(crate::ErrorKind::UnclosedCompound { kind: k, span, .. }) => {
             assert_eq!(k, kind, "kind mismatch for {src:?}");
             assert_eq!(
                 span,

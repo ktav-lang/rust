@@ -83,7 +83,7 @@ impl<'a> PositionedParser<'a> {
             .push(TriviaLine::Comment(trimmed.to_string()));
     }
 
-    pub(super) fn finish(mut self, eof_offset: u32) -> Result<FmtDoc> {
+    pub(super) fn finish(mut self, eof_offset: u32, source: &str) -> Result<FmtDoc> {
         if let Some(c) = &self.collecting {
             let kind = match c.mode {
                 MultilineMode::Stripped => CompoundKind::MultilineStripped,
@@ -92,6 +92,7 @@ impl<'a> PositionedParser<'a> {
             let start = self.multiline_opener.unwrap_or(eof_offset);
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }
@@ -103,6 +104,7 @@ impl<'a> PositionedParser<'a> {
             let start = *self.opener_offsets.last().unwrap();
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }
@@ -119,6 +121,7 @@ impl<'a> PositionedParser<'a> {
             let start = *self.opener_offsets.last().unwrap();
             return Err(Error::Structured(ErrorKind::UnclosedCompound {
                 kind,
+                line: crate::error::source::line_of_offset(source.as_bytes(), start as usize),
                 span: Span::new(start, eof_offset),
             }));
         }
