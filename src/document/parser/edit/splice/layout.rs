@@ -314,7 +314,10 @@ fn standalone(
         }
     };
     if let Value::String(s) = &value {
-        if s.contains('\r') || s.lines().any(|line| line.trim_matches([' ', '\t']) == "))") {
+        if s.contains('\r')
+            || s.lines()
+                .any(|line| line.trim_matches(|c: char| c == ' ' || c == '\t') == "))")
+        {
             return Ok(None);
         }
     }
