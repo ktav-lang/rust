@@ -34,6 +34,10 @@ For the format specification's own history, see the
 - Borrow literal path slices and unescaped textual segments instead of copying each segment. Assemble raw-marker prefixes and unchanged replacement bodies directly into the result; render verbatim replacements in one buffer without an intermediate EOL-converted string. Preserve exact output and full semantic verification; measure text and segment paths separately in short paired benchmarks.
 - Locate diagnostic line text by reverse terminator search instead of rescanning the document prefix. Probe JSON strings with safe eight-byte operations, bulk-copy unescaped UTF-8, specialize escaped ASCII and retain the Unicode encoder. Allocate reopen-merge child buffers and seen-key storage lazily. Preserve exact bytes and locations; add allocation/escaping regressions and paired runtime benchmarks with one external 15-second limit for the entire process batch.
 
+### Documentation
+
+- Expand README examples for dotted and literal-key paths, mixed arrays, String/Integer identity, multiline unfolding, byte-identical no-op and BOM/CRLF/EOF preservation. Clarify 0.9 byte diagnostics, safe refusal, ABI 2 and standalone pure usage; these additions are not part of published 0.8.1.
+
 ## [0.8.1] — 2026-10-21
 
 ### Fixed

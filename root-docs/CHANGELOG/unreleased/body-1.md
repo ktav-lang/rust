@@ -23,6 +23,10 @@
 - Borrow literal path slices and unescaped textual segments instead of copying each segment. Assemble raw-marker prefixes and unchanged replacement bodies directly into the result; render verbatim replacements in one buffer without an intermediate EOL-converted string. Preserve exact output and full semantic verification; measure text and segment paths separately in short paired benchmarks.
 - Locate diagnostic line text by reverse terminator search instead of rescanning the document prefix. Probe JSON strings with safe eight-byte operations, bulk-copy unescaped UTF-8, specialize escaped ASCII and retain the Unicode encoder. Allocate reopen-merge child buffers and seen-key storage lazily. Preserve exact bytes and locations; add allocation/escaping regressions and paired runtime benchmarks with one external 15-second limit for the entire process batch.
 
+### Documentation
+
+- Expand README examples for dotted and literal-key paths, mixed arrays, String/Integer identity, multiline unfolding, byte-identical no-op and BOM/CRLF/EOF preservation. Clarify 0.9 byte diagnostics, safe refusal, ABI 2 and standalone pure usage; these additions are not part of published 0.8.1.
+
 >>>>> lang=ru
 ## [Не выпущено]
 
@@ -48,6 +52,10 @@
 - Буквальные сегменты пути и сегменты текстового пути без escape заимствуются без копирования каждого сегмента. Префиксы raw-маркера и тела замен, не требующие преобразования, переносятся непосредственно в результат; verbatim-замены рендерятся в один буфер без промежуточной строки с преобразованными EOL. Точные выходные байты и полная семантическая проверка сохранены; короткие парные benchmarks отдельно измеряют text- и segments-пути.
 - Строка диагностики находится обратным поиском терминатора без повторного прохода по префиксу документа. JSON-строки проверяются безопасными восьмибайтовыми операциями; UTF-8 без escapes переносится целиком, экранируемый ASCII обрабатывается специализированно, Unicode encoder сохраняется. Дочерние буферы и хранилища seen-ключей reopen-merge выделяются лениво. Точные байты и координаты сохранены; добавлены регрессии аллокаций/экранирования и парные runtime benchmarks с единым внешним лимитом 15 секунд на весь batch процессов.
 
+### Документация
+
+- Дополнены примеры README: dotted-пути и буквальные ключи, смешанные массивы, различие String/Integer, раскрытие многострочной замены, побайтовый no-op и сохранение BOM/CRLF/EOF. Уточнены байтовая диагностика 0.9, безопасные отказы, ABI 2 и самостоятельный pure-бэкенд; дополнения не относятся к опубликованному 0.8.1.
+
 >>>>> lang=zh
 ## [尚未发布]
 
@@ -72,4 +80,8 @@
 - 位置扫描与解析器共用结构分类，不再构造无用值或多行正文。验证目标和未修改的树时不再克隆替换值；以借用方式渲染块容器，避免临时根包装。保留验证、writer 错误路径和逐字节输出，并增加专项回归测试及配对基准场景。
 - 借用字面路径段及不含转义的文本路径段，不再逐段复制。将 raw 标记前缀及无需转换的替换正文直接写入结果；verbatim 替换使用单一缓冲区，不再生成转换 EOL 的中间字符串。保留精确输出与完整语义验证；短时配对基准分别测量文本路径和路径段 API。
 - 通过反向查找换行符定位诊断行，不再重复扫描文档前缀。用安全的八字节运算检查 JSON 字符串，整体复制无需转义的 UTF-8，专门处理需转义的 ASCII，并保留 Unicode encoder。按需分配 reopen-merge 子缓冲区和 seen 键存储。保留精确字节与坐标；增加分配及转义回归测试，并提供配对 runtime 基准，整个进程 batch 共用一个外部 15 秒限制。
+
+### 文档
+
+- 扩展 README 示例：点分路径与字面键、混合数组、String/Integer 区别、多行展开、逐字节 no-op 及 BOM/CRLF/EOF 保留。明确 0.9 字节诊断、安全拒绝、ABI 2 和独立纯实现用法；这些新增功能不属于已发布的 0.8.1。
 

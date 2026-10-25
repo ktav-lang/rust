@@ -864,6 +864,158 @@ assert_eq!(edit_value_segments(source, &path, &replacement)?, expected);
 
 `EditError::InvalidPath` 报告文本路径错误及字节偏移；`NotFound` 表示键不存在、数组索引无效或越界，或试图穿过标量继续访问。`Unsupported` 拒绝无效源文档、无法表示的新值，或当前实现无法在保留周围文本的前提下完成的替换。例如，由分散的点分键或重新打开的定义构成的整个对象没有单一替换范围；替换容器也不能删除其内部注释，但其中的叶子值仍可编辑。行内值使用转义表示 CR 和 LF。在行内复合值之外，含 CR 的字符串及部分依赖上下文的多行/容器替换会被拒绝，而不会被静默改写。所有成功返回的文本都经过解析，并与预期值树比较；错误不会返回部分编辑的文档。
 
+### 源文本编辑示例
+
+以下示例适用于尚未发布的 0.9 API，而非已发布的 0.8.1 包。只能替换已有值：不会重命名键、创建缺失路径或删除条目。各代码片段相互独立；Rust 的 `?` 假定外层函数返回 `Result`。Go 示例仅针对固定且有效的输入使用 panic；应用程序应处理返回的错误。
+
+```rust
+use ktav::edit::{edit_value, edit_value_segments};
+use ktav::Value;
+```
+
+#### 1. 通过点分键修改部署配置
+
+只修改地址；注释、点分形式及相邻的用户字段逐字节保持不变。
+
+```rust
+let source = "## deployment\ntargets.storagehost.address: old\ntargets.storagehost.user: mcp-agent\n";
+let updated = edit_value(source, "targets.storagehost.address", &Value::String("192.168.0.88:22".into()))?;
+```
+
+结果:
+
+```ktav
+## deployment
+targets.storagehost.address: 192.168.0.88:22
+targets.storagehost.user: mcp-agent
+```
+
+#### 2. 字面点号：文本路径或路径段
+
+源码中带引号的键名就是 `a.b`。文本路径需要转义点号；路径段 API 直接接收解码后的键名。两个调用返回相同结果。
+
+```rust
+let source = "\"a.b\": {port: 80}\n";
+let updated = edit_value(source, "a\\.b.port", &Value::Integer("90".into()))?;
+let same = edit_value_segments(source, &["a.b", "port"], &Value::Integer("90".into()))?;
+```
+
+结果:
+
+```ktav
+"a.b": {port: 90}
+```
+
+#### 3. 修改混合形式数组中的叶子值
+
+此处 `0` 是数组索引；在对象中，同一个路径段表示名称为 `0` 的键。未修改的容器保持行内形式。
+
+```rust
+let source = "servers: [{host: old, keep: yes}, standby]\n";
+let updated = edit_value_segments(source, &["servers", "0", "host"], &Value::String("new".into()))?;
+```
+
+结果:
+
+```ktav
+servers: [{host: new, keep: yes}, standby]
+```
+
+#### 4. 看似数字的字符串仍然是字符串
+
+替换值是 String，而不是 Integer。raw 标记保留这种区别；需要数值时请传入类型化 Integer。
+
+```rust
+let source = "port: 8080\n";
+let updated = edit_value(source, "port", &Value::String("9090".into()))?;
+```
+
+结果:
+
+```ktav
+port:: 9090
+```
+
+#### 5. 多行替换：仅展开必要的容器
+
+修改的数组以四空格缩进展开。未修改的对象保持行内形式，verbatim 字符串内容不会重新缩进。
+
+```rust
+let source = "a: [old, {keep: yes}]\n";
+let updated = edit_value(source, "a.0", &Value::String("x\ny".into()))?;
+```
+
+结果:
+
+```ktav
+a: [
+    ((
+x
+y
+    ))
+    {keep: yes}
+]
+```
+
+#### 6. 无变化时保留非规范拼写
+
+Integer 的值已经是 1。相等判断直接返回原始字节，包括 `+1` 及分隔符周围的空白，不应用可读性阈值。
+
+```rust
+let source = "n  : +1\n";
+let updated = edit_value(source, "n", &Value::Integer("1".into()))?;
+assert_eq!(updated, source);
+```
+
+结果:
+
+```ktav
+n  : +1
+```
+
+#### 7. BOM、CRLF 及无换行符的末行
+
+返回值保留 BOM 和 CRLF，且不会增加末尾换行。以下转义表示使这些字节清晰可见。
+
+```rust
+let source = "\u{FEFF}port: 8080\r\nhost: db";
+let updated = edit_value(source, "port", &Value::Integer("9090".into()))?;
+```
+
+结果:
+
+```text
+"\uFEFFport: 9090\r\nhost: db"
+```
+
+展开条件固定：替换中包含多行字符串、修改后行长增长并超过 `max(100, 原始行长)`，或单个替换字符串需要至少四个转义且编码开销达到 25%。宽度按 Unicode 标量值计算，而非 UTF-8 字节或终端列。原本已很长但没有增长的行保持不变。新层级使用四空格及源文本的 EOL。若 CR 或数据行 `))` 无法无损转换为独立行，则保留有效的行内候选；这些字符不会使所有行内编辑自动失败。
+
+#### 8. 精确替换 Integer
+
+源文本的 Integer 域是有符号 64 位。此值超过 JavaScript Number 的安全整数范围，但仍在 i64 内；应使用精确的宿主表示，而非已舍入的浮点值。超出 i64 的类型化 Integer 无法在源码中保持 Integer 身份，因此会被拒绝而不是截断。大型文本标识符应使用 String。Float 区分负零和正零；Object 的 no-op 相等忽略键顺序，而 Array 顺序仍然重要。
+
+```rust
+let updated = edit_value("n: 1\n", "n", &Value::Integer("9007199254740993".into()))?;
+```
+
+```ktav
+n: 9007199254740993
+```
+
+### 0.9 的诊断与安全失败
+
+源码坐标为包含 BOM 的 UTF-8 字节偏移，span 使用半开区间 `[start, end)`，行号从 1 开始。支持 LF、独立 CR 和 CRLF，且 CRLF 计为一个换行。一个 Unicode 字符可能占用多个字节。
+
+未完成的 `a: [\n` 报告 `UnclosedCompound`、第 1 行和 span `3..5`：区间从最内层未闭合的起始括号开始，而非键或行的开头。原始字节 `61 3A 20 FF`（`a: ` 后接无效 UTF-8）报告 `InvalidUtf8`、第 1 行及覆盖区间 `3..4`；`line_text` 为 null，不会通过有损解码伪造文本。UTF-8 校验优先于语法处理。
+
+非法文本路径（包括空路径或空文本段）报告 `EditInvalidPath`，偏移按路径本身的 UTF-8 字节计算。空路径段列表、缺失键、索引越界或穿过标量下钻报告 `EditNotFound`。对象中的数字段仍是键；数组索引仅接受 ASCII 数字，允许前导零，不允许正负号。
+
+由 dotted/reopened 定义拼成的整个中间对象可能占据多个物理范围，因此报告 `EditUnsupported`；已有叶子值仍可修改。容器结构替换不能删除内部注释。失败调用不会返回部分补丁，也不会修改传入的源码。返回文本会重新解析并进行语义检查：目标必须等于替换值，其余值树必须与原文相等。
+
+在绑定中，无效源码会先于路径验证报告普通解析错误信封。非法 wire 载荷是无虚构源码坐标的 `Message` 错误。wire 信封包含 `error`、`reason`、`line`、`line_text`、`span`、`path`、`body`、`canonical`、`spec_section`、`message`；宿主语言的访问器名称见错误章节。`body` 分别承载 `EditInvalidPath` 的十进制路径字节偏移、`EditNotFound` 的 null，以及 `EditUnsupported` 的拒绝原因。
+
+坐标示例描述普通解析错误（`Error` / `ErrorEnvelope`）。Rust 编辑 API 本身返回 `EditError::{InvalidPath, NotFound, Unsupported}`：`InvalidPath { offset }` 指向路径字节，无效源码包装为 `Unsupported`。C ABI 会先验证源码，并向绑定公开普通源码错误信封。这些 Rust 变体不是 wire 信封的字段布局。
+
 ## 面向其他语言的 C ABI
 
 Go、Java、PHP、C#、JS 和 Python 绑定共用 Rust 核心。默认关闭的 `cabi` feature 提供 wire 解码、文档操作和错误编码；绑定的 `cdylib` 中一次宏调用即可导出 C 符号。PyO3 和 N-API 等直接 Rust 桥接可以调用相同的安全操作，无需增加 FFI 层。

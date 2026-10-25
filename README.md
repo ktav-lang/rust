@@ -921,6 +921,158 @@ Only existing values can be replaced: no automatic container creation, removal o
 
 `EditError::InvalidPath` reports a malformed textual path and byte offset; `NotFound` covers missing keys, invalid/out-of-range array indexes and descent through a scalar. `Unsupported` rejects an invalid source, an unrepresentable replacement or a replacement for which this implementation cannot preserve the surrounding text. In particular, a whole object assembled from separate dotted/reopened definitions has no single replacement range, and replacing a container must not delete its internal comments. Its individual leaves remain editable. Inline values use escapes for CR and LF. Outside inline compounds, CR-containing strings and some context-dependent multiline/container replacements are rejected rather than silently rewritten. Every returned patch is parsed and checked against the intended value tree; errors never return a partially edited document.
 
+### Source-edit cookbook
+
+These examples describe the unreleased 0.9 API, not the published 0.8.1 package. They replace existing values only: keys are not renamed, missing paths are not created, and entries are not removed. Each snippet is independent; Rust `?` assumes an enclosing `Result`-returning function. Go examples panic only for these fixed, known-valid inputs; applications should handle the returned error.
+
+```rust
+use ktav::edit::{edit_value, edit_value_segments};
+use ktav::Value;
+```
+
+#### 1. Dotted deployment settings
+
+Only the address changes; the comment, dotted form and neighbouring user entry remain byte-for-byte unchanged.
+
+```rust
+let source = "## deployment\ntargets.storagehost.address: old\ntargets.storagehost.user: mcp-agent\n";
+let updated = edit_value(source, "targets.storagehost.address", &Value::String("192.168.0.88:22".into()))?;
+```
+
+Result:
+
+```ktav
+## deployment
+targets.storagehost.address: 192.168.0.88:22
+targets.storagehost.user: mcp-agent
+```
+
+#### 2. Literal dots: textual path or segments
+
+The quoted source key is literally `a.b`. The textual path escapes its dot; the segments call passes the decoded key directly. Both calls return the same result.
+
+```rust
+let source = "\"a.b\": {port: 80}\n";
+let updated = edit_value(source, "a\\.b.port", &Value::Integer("90".into()))?;
+let same = edit_value_segments(source, &["a.b", "port"], &Value::Integer("90".into()))?;
+```
+
+Result:
+
+```ktav
+"a.b": {port: 90}
+```
+
+#### 3. A leaf inside a mixed-form array
+
+`0` is an array index here. Inside an Object, the same segment would address the key named `0`; untouched containers remain inline.
+
+```rust
+let source = "servers: [{host: old, keep: yes}, standby]\n";
+let updated = edit_value_segments(source, &["servers", "0", "host"], &Value::String("new".into()))?;
+```
+
+Result:
+
+```ktav
+servers: [{host: new, keep: yes}, standby]
+```
+
+#### 4. A numeric-looking String stays a String
+
+The replacement is a String, not an Integer. The raw marker preserves that distinction. Supply a typed Integer when a numeric value is intended.
+
+```rust
+let source = "port: 8080\n";
+let updated = edit_value(source, "port", &Value::String("9090".into()))?;
+```
+
+Result:
+
+```ktav
+port:: 9090
+```
+
+#### 5. Multiline replacement: expand only what is necessary
+
+The changed array expands with four-space indentation. The untouched object stays inline, and verbatim string contents are not reindented.
+
+```rust
+let source = "a: [old, {keep: yes}]\n";
+let updated = edit_value(source, "a.0", &Value::String("x\ny".into()))?;
+```
+
+Result:
+
+```ktav
+a: [
+    ((
+x
+y
+    ))
+    {keep: yes}
+]
+```
+
+#### 6. No-op preserves noncanonical spelling
+
+The Integer value is already 1. Equality returns the original bytes, including `+1` and the original separator spacing; readability thresholds are bypassed.
+
+```rust
+let source = "n  : +1\n";
+let updated = edit_value(source, "n", &Value::Integer("1".into()))?;
+assert_eq!(updated, source);
+```
+
+Result:
+
+```ktav
+n  : +1
+```
+
+#### 7. BOM, CRLF and an unterminated final line
+
+The returned string keeps the BOM and CRLF, and does not gain a final newline. Its escaped representation is shown to make the bytes visible.
+
+```rust
+let source = "\u{FEFF}port: 8080\r\nhost: db";
+let updated = edit_value(source, "port", &Value::Integer("9090".into()))?;
+```
+
+Result:
+
+```text
+"\uFEFFport: 9090\r\nhost: db"
+```
+
+Expansion is deterministic: a multiline replacement, growth beyond `max(100, original line length)`, or at least four escapes with at least 25% encoding overhead for an individual replacement string. Width counts Unicode scalar values, not UTF-8 bytes or terminal columns. An already-long line without growth is kept. New levels use four spaces and the source EOL. If CR or a `))` data line prevents lossless standalone encoding, a valid inline candidate is retained; these characters do not automatically make every inline edit unsupported.
+
+#### 8. Exact Integer replacement
+
+The source Integer domain is signed 64-bit. This value exceeds JavaScript's safe-Number range but fits i64; use an exact host representation, not a rounded floating-point value. A typed Integer outside i64 cannot be preserved as an Integer in source and is refused instead of truncated. Use a String when a large identifier is text. Float identity distinguishes negative and positive zero; Object no-op equality ignores key order, while Array order remains significant.
+
+```rust
+let updated = edit_value("n: 1\n", "n", &Value::Integer("9007199254740993".into()))?;
+```
+
+```ktav
+n: 9007199254740993
+```
+
+### Diagnostics and safe failures in 0.9
+
+Source coordinates are UTF-8 byte offsets, including a BOM; spans are half-open `[start, end)`, and lines are 1-based. LF, lone CR and CRLF are handled, with CRLF counted as one terminator. A Unicode character may occupy several bytes.
+
+An unfinished `a: [\n` reports `UnclosedCompound`, line 1 and span `3..5`: the span begins at the innermost unmatched opener, not the start of its key or line. For raw bytes `61 3A 20 FF` (`a: ` followed by invalid UTF-8), validation reports `InvalidUtf8`, line 1 and a covering span `3..4`; `line_text` is null rather than fabricated by lossy decoding. UTF-8 validation precedes grammar processing.
+
+A malformed textual path, including an empty textual path or empty textual segment, is `EditInvalidPath`; its offset is measured in the path's UTF-8 bytes. An empty segments list, missing key, out-of-range index or scalar descent is `EditNotFound`. Object numeric segments remain keys; array indexes use ASCII digits, allow leading zeros and reject signs.
+
+Whole dotted/reopened intermediate objects may occupy several physical ranges and are `EditUnsupported`; their existing leaves can still be edited. Replacing a container must not discard interior comments. No failed call returns a partial patch or changes the supplied source. The returned text is re-parsed and semantically checked: the target must equal the replacement and the rest of the value tree must remain equal.
+
+For bindings, invalid source is reported with the ordinary parser envelope before path validation. Malformed wire payloads are `Message` errors without invented source coordinates. The wire envelope has `error`, `reason`, `line`, `line_text`, `span`, `path`, `body`, `canonical`, `spec_section` and `message`; host accessor names are documented in the errors section. `body` carries the decimal path-byte offset for `EditInvalidPath`, null for `EditNotFound`, and the refusal reason for `EditUnsupported`.
+
+The coordinate examples describe ordinary parse errors (`Error` / `ErrorEnvelope`). Rust source editing itself returns `EditError::{InvalidPath, NotFound, Unsupported}`: `InvalidPath { offset }` refers to the path bytes, and an invalid source is wrapped as `Unsupported`. The C ABI validates the source first and exposes the ordinary source envelope to bindings. These Rust variants are not the wire envelope field layout.
+
 ## The C ABI for other languages
 
 The Go, Java, PHP, C#, JS and Python bindings share the Rust core. The off-by-default `cabi` feature provides wire decoding, document operations and error encoding; one macro call in a binding's `cdylib` exports the C symbols. Direct Rust bridges such as PyO3 and N-API can use the same safe operations without another FFI layer.

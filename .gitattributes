@@ -3,3 +3,6 @@
 # on all platforms check out with LF — no more CRLF/LF noise in
 # `git status` from Windows clients.
 * text=auto eol=lf
+
+# Polydoc требует пустую строку в конце промежуточных source parts.
+root-docs/**/body-*.md whitespace=-blank-at-eof
