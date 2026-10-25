@@ -7,6 +7,8 @@
 //! `Unsupported` ДО сплайса; совпадающее значение — byte-identical
 //! no-op. После патча — обязательная семантическая верификация.
 
+mod layout;
+
 use std::fmt::Write as _;
 
 use crate::edit::EditError;
@@ -54,6 +56,8 @@ struct PlanCtx<'t> {
     root_first: bool,
     indent: &'t str,
     eol: &'t str,
+    inline_compound: bool,
+    block_compound: bool,
 }
 
 /// Тело вставки: заимствованное (scalar literal, дословное String) или
@@ -193,6 +197,10 @@ pub(crate) fn apply<S: AsRef<str>>(
         root_first: ctx.root_first,
         indent: &indent,
         eol,
+        inline_compound: slot_kind != SlotKind::Block
+            && matches!(node.kind, Kind::Object(_) | Kind::Array(_)),
+        block_compound: slot_kind == SlotKind::Block
+            && matches!(node.kind, Kind::Object(_) | Kind::Array(_)),
     };
     // WS пары для Block-цели с pair-ролью; Item-блок якоря-разделителя
     // не имеет (anchor==b0) — диапазон был бы reversed.
@@ -318,6 +326,14 @@ pub(crate) fn apply<S: AsRef<str>>(
     result.push_str(plan.prefix[1]);
     result.push_str(plan.body.as_str());
     result.push_str(&text[b1..]);
+    let result = layout::adjust(
+        text,
+        result,
+        &root,
+        segments,
+        replacement,
+        (from, b1, insertion_len),
+    )?;
 
     // Цель сравнивается отдельно; остальное дерево — с одинаковыми Null-слотами.
     let mut new_doc = crate::parse(&result).map_err(|e| EditError::Unsupported {
@@ -628,8 +644,25 @@ fn plan_value<'r>(replacement: &'r Value, pc: &PlanCtx) -> Result<(Body<'r>, boo
         Value::Null | Value::Bool(_) | Value::Integer(_) | Value::Float(_) => {
             Ok((scalar_body(replacement)?, false))
         }
-        Value::Object(o) if o.is_empty() => Ok((Body::Borrowed("{}"), false)),
-        Value::Array(a) if a.is_empty() => Ok((Body::Borrowed("[]"), false)),
+        Value::Object(_) | Value::Array(_) if pc.inline_compound => {
+            Ok((Body::Owned(inline_compound_body(replacement, 0)?), false))
+        }
+        Value::Object(o) if o.is_empty() => {
+            let body = if pc.block_compound {
+                Body::Owned(format!("{{{}{}}}", pc.eol, pc.indent))
+            } else {
+                Body::Borrowed("{}")
+            };
+            Ok((body, false))
+        }
+        Value::Array(a) if a.is_empty() => {
+            let body = if pc.block_compound {
+                Body::Owned(format!("[{}{}]", pc.eol, pc.indent))
+            } else {
+                Body::Borrowed("[]")
+            };
+            Ok((body, false))
+        }
         Value::Object(_) | Value::Array(_) => {
             let body = render_compound_body(replacement)?;
             Ok((Body::Owned(reindent(&body, pc.indent, pc.eol)), false))
@@ -876,5 +909,9 @@ fn detect_eol(text: &str, pos: usize) -> &'static str {
             _ => i += 1,
         }
     }
-    "\n"
+    match memchr::memrchr2(b'\r', b'\n', &bytes[..pos]) {
+        Some(i) if bytes[i] == b'\r' => "\r",
+        Some(i) if i > 0 && bytes[i - 1] == b'\r' => "\r\n",
+        _ => "\n",
+    }
 }

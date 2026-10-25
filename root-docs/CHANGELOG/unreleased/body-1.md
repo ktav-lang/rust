@@ -5,6 +5,8 @@
 
 - **Breaking in 0.9.0:** `InvalidUtf8` gains `line`/`span`; `UnclosedCompound` gains the opener's `line`. Downstream constructors and exhaustive field patterns must migrate. Direct Rust errors, public envelopes and C ABI source operations share raw-byte locations; UTF-8 spans are non-empty and EOF spans cover the innermost opener through EOF. LF, lone CR, CRLF and BOM offsets are preserved, including `Span::line_col` and envelope `line_text`. The ten-field JSON schema and I/O/writer location rules are unchanged. New regression oracles live only in the draft spec `versions/0.9/tests` and run across source entry points; CI refuses to skip a missing corpus. Version 0.9.0 is in preparation, not published.
 
+- Source editing preserves dotted/inline/block container forms, including deep array edits and empty containers. Expand only the necessary inline wrappers for multiline text, growth past `max(100, original character length)`, or at least four escapes adding 25% overhead. Preserve unrelated branches and comments; retain inline when a lossless block is unavailable. Add exact-output and semantic regressions for both path APIs, Unicode thresholds, escaped siblings and BOM/EOL/EOF.
+
 ### Added
 
 - Rust-only source-editing API: `ktav::edit::edit_value` accepts an escaped dotted path, and `edit_value_segments` accepts a slice/vector of literal segments. Both replace an existing value without reformatting the document, preserve surrounding bytes and comments, and return a new `String`.
@@ -26,6 +28,8 @@
 
 - **Breaking в 0.9.0:** в `InvalidUtf8` добавлены `line`/`span`, в `UnclosedCompound` — `line` открывающего маркера. Downstream-конструкторы и patterns, перечисляющие все поля, требуют миграции. Прямые Rust-ошибки, публичный envelope и C ABI source operations используют общие координаты исходных байтов; UTF-8 spans непустые, EOF spans охватывают самый внутренний незакрытый opener до EOF. LF, одиночный CR, CRLF и BOM учитываются без нормализации, в том числе в `Span::line_col` и envelope `line_text`. Схема JSON из десяти полей и отсутствие позиций у I/O/writer не меняются. Новые regression oracles находятся только в draft спеки `versions/0.9/tests` и проверяются через source entry points; CI запрещает пропуск отсутствующего corpus. Версия 0.9.0 готовится, но не опубликована.
 
+- Source-edit сохраняет dotted/inline/блочную форму контейнеров, в том числе при глубоких правках массивов и опустошении. Раскрываются только необходимые inline-обёртки: при многострочном тексте, росте сверх `max(100, прежняя длина в символах)` либо не менее четырёх escapes с накладными расходами от 25%. Незатронутые ветви и комментарии сохраняются; если lossless-блок невозможен, остаётся inline. Добавлены exact-output и семантические регрессии обоих path API, Unicode-порогов, экранированных соседей и BOM/EOL/EOF.
+
 ### Добавлено
 
 - Rust API редактирования исходного текста: `ktav::edit::edit_value` принимает экранированный dotted-путь, `edit_value_segments` — слайс/вектор буквальных сегментов. Обе функции заменяют существующее значение без форматирования документа, сохраняют окружающие байты и комментарии и возвращают новый `String`.
@@ -46,6 +50,8 @@
 ### 变更
 
 - **0.9.0 破坏性变更：** `InvalidUtf8` 新增 `line`/`span`，`UnclosedCompound` 新增起始标记的 `line`。下游构造器及枚举全部字段的模式需要迁移。直接 Rust 错误、公开 envelope 和 C ABI 源操作共用原始字节坐标；UTF-8 区间非空，EOF 区间覆盖最内层未闭合起始标记至 EOF。LF、单独 CR、CRLF 及 BOM 均不经规范化，`Span::line_col` 和 envelope 的 `line_text` 同样遵守该规则。十字段 JSON 格式及 I/O/writer 无源位置的规则不变。新增回归 oracle 仅位于规范草案 `versions/0.9/tests`，由各源入口执行；CI 不允许因语料缺失而跳过。0.9.0 尚在准备中，未发布。
+
+- 源编辑保留点分键、行内及块容器形式，包括数组深层编辑和清空容器。仅在多行文本、行长增长超过 `max(100, 原始字符长度)`，或至少四次转义带来至少 25% 开销时展开必要的行内外层容器。保留无关分支和注释；无法无损转换为块时保留行内形式。为两种路径 API、Unicode 阈值、转义邻居及 BOM/EOL/EOF 增加精确输出和语义回归测试。
 
 ### 新增
 

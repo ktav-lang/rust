@@ -2,6 +2,9 @@
 //! исходного текста по пути. Оракулы — литеральные строки результата:
 //! тест доказывает, что байты вне цели не тронуты.
 
+#[path = "edit_value/layout.rs"]
+mod layout;
+
 use ktav::edit::{edit_value, edit_value_segments, EditError};
 use ktav::parse;
 use ktav::value::Value;
@@ -222,7 +225,7 @@ fn empty_compound_to_filled() {
     obj.insert("x".into(), Value::Integer("1".into()));
     assert_eq!(
         edit_value(t, "a", &Value::Object(obj)).unwrap(),
-        "a: {\n    x: 1\n}\nb: 2\n"
+        "a: {x: 1}\nb: 2\n"
     );
 }
 
