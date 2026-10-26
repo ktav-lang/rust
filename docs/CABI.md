@@ -13,10 +13,10 @@ being re-derived per language.
 The contract is split between two pieces of the `ktav` crate:
 
 - **`ktav::cabi`** (behind the off-by-default `cabi` feature) is the
-  safe half: wire decoding, the nine document operations, the error
+  safe half: wire decoding, the fifteen document operations, the error
   envelope, `ABI_VERSION` and `library_file_name`. It contains no
   exported symbols.
-- **`ktav::declare_cabi!()`** expands the twelve exported `#[no_mangle]`
+- **`ktav::declare_cabi!()`** expands the eighteen exported `#[no_mangle]`
   symbols *into the calling cdylib*. The export is guaranteed by
   construction: symbols defined in a dependency rlib are not guaranteed
   to survive into a downstream cdylib, symbols defined in the cdylib's
@@ -39,7 +39,7 @@ ktav::declare_cabi!();
 
 ## Symbols
 
-The macro exports exactly twelve symbols. The seven original document functions
+The macro exports exactly eighteen symbols. The seven original document functions
 share one signature (shown for `ktav_loads`; the others differ only in
 name):
 
@@ -60,6 +60,12 @@ int ktav_loads(const uint8_t* src, size_t src_len,
 | `ktav_canonical_from_source` | shared signature | Ktav source text in → canonical Ktav text out, without passing through a host value |
 | `ktav_edit_value` | edit signature below | source + UTF-8 textual path + replacement wire value → edited source |
 | `ktav_edit_value_segments` | edit signature below | source + JSON literal path segments + replacement wire value → edited source |
+| `ktav_insert_value` | edit signature below | source + UTF-8 textual path (final segment is the new Object key) + replacement wire value → source with the appended pair |
+| `ktav_insert_value_segments` | edit signature below | source + JSON literal path segments + replacement wire value → source with the appended pair |
+| `ktav_remove_value` | remove signature below | source + UTF-8 textual path → source without the target |
+| `ktav_remove_value_segments` | remove signature below | source + JSON literal path segments → source without the target |
+| `ktav_rename_key` | rename signature below | source + UTF-8 textual path + UTF-8 literal new key → source with the renamed key |
+| `ktav_rename_key_segments` | rename signature below | source + JSON literal path segments + UTF-8 literal new key → source with the renamed key |
 | `ktav_free` | `void ktav_free(uint8_t* ptr, size_t len)` | frees a returned buffer |
 | `ktav_version` | `const char* ktav_version(void)` | NUL-terminated crate version, static storage |
 | `ktav_abi_version` | `uint32_t ktav_abi_version(void)` | see [ABI version](#abi-version) |
@@ -93,14 +99,61 @@ changes, including the 100-character and escape-density thresholds.
 
 Source UTF-8 validation and parsing happen before transport decoding, so
 source diagnostics retain their 0.9 error classes and raw-byte locations.
-Invalid path/replacement transport uses `Message` without source positions.
-Edit failures retain all ten envelope fields: `error` is `EditInvalidPath`,
-`EditNotFound` or `EditUnsupported`; `body` is respectively the decimal
-UTF-8 path byte offset string, null or the rejection reason. `reason`,
+Invalid path/replacement/new-key transport uses `Message` without source
+positions. Edit failures retain all ten envelope fields: `error` is
+`EditInvalidPath`, `EditNotFound`, `EditAlreadyExists` or `EditUnsupported`;
+`body` is respectively the decimal UTF-8 path byte offset string, null,
+null or the rejection reason. `reason`,
 `line`, `line_text`, `span`, `path`, `canonical` and `spec_section` are null.
 `message` is the error's human-readable text.
 
-All three input spans must be readable for the duration of the call. Null
+### Mutating objects: insert, remove, rename
+
+The six mutation functions reuse the same output contract and error
+encoding. `ktav_insert_value` and `ktav_rename_key` use the edit signature
+above; for rename the last input is `new_key` — a UTF-8 **literal decoded
+key**, not a JSON string and not path syntax (a dot or backslash inside it
+is part of the name). `ktav_remove_value` and `ktav_remove_value_segments`
+take exactly two input buffers — source and path — with no replacement
+argument:
+
+```c
+int ktav_remove_value(const uint8_t* src, size_t src_len,
+                      const uint8_t* path, size_t path_len,
+                      uint8_t** out_buf, size_t* out_len,
+                      char** out_err, size_t* out_err_len);
+```
+
+Rename uses the following three-buffer signature:
+
+```c
+int ktav_rename_key(const uint8_t* src, size_t src_len,
+                    const uint8_t* path, size_t path_len,
+                    const uint8_t* new_key, size_t new_key_len,
+                    uint8_t** out_buf, size_t* out_len,
+                    char** out_err, size_t* out_err_len);
+
+int ktav_rename_key_segments(const uint8_t* src, size_t src_len,
+                             const uint8_t* path, size_t path_len,
+                             const uint8_t* new_key, size_t new_key_len,
+                             uint8_t** out_buf, size_t* out_len,
+                             char** out_err, size_t* out_err_len);
+```
+
+The insert and remove `*_segments` variants likewise have the same
+signatures as their textual-path siblings; only the path encoding changes
+to a JSON array of decoded strings. `new_key` remains literal UTF-8 in
+both rename variants.
+
+Semantics follow the Rust `ktav::edit` contract: insert appends a new
+final Object key under an existing Object parent and reports
+`EditAlreadyExists` instead of overwriting; remove deletes a leaf, subtree
+or Array element without pruning emptied ancestors; rename replaces only
+the last addressed key segment in place (identical key: byte-identical
+no-op). Source UTF-8 validation and parsing precede transport decoding,
+identically to `ktav_edit_value`.
+
+All input spans must be readable for the duration of the call. Null
 input pointers are accepted only for zero-length inputs. The four output
 slots must be writable, pairwise disjoint, and must not overlap any input.
 Unwinding Rust panics from edit operations are caught and encoded as
@@ -208,9 +261,11 @@ when the sequence is truncated at EOF — and an EOF-detected
 `ktav_abi_version()`. Hosts **must** compare it at load time against
 the value they were built against and refuse to load on mismatch.
 
-A bump is obliged by: adding, removing, or changing the signature or
-ownership contract of an exported function; changing the error
-encoding. Appending a *field* to the end of the error envelope does
+A bump is required when an existing exported function is removed, its
+signature or ownership contract changes, or error encoding breaks
+compatibility. Adding functions is backward-compatible and does not
+require a bump: existing consumers continue to work, while newer consumers
+must resolve every symbol they require and reject a library missing one. Appending a *field* to the end of the error envelope does
 **not** oblige a bump: absent information is already an explicit
 `null`, and a host that reads fields by name is unaffected by a longer
 object. Inserting or reordering a field would, because it moves every

@@ -54,9 +54,11 @@
 //! # [`ABI_VERSION`]
 //!
 //! The exported-shape version, exposed as `ktav_abi_version()` by the
-//! macro. Bump it when an exported function is added, removed, or its
-//! signature or ownership contract changes, or when the error encoding
-//! changes. Adding a field to the error envelope does **not** oblige a
+//! macro. Bump it when an existing exported function is removed or its
+//! signature or ownership contract changes, or when error encoding breaks
+//! compatibility. Additive exports preserve existing callers; clients
+//! needing them must explicitly require those symbols. Adding a field to
+//! the error envelope does **not** oblige a
 //! bump — the contract is "every field always present, absent means
 //! null", and a longer object still satisfies it.
 
@@ -67,8 +69,9 @@
 /// `ktav_abi_version()` against the value it was compiled against and
 /// refuses to load on mismatch, instead of corrupting memory.
 ///
-/// Bump when an exported function is added, removed, or its signature
-/// or ownership contract changes, or when the error encoding changes.
+/// Bump when an existing function is removed, its signature or ownership
+/// changes, or error encoding breaks compatibility. Adding exports alone
+/// does not require a bump; consumers must check every required symbol.
 /// Adding a *field* to the error envelope does not oblige a bump: the
 /// envelope's contract is already "every field always present,
 /// absent means null".
@@ -118,7 +121,10 @@ mod envelope;
 mod ops;
 mod wire;
 
-pub use edit::{edit_value, edit_value_segments};
+pub use edit::{
+    edit_value, edit_value_segments, insert_value, insert_value_segments, remove_value,
+    remove_value_segments, rename_key, rename_key_segments,
+};
 pub use ops::{
     canonical_from_source, dumps, dumps_force_strings, emit_canonical, format, loads, loads_strict,
 };

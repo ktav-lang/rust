@@ -1,4 +1,7 @@
-use super::{dumps, edit_value, edit_value_segments};
+use super::{
+    dumps, edit_value, edit_value_segments, insert_value, insert_value_segments, remove_value,
+    remove_value_segments, rename_key, rename_key_segments,
+};
 use serde_json::{json, Value};
 
 fn error(payload: String, code: &str) -> Value {
@@ -158,4 +161,173 @@ fn source_diagnostics_precede_invalid_transport() {
     assert_eq!(eof["line"], 2);
     assert_eq!(eof["span"], json!({"start":10,"end":11}));
     assert_eq!(eof["line_text"], " b: [");
+}
+
+// --- task114: insert/remove/rename C ABI wrappers -----------------------------
+
+/// Код ошибки из envelope без переписывания каждого негативного кейса.
+trait ErrorCode {
+    fn error_code(self) -> String;
+}
+
+impl ErrorCode for Result<Vec<u8>, String> {
+    fn error_code(self) -> String {
+        let payload = self.expect_err("ожидалась ошибка, получен успех");
+        let value: Value = serde_json::from_str(&payload).unwrap();
+        value["error"].as_str().unwrap().to_string()
+    }
+}
+
+#[test]
+fn insert_wrappers_append_object_key_with_wire_replacement() {
+    // Точность выше 2^53 сохраняется внутри i64; переполнение отклоняется.
+    assert_eq!(
+        insert_value(b"a: 1\n", b"b", br#"{"$i":"9007199254740993"}"#).unwrap(),
+        b"a: 1\nb: 9007199254740993\n"
+    );
+    assert_eq!(
+        insert_value(b"a: 1\n", b"b", br#"{"$i":"9223372036854775808"}"#).error_code(),
+        "EditUnsupported"
+    );
+    assert_eq!(
+        insert_value_segments(b"a: 1\n", br#"["b"]"#, br#"{"$f":"-0.0"}"#).unwrap(),
+        b"a: 1\nb: -0.0\n"
+    );
+    // Inline-родитель: сегмент перед closer, sibling нетронут.
+    assert_eq!(
+        insert_value(b"a: {x: 1}\n", b"a.y", br#""two""#).unwrap(),
+        b"a: {x: 1, y: two}\n"
+    );
+}
+
+#[test]
+fn insert_wrapper_key_encodings_and_collision() {
+    // Literal-ключ с точкой: textual path экранирует, emitter даёт quoted.
+    assert_eq!(
+        insert_value(b"a: 1\n", b"a\\.b", br#"{"$i":"2"}"#).unwrap(),
+        b"a: 1\n\"a.b\": 2\n",
+    );
+    // Unicode-ключ через segments.
+    assert_eq!(
+        insert_value_segments(b"k: 1\n", "[\"ключ\"]".as_bytes(), br#"{"$i":"2"}"#).unwrap(),
+        "k: 1\nключ: 2\n".as_bytes()
+    );
+    // Existing key — EditAlreadyExists, никогда не overwrite.
+    let collision = error(
+        insert_value(b"a: 1\n", b"a", b"null").unwrap_err(),
+        "EditAlreadyExists",
+    );
+    assert!(collision["body"].is_null());
+    assert!(collision["span"].is_null());
+}
+
+#[test]
+fn insert_wrapper_errors_are_typed() {
+    assert_eq!(
+        insert_value(b"a: 1\n", b"b.c", b"null").error_code(),
+        "EditNotFound"
+    );
+    assert_eq!(
+        insert_value_segments(b"a: 1\n", b"[]", b"null").error_code(),
+        "EditNotFound"
+    );
+    let invalid = error(
+        insert_value(b"a: 1\n", b"a..b", b"null").unwrap_err(),
+        "EditInvalidPath",
+    );
+    assert_eq!(invalid["body"], "2");
+}
+
+#[test]
+fn remove_wrappers_delete_leaf_and_array_elements() {
+    assert_eq!(remove_value(b"a: 1\nb: 2\n", b"a").unwrap(), b"b: 2\n");
+    assert_eq!(
+        remove_value_segments(b"a: [1, 2, 3]\n", br#"["a","1"]"#).unwrap(),
+        b"a: [1, 3]\n"
+    );
+    assert_eq!(
+        remove_value(b"a: 1\n", b"missing").error_code(),
+        "EditNotFound"
+    );
+    assert_eq!(
+        remove_value_segments(b"a: 1\n", b"[]").error_code(),
+        "EditNotFound"
+    );
+}
+
+#[test]
+fn rename_wrappers_rename_in_place_and_noop_is_byte_identical() {
+    assert_eq!(
+        rename_key(b"a: 1\nb: 2\n", b"b", b"x").unwrap(),
+        b"a: 1\nx: 2\n"
+    );
+    assert_eq!(
+        rename_key_segments(b"a: {x: 1, y: 2}\n", br#"["a","x"]"#, b"w").unwrap(),
+        b"a: {w: 1, y: 2}\n"
+    );
+    // No-op same key: byte-identical, включая raw-написание и CRLF.
+    assert_eq!(
+        rename_key(b"k:: 042\r\n", b"k", b"k").unwrap(),
+        b"k:: 042\r\n"
+    );
+    // Коллизия с существующим соседом.
+    assert_eq!(
+        rename_key(b"a: 1\nb: 2\n", b"a", b"b").error_code(),
+        "EditAlreadyExists"
+    );
+    // Unicode-ключ.
+    assert_eq!(
+        rename_key(b"a: 1\n", b"a", "ключ".as_bytes()).unwrap(),
+        "ключ: 1\n".as_bytes()
+    );
+}
+
+#[test]
+fn literal_backslash_key_textual_and_segments() {
+    // Ключ x\y: в source пишется x\\y (bare-escape);
+    // textual path экранирует каждый backslash, segments-JSON — один.
+    assert_eq!(
+        rename_key(b"x\\\\y: 1\n", b"x\\\\y", b"m").unwrap(),
+        b"m: 1\n"
+    );
+    assert_eq!(
+        insert_value(b"k: 1\n", b"x\\\\y", br#"{"$i":"2"}"#).unwrap(),
+        b"k: 1\nx\\\\y: 2\n",
+    );
+    assert_eq!(
+        rename_key_segments(b"x\\\\y: 1\n", br#"["x\\y"]"#, b"m").unwrap(),
+        b"m: 1\n"
+    );
+}
+
+#[test]
+fn segments_transport_empty_bytes_vs_json_array() {
+    // Пустые transport-байты — Message (segments не JSON);
+    // декодированный JSON [] — честный EditNotFound. Все три семейства.
+    let empty: &[u8] = &[];
+    let arr: &[u8] = br#"[]"#;
+    assert_eq!(
+        insert_value_segments(b"a: 1\n", empty, b"null").error_code(),
+        "Message"
+    );
+    assert_eq!(
+        insert_value_segments(b"a: 1\n", arr, b"null").error_code(),
+        "EditNotFound"
+    );
+    assert_eq!(
+        remove_value_segments(b"a: 1\n", empty).error_code(),
+        "Message"
+    );
+    assert_eq!(
+        remove_value_segments(b"a: 1\n", arr).error_code(),
+        "EditNotFound"
+    );
+    assert_eq!(
+        rename_key_segments(b"a: 1\n", empty, b"x").error_code(),
+        "Message"
+    );
+    assert_eq!(
+        rename_key_segments(b"a: 1\n", arr, b"x").error_code(),
+        "EditNotFound"
+    );
 }

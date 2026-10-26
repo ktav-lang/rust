@@ -1035,11 +1035,11 @@ Go、Java、PHP、C#、JS 和 Python 绑定共用 Rust 核心。默认关闭的 
 ktav::declare_cabi!();
 ```
 
-**尚未发布的 0.9 准备版本使用 ABI 2**，包含十二个符号：九个文档函数（`ktav_loads`、`ktav_loads_strict`、`ktav_dumps`、`ktav_dumps_force_strings`、`ktav_emit_canonical`、`ktav_format`、`ktav_canonical_from_source`、`ktav_edit_value`、`ktav_edit_value_segments`）、`ktav_free`、`ktav_version` 和 `ktav_abi_version`。宿主必须拒绝 ABI 1 二进制文件，不得静默切换后端。这不会发布或更改绑定包版本。
+**尚未发布的 0.9 准备版本使用 ABI 2**，包含十八个符号：十五个文档函数（`ktav_loads`、`ktav_loads_strict`、`ktav_dumps`、`ktav_dumps_force_strings`、`ktav_emit_canonical`、`ktav_format`、`ktav_canonical_from_source`、`ktav_edit_value`、`ktav_edit_value_segments`、`ktav_insert_value`、`ktav_insert_value_segments`、`ktav_remove_value`、`ktav_remove_value_segments`、`ktav_rename_key`、`ktav_rename_key_segments`）、`ktav_free`、`ktav_version` 和 `ktav_abi_version`。六个对象变更函数是 ABI 2 的增量导出：现有二进制文件无需改动即可继续工作，需要 insert/remove/rename 的绑定必须要求新符号——没有隐藏的纯实现回退。宿主必须拒绝 ABI 1 二进制文件，不得静默切换后端。这不会发布或更改绑定包版本。
 
-两个编辑函数均接受三个带长度的字节输入：Ktav 源文档、路径及 JSON wire 替换值。第一个路径为 UTF-8 点分文本；第二个为字面解码字符串的 JSON 数组。带标记的数字（`$i` / `$f`）保留标量类型和精度；替换值本身可以是标量。成功返回 UTF-8 Ktav 源文本，而非 JSON 字符串，遵守与 `ktav::edit` 相同的无损编辑和可读性规则。
+两个编辑函数均接受三个带长度的字节输入：Ktav 源文档、路径及 JSON wire 替换值。第一个路径为 UTF-8 点分文本；第二个为字面解码字符串的 JSON 数组。带标记的数字（`$i` / `$f`）保留标量类型和精度；替换值本身可以是标量。成功返回 UTF-8 Ktav 源文本，而非 JSON 字符串，遵守与 `ktav::edit` 相同的无损编辑和可读性规则。变更系列新增 `ktav_insert_value(_segments)` 用于追加新的 Object 键、`ktav_remove_value(_segments)`（恰为两个输入缓冲区：source 与 path，无替换参数）以及 `ktav_rename_key(_segments)`，其 `new_key` 输入是 UTF-8 字面已解码键——不是 JSON，也不是路径语法。
 
-所有错误仍使用十字段 JSON envelope。源诊断保留 0.9 原始字节坐标。编辑错误为 `EditInvalidPath`、`EditNotFound` 或 `EditUnsupported`，不编造源位置：`body` 对应十进制路径字节偏移、拒绝原因或 null。源文档之外的 JSON/UTF-8 传输错误使用 `Message`；宿主以 `message` 作为错误文本。
+所有错误仍使用十字段 JSON envelope。源诊断保留 0.9 原始字节坐标。编辑错误为 `EditInvalidPath`、`EditNotFound`、`EditAlreadyExists`（body 为 null；插入绝不覆盖）或 `EditUnsupported`，不编造源位置：`body` 对应十进制路径字节偏移、拒绝原因，或 `EditNotFound` 与 `EditAlreadyExists` 时的 null。源文档之外的 JSON/UTF-8 传输错误使用 `Message`；宿主以 `message` 作为错误文本。
 
 完整签名、所有权及产物命名约定（`ktav_cabi-windows-amd64.dll`、`libktav_cabi-darwin-arm64.dylib`、`libktav_cabi-linux-amd64.so`、`$KTAV_LIB_PATH`）见 [docs/CABI.md](docs/CABI.md)。
 
