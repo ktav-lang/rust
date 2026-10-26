@@ -71,7 +71,7 @@ fn unsupported(reason: &str) -> EditError {
     }
 }
 
-fn physical_line(text: &str, pos: usize) -> &str {
+pub(super) fn physical_line(text: &str, pos: usize) -> &str {
     let start = text[..pos].rfind(['\n', '\r']).map_or(0, |n| n + 1);
     let end = text[pos..]
         .find(['\n', '\r'])
@@ -267,6 +267,10 @@ fn expand(
     Ok(Some(out))
 }
 
+/// Порог force-раскрытия для вставки (глубина > лимита — typed Err).
+pub(super) fn requires_block_for(value: &Value) -> Result<bool, EditError> {
+    requires_block(value, 0)
+}
 fn standalone(
     part: &str,
     prefix: &str,

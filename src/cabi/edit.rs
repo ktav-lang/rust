@@ -49,6 +49,10 @@ fn edit_envelope(error: EditError) -> String {
             env.error = "EditNotFound".into();
             env.body = None;
         }
+        EditError::AlreadyExists => {
+            env.error = "EditAlreadyExists".into();
+            env.body = None;
+        }
         EditError::Unsupported { reason } => {
             env.error = "EditUnsupported".into();
             env.body = Some(reason);

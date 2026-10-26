@@ -11,6 +11,7 @@
 
 ### Added
 
+- Lossless source edit operations `ktav::edit::{insert_value, remove_value, rename_key}` (and their `*_segments` variants): append a new Object key with an explicit `AlreadyExists` collision error and no hidden overwrites, delete a leaf/subtree/array element while keeping empty ancestors and container forms, and rename an Object member in place preserving order, value and comments. Same path grammar, inline readability thresholds, comment-loss refusals and post-edit semantic verification; invalid sources fail closed with `Unsupported`. Rust-only in this phase; no new C ABI exports or version changes yet.
 - Rust-only source-editing API: `ktav::edit::edit_value` accepts an escaped dotted path, and `edit_value_segments` accepts a slice/vector of literal segments. Both replace an existing value without reformatting the document, preserve surrounding bytes and comments, and return a new `String`.
 - Context-sensitive object keys and array indexes, `\.`/`\\` path escapes, minimal raw-marker transitions, unchanged-value no-ops and post-edit semantic verification. Typed `EditError` rejects malformed paths, missing targets and unsupported lossless replacements, including whole noncontiguous objects and structural changes that would discard comments.
 - Exact-text regression tests and EN/RU/ZH usage examples. No syntax, existing parser/formatter API or package-version change; this feature is not part of the published 0.8.1 crate.
@@ -40,6 +41,7 @@
 
 ### Добавлено
 
+- Lossless-операции исходного редактирования `ktav::edit::{insert_value, remove_value, rename_key}` (и их `*_segments`-варианты): добавление нового ключа Object с явной ошибкой коллизии `AlreadyExists` и без скрытых перезаписей; удаление листа/поддерева/элемента массива с сохранением пустых предков и форм контейнеров; переименование члена Object на месте с сохранением порядка, значения и комментариев. Та же грамматика путей, пороги inline-читаемости, отказы при потере комментариев и семантическая верификация результата; невалидный исходник — fail closed `Unsupported`. В этой фазе только Rust; новые C ABI-экспорты и изменения версий пока не добавляются.
 - Rust API редактирования исходного текста: `ktav::edit::edit_value` принимает экранированный dotted-путь, `edit_value_segments` — слайс/вектор буквальных сегментов. Обе функции заменяют существующее значение без форматирования документа, сохраняют окружающие байты и комментарии и возвращают новый `String`.
 - Контекстное различение ключей объектов и индексов массивов, escape-последовательности пути `\.`/`\\`, минимальное переключение raw-маркера, неизменный текст при совпадении значений и семантическая проверка результата. Типизированный `EditError` отвергает ошибочные пути, отсутствующие цели и неподдерживаемые lossless-замены, включая целые noncontiguous-объекты и структурные правки с потерей комментариев.
 - Регрессионные тесты точного текста и примеры EN/RU/ZH. Синтаксис, существующий API парсера/formatter и версия пакета не меняются; функционал не входит в опубликованный crate 0.8.1.
@@ -69,6 +71,7 @@
 
 ### 新增
 
+- 无损源编辑操作 `ktav::edit::{insert_value, remove_value, rename_key}`（及各自的 `*_segments` 变体）：追加新的 Object 键，冲突时报显式 `AlreadyExists` 且绝不隐蔽覆盖；删除叶子/子树/数组元素时保留空祖先和容器形式；在原位重命名 Object 成员并保留顺序、值与注释。沿用相同的路径语法、行内可读性阈值、注释丢失拒绝及编辑后语义验证；无效源以 `Unsupported` 失败闭合。本阶段仅限 Rust；尚未新增 C ABI 导出或版本变更。
 - Rust 源文本编辑 API：`ktav::edit::edit_value` 接受带转义的点分路径，`edit_value_segments` 接受字面路径段切片/向量。两者均在不重新格式化文档的情况下替换已有值，保留周围字节与注释，并返回新的 `String`。
 - 按上下文区分对象键与数组索引，支持路径转义 `\.`/`\\`、最小化 raw 标记调整、值不变时保留原文，以及编辑后的语义验证。类型化的 `EditError` 拒绝错误路径、不存在的目标及不支持的无损替换，包括整个不连续对象和会丢失注释的结构修改。
 - 精确文本回归测试及 EN/RU/ZH 用法示例。不改变语法、现有解析器/formatter API 或包版本；此功能不包含在已发布的 0.8.1 crate 中。

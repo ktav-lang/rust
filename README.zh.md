@@ -860,9 +860,19 @@ assert_eq!(edit_value_segments(source, &path, &replacement)?, expected);
 
 短时配对基准位于 `benches/source_edit.rs`。先使用 `cargo bench --bench source_edit --no-run --message-format=json` 单独编译，再以 `baseline` 或 `candidate` 参数运行输出中列出的可执行文件。用外部工具将每个进程限制为 15 秒，例如 Windows 下的 `caps 15 <benchmark-executable> candidate`。每个场景预热 20 ms、采样 300 ms；准备工作和精确输出验证不计入测量区间。应在相同工具链下交替执行 A/B 与 B/A；短时运行的耗时不作为 CI 回归阈值。
 
-仅支持替换已有值，不会自动创建容器，也不支持删除或重命名。若值未改变，则返回原始文本，包括原有的数字写法。新值以 `Value` 传入；看起来像数字的 `Value::String` 仍是字符串，必要时使用 raw 标记。
+替换之外还提供 `insert_value`、`remove_value` 和 `rename_key`（见下文）：新增末级 Object 键、删除叶子/子树/数组元素，以及原位重命名成员。若值未改变，则返回原始文本，包括原有的数字写法。新值以 `Value` 传入；看起来像数字的 `Value::String` 仍是字符串，必要时使用 raw 标记。
 
 `EditError::InvalidPath` 报告文本路径错误及字节偏移；`NotFound` 表示键不存在、数组索引无效或越界，或试图穿过标量继续访问。`Unsupported` 拒绝无效源文档、无法表示的新值，或当前实现无法在保留周围文本的前提下完成的替换。例如，由分散的点分键或重新打开的定义构成的整个对象没有单一替换范围；替换容器也不能删除其内部注释，但其中的叶子值仍可编辑。行内值使用转义表示 CR 和 LF。在行内复合值之外，含 CR 的字符串及部分依赖上下文的多行/容器替换会被拒绝，而不会被静默改写。所有成功返回的文本都经过解析，并与预期值树比较；错误不会返回部分编辑的文档。
+
+### 插入、删除与重命名（尚未发布）
+
+`insert_value(source, path, value)` 在已存在的 Object 父级下新增一个末级键。新键值对作为完整一行追加：块级和隐式根容器追加到父级末尾，行内容器作为 closer 前的行内段插入；保留源文档的 EOL 及末尾换行的有无。已存在的键报 `EditError::AlreadyExists`——插入绝不覆盖；对 Array 的插入是显式 `Unsupported`；缺失中间层级和穿过标量为 `NotFound`。行内字符串使用行内转义（逗号、括号、反斜杠、换行、数字样内容）；当可读性规则要求时，行内父级展开为块；若无法无损表示块形式（CR、`))` 行），则保留已验证的行内形式。
+
+`remove_value(source, path)` 删除已存在的叶子、整个子树或一个数组元素（尾部前移）。空祖先不会被清理：删除唯一的点分叶子后，被清空的点分链会在原位置物化为 `k: {}` 行；真实块保留花括号，行内容器保留行内形式。被删容器内部的注释以 `Unsupported` 拒绝；相邻注释保留。BOM 作为源元数据保留，绝不进入编辑范围。
+
+`rename_key(source, path, new_key)` 在原位重命名成员，仅替换最后寻址的键段：源键的点分前缀、引号和转义逐字节保留，新键采用标准 bare/quoted 编码。相同键为逐字节 no-op；同级已存在目标为 `AlreadyExists`；数组索引或不可表示的键为 `Unsupported`。顺序、值、分隔符字节与注释不变。
+
+三个操作均提供接受字面已解码段的 `*_segments` 变体，使用与 `edit_value` 相同的文本路径语法，经过同样的 parse–splice–reparse–verify 流程；无效源以 `Unsupported` 失败闭合。
 
 ### 源文本编辑示例
 
