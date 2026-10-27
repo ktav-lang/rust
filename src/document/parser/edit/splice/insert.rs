@@ -155,11 +155,35 @@ fn insert_plan<'s, S: AsRef<str>>(
         {
             return Ok((p0 + 1, p1 - 1, pair, force));
         }
-        // Перед closer'ом: запятая + пара (пробел closer'а сохраняется).
-        let mut seg = String::with_capacity(pair.len() + 2);
-        seg.push_str(", ");
-        seg.push_str(&pair);
-        return Ok((p1 - 1, p1 - 1, seg, force));
+        let trimmed = inner.trim_end_matches(crate::whitespace::is_ktav_whitespace);
+        let trailing_comma = trimmed.ends_with(',');
+        let comma_is_structural = if trailing_comma {
+            let bytes = trimmed.as_bytes();
+            let mut slash_count = 0;
+            let mut i = bytes.len() - 1;
+            while i > 0 && bytes[i - 1] == b'\\' {
+                slash_count += 1;
+                i -= 1;
+            }
+            slash_count % 2 == 0
+        } else {
+            false
+        };
+        let insertion = if comma_is_structural {
+            p0 + 1 + trimmed.len()
+        } else {
+            p1 - 1
+        };
+        let mut seg = String::with_capacity(pair.len() + 3);
+        if comma_is_structural {
+            seg.push(' ');
+            seg.push_str(&pair);
+            seg.push(',');
+        } else {
+            seg.push_str(", ");
+            seg.push_str(&pair);
+        }
+        return Ok((insertion, insertion, seg, force));
     }
     if parent_segs.is_empty() {
         return root_insert(text, root_explicit, parent_node, key, replacement);

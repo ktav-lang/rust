@@ -154,6 +154,83 @@ fn insert_into_block_object_crlf() {
 }
 
 #[test]
+fn insert_inline_trailing_structural_comma_root_and_nested() {
+    let cases = [
+        ("{x: 1,}\n", "{x: 1, y: 2,}\n", false),
+        ("{x: 1,   }\n", "{x: 1, y: 2,   }\n", false),
+        ("a: {x: 1,}\n", "a: {x: 1, y: 2,}\n", true),
+        ("a: {x: 1,   }\n", "a: {x: 1, y: 2,   }\n", true),
+    ];
+    for (source, expected_text, nested) in cases {
+        let (path, segments): (&str, &[&str]) = if nested {
+            ("a.y", &["a", "y"])
+        } else {
+            ("y", &["y"])
+        };
+        let by_text = insert_value(source, path, &Value::Integer("2".into())).unwrap();
+        let by_segments =
+            insert_value_segments(source, segments, &Value::Integer("2".into())).unwrap();
+        assert_eq!(by_text, expected_text);
+        assert_eq!(by_segments, expected_text);
+
+        let expected = if nested {
+            obj(&[(
+                "a",
+                obj(&[
+                    ("x", Value::Integer("1".into())),
+                    ("y", Value::Integer("2".into())),
+                ]),
+            )])
+        } else {
+            obj(&[
+                ("x", Value::Integer("1".into())),
+                ("y", Value::Integer("2".into())),
+            ])
+        };
+        assert_eq!(parse(&by_text).unwrap(), expected);
+        assert_eq!(parse(&by_segments).unwrap(), expected);
+    }
+}
+
+#[test]
+fn insert_inline_trailing_comma_with_escaped_scalar_bytes() {
+    let source = r#"{x: p\,q\\r,   }"#;
+    let expected = r#"{x: p\,q\\r, y: 2,   }"#;
+    let out = insert_value(source, "y", &Value::Integer("2".into())).unwrap();
+    assert_eq!(out, expected);
+    let semantic = obj(&[("x", s("p,q\\r")), ("y", Value::Integer("2".into()))]);
+    assert_eq!(parse(&out).unwrap(), semantic);
+}
+
+#[test]
+fn insert_inline_escaped_comma_and_backslash_without_structural_trailing_comma() {
+    for (source, expected, expected_value) in [
+        (r#"{x: p\,q}"#, r#"{x: p\,q, y: 2}"#, s("p,q")),
+        (r#"{x: p\,}"#, r#"{x: p\,, y: 2}"#, s("p,")),
+        (r#"{x: p\\}"#, r#"{x: p\\, y: 2}"#, s("p\\")),
+        (r#"{x: p\\,}"#, r#"{x: p\\, y: 2,}"#, s("p\\")),
+        (r#"a: {x: p\,q   }"#, r#"a: {x: p\,q   , y: 2}"#, s("p,q")),
+    ] {
+        let out = insert_value(
+            source,
+            if source.starts_with("a:") { "a.y" } else { "y" },
+            &Value::Integer("2".into()),
+        )
+        .unwrap();
+        assert_eq!(out, expected);
+        let expected_semantic = if source.starts_with("a:") {
+            obj(&[(
+                "a",
+                obj(&[("x", expected_value), ("y", Value::Integer("2".into()))]),
+            )])
+        } else {
+            obj(&[("x", expected_value), ("y", Value::Integer("2".into()))])
+        };
+        assert_eq!(parse(&out).unwrap(), expected_semantic);
+    }
+}
+
+#[test]
 fn insert_appends_segment_to_inline_object() {
     let t = "a: {x: 1}\n";
     assert_eq!(
