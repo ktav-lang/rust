@@ -98,12 +98,11 @@ fn inline_owner<S: AsRef<str>>(
 ) -> Result<Option<(usize, usize)>, EditError> {
     let mut node = root;
     if root.inline {
-        let line = physical_line(source, pos);
-        let body = line
-            .trim_matches(is_ktav_whitespace)
-            .trim_start_matches('\u{FEFF}');
-        let start = body.as_ptr() as usize - source.as_ptr() as usize;
-        return Ok(Some((start, start + body.len())));
+        return root
+            .root_range
+            .map(|(start, end)| (start as usize, end as usize))
+            .map(Some)
+            .ok_or_else(|| unsupported("internal: inline root has no source range"));
     }
     for segment in path {
         node = match &node.kind {

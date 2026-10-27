@@ -69,6 +69,8 @@ pub(crate) struct Node {
     /// dotted-key/reopen, либо корень, либо inline-узел до навешивания
     /// слота родителем.
     pub(crate) slot: Option<Slot>,
+    /// Диапазон inline-корня из диспетчеризации формы парсером.
+    pub(crate) root_range: Option<(u32, u32)>,
 }
 
 impl Node {
@@ -77,6 +79,7 @@ impl Node {
             kind: Kind::Scalar,
             inline: false,
             slot: Some(slot),
+            root_range: None,
         }
     }
     fn empty_object(slot: Slot) -> Node {
@@ -84,6 +87,7 @@ impl Node {
             kind: Kind::Object(ObjTable::default()),
             inline: false,
             slot: Some(slot),
+            root_range: None,
         }
     }
     fn empty_array(slot: Slot) -> Node {
@@ -91,6 +95,7 @@ impl Node {
             kind: Kind::Array(Vec::new()),
             inline: false,
             slot: Some(slot),
+            root_range: None,
         }
     }
 
@@ -190,6 +195,7 @@ impl<'k> InsertTable<'k> for ObjTable {
                     kind: Kind::Object(ObjTable::default()),
                     inline: false,
                     slot: None,
+                    root_range: None,
                 });
                 match &mut inserted.kind {
                     Kind::Object(t) => Ok(t),
@@ -362,6 +368,7 @@ fn position_inline(
                         colon: colon_abs,
                         body: (off_in_line(trimmed, seg_base, v), seg_end),
                     }),
+                    root_range: None,
                 }
             } else {
                 let v = after.trim_start_matches(is_ktav_whitespace);
@@ -379,6 +386,7 @@ fn position_inline(
             kind: Kind::Object(table),
             inline: true,
             slot: None,
+            root_range: None,
         })
     } else {
         // Inline-массив: `::` здесь — НЕ строковый raw-маркер, а
@@ -406,6 +414,7 @@ fn position_inline(
             kind: Kind::Array(items),
             inline: true,
             slot: None,
+            root_range: None,
         })
     }
 }
@@ -430,6 +439,7 @@ fn inline_child(
             kind: Kind::Scalar,
             inline: true,
             slot: None,
+            root_range: None,
         }),
     }
 }
@@ -540,7 +550,9 @@ impl<'a> Builder<'a> {
                         // Позиционируем inline-корень: тело — вся
                         // trimmed-строка, база — ts.start.
                         let is_obj = trimmed.starts_with('{');
-                        let node = position_inline_top(trimmed, ts.start, line_num, ts, is_obj)?;
+                        let mut node =
+                            position_inline_top(trimmed, ts.start, line_num, ts, is_obj)?;
+                        node.root_range = Some((ts.start, ts.end));
                         self.root_inline = Some(node);
                         return Ok(());
                     }
@@ -955,6 +967,7 @@ impl<'a> Builder<'a> {
                 start: range_start,
                 end: ts.end,
             }),
+            root_range: None,
         };
         match self.stack.last_mut() {
             Some(Frame::Object {
@@ -1016,11 +1029,13 @@ impl<'a> Builder<'a> {
                     kind: Kind::Object(table),
                     inline: false,
                     slot: None,
+                    root_range: None,
                 },
                 Frame::Array { items, .. } => Node {
                     kind: Kind::Array(items),
                     inline: false,
                     slot: None,
+                    root_range: None,
                 },
             }),
             // Пустой / комментарийный документ — пустой объект-корень.
@@ -1028,6 +1043,7 @@ impl<'a> Builder<'a> {
                 kind: Kind::Object(ObjTable::default()),
                 inline: false,
                 slot: None,
+                root_range: None,
             }),
         }
     }

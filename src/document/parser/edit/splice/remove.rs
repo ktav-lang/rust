@@ -280,7 +280,7 @@ fn inline_range<S: AsRef<str>>(
 
 /// Inline-тело родителя цели: слот с braces либо inline-корень.
 fn parent_inline_body<S: AsRef<str>>(
-    text: &str,
+    _text: &str,
     root: &Node,
     segments: &[S],
 ) -> Result<(usize, usize), EditError> {
@@ -297,11 +297,10 @@ fn parent_inline_body<S: AsRef<str>>(
         }
     }
     if parents.is_empty() && root.inline {
-        let line = super::layout::physical_line(text, 0)
-            .trim_matches(is_ktav_whitespace)
-            .trim_start_matches('\u{FEFF}');
-        let start = line.as_ptr() as usize - text.as_ptr() as usize;
-        return Ok((start, start + line.len()));
+        let (start, end) = root
+            .root_range
+            .ok_or_else(|| unsupported("internal: inline root has no source range"))?;
+        return Ok((start as usize, end as usize));
     }
     Err(unsupported("internal: inline target without inline parent"))
 }

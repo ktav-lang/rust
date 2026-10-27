@@ -309,18 +309,12 @@ fn inline_body_of<'s, S: AsRef<str>>(
         }
         return Ok(None);
     }
-    // Корень: только физически inline-корень имеет braces-тело.
     if parent_segs.is_empty() && root.inline {
-        let line = super::layout::physical_line(text, 0)
-            .trim_matches(crate::whitespace::is_ktav_whitespace)
-            .trim_start_matches('\u{FEFF}');
-        let start = line.as_ptr() as usize - text.as_ptr() as usize;
-        let body = text
-            .get(start..start + line.len())
-            .ok_or_else(|| unsupported("internal: invalid inline root range"))?;
-        if body.starts_with('{') && body.ends_with('}') {
-            return Ok(Some((start, start + body.len())));
-        }
+        return root
+            .root_range
+            .map(|(a, b)| (a as usize, b as usize))
+            .ok_or_else(|| unsupported("internal: inline root has no source range"))
+            .map(Some);
     }
     Ok(None)
 }

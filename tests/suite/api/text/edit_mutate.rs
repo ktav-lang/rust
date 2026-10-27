@@ -34,6 +34,164 @@ fn keys_of(v: &Value) -> Vec<&str> {
     }
 }
 
+// --- inline root после ведущих trivia ----------------------------------------
+
+#[test]
+fn insert_inline_root_after_leading_comments_preserves_bytes() {
+    let source = "## lead {\n{x: 1}\n## tail }\n";
+    let expected = "## lead {\n{x: 1, y: 2}\n## tail }\n";
+    for out in [
+        insert_value(source, "y", &Value::Integer("2".into())).unwrap(),
+        insert_value_segments(source, &["y"], &Value::Integer("2".into())).unwrap(),
+    ] {
+        assert_eq!(out.as_bytes(), expected.as_bytes());
+        assert_eq!(
+            parse(&out).unwrap(),
+            obj(&[
+                ("x", Value::Integer("1".into())),
+                ("y", Value::Integer("2".into()))
+            ])
+        );
+    }
+}
+
+#[test]
+fn remove_inline_roots_after_leading_comments_preserves_exact_trivia() {
+    for (source, path, segments, expected, semantic) in [
+        (
+            "## lead {\n{x: 1}\n## tail }\n",
+            "x",
+            &["x"][..],
+            "## lead {\n{}\n## tail }\n",
+            obj(&[]),
+        ),
+        (
+            "## lead {\n[1, 2,]\n## tail }\n",
+            "0",
+            &["0"][..],
+            "## lead {\n[2,]\n## tail }\n",
+            Value::Array(vec![Value::Integer("2".into())]),
+        ),
+    ] {
+        for out in [
+            remove_value(source, path).unwrap(),
+            remove_value_segments(source, segments).unwrap(),
+        ] {
+            assert_eq!(out.as_bytes(), expected.as_bytes());
+            assert_eq!(parse(&out).unwrap(), semantic);
+        }
+    }
+}
+
+#[test]
+fn inline_root_with_bom_spaces_unicode_whitespace_and_eol_variants() {
+    // пробел после BOM относится к физической строке inline-корня.
+    for (source, expected, semantic) in [
+        (
+            "\u{FEFF}  {x: 1}\n",
+            "\u{FEFF}  {x: 1, y: 2}\n",
+            obj(&[
+                ("x", Value::Integer("1".into())),
+                ("y", Value::Integer("2".into())),
+            ]),
+        ),
+        (
+            "\u{00A0}{x: 1}\r\n",
+            "\u{00A0}{x: 1, y: 2}\r\n",
+            obj(&[
+                ("x", Value::Integer("1".into())),
+                ("y", Value::Integer("2".into())),
+            ]),
+        ),
+        (
+            "## {lead}\r{x: 1}",
+            "## {lead}\r{x: 1, y: 2}",
+            obj(&[
+                ("x", Value::Integer("1".into())),
+                ("y", Value::Integer("2".into())),
+            ]),
+        ),
+        (
+            "## {lead}\n{x: 1}",
+            "## {lead}\n{x: 1, y: 2}",
+            obj(&[
+                ("x", Value::Integer("1".into())),
+                ("y", Value::Integer("2".into())),
+            ]),
+        ),
+    ] {
+        for out in [
+            insert_value(source, "y", &Value::Integer("2".into())).unwrap(),
+            insert_value_segments(source, &["y"], &Value::Integer("2".into())).unwrap(),
+        ] {
+            assert_eq!(out.as_bytes(), expected.as_bytes());
+            assert_eq!(parse(&out).unwrap(), semantic);
+        }
+    }
+}
+
+#[test]
+fn insert_inline_root_trailing_comma_escaped_delimiter_comments() {
+    let source = "## lead {\n{x: p\\,q,}\n## tail }\n";
+    let expected = "## lead {\n{x: p\\,q, y: 2,}\n## tail }\n";
+    let semantic = obj(&[("x", s("p,q")), ("y", Value::Integer("2".into()))]);
+    for out in [
+        insert_value(source, "y", &Value::Integer("2".into())).unwrap(),
+        insert_value_segments(source, &["y"], &Value::Integer("2".into())).unwrap(),
+    ] {
+        assert_eq!(out.as_bytes(), expected.as_bytes());
+        assert_eq!(parse(&out).unwrap(), semantic);
+    }
+}
+
+#[test]
+fn remove_inline_root_bom_crlf_preserves_trivia() {
+    let source = "\u{FEFF}  {x: 1, y: 2}\r\n## tail }\r\n";
+    let expected = "\u{FEFF}  {x: 1}\r\n## tail }\r\n";
+    let semantic = obj(&[("x", Value::Integer("1".into()))]);
+    for out in [
+        remove_value(source, "y").unwrap(),
+        remove_value_segments(source, &["y"]).unwrap(),
+    ] {
+        assert_eq!(out.as_bytes(), expected.as_bytes());
+        assert_eq!(parse(&out).unwrap(), semantic);
+    }
+}
+
+#[test]
+fn inline_root_layout_preserves_bom_comments_and_blank_line() {
+    let value = s("first\nsecond");
+    let expected_value = s("first\nsecond");
+    for (source, expected) in [
+        (
+            "\u{FEFF}  {x: 1}\n",
+            "\u{FEFF}  {\n    x: 1\n    y: ((\nfirst\nsecond\n    ))\n}\n",
+        ),
+        (
+            "## lead {\n{x: 1}\n",
+            "## lead {\n{\n    x: 1\n    y: ((\nfirst\nsecond\n    ))\n}\n",
+        ),
+        (
+            "\n{x: 1}\n",
+            "\n{\n    x: 1\n    y: ((\nfirst\nsecond\n    ))\n}\n",
+        ),
+    ] {
+        for out in [
+            insert_value(source, "y", &value).unwrap(),
+            insert_value_segments(source, &["y"], &value).unwrap(),
+        ] {
+            assert_eq!(out.as_bytes(), expected.as_bytes());
+            assert_eq!(
+                parse(&out).unwrap(),
+                obj(&[
+                    ("x", Value::Integer("1".into())),
+                    ("y", expected_value.clone())
+                ])
+            );
+        }
+    }
+}
+
 // --- insert: неявный корень и финальный EOL ----------------------------------
 
 #[test]
