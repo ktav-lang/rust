@@ -7,13 +7,52 @@ mod layout;
 
 use ktav::edit::{edit_value, edit_value_segments, EditError};
 use ktav::parse;
-use ktav::value::Value;
+use ktav::value::{ObjectMap, Value};
 
 fn s(v: &str) -> Value {
     Value::String(v.into())
 }
 
 // --- скаляры, все типы ------------------------------------------------------
+
+#[test]
+fn nested_object_multiline_string_replacement_lf_exact_and_semantic() {
+    let source = "a: {\n    value: old\n}\n";
+    let value = Value::Object({
+        let mut map = ObjectMap::default();
+        map.insert("text".into(), s("    four\n      six"));
+        map
+    });
+    let output = edit_value(source, "a.value", &value).unwrap();
+    assert_eq!(
+        output,
+        "a: {\n    value: {\n        text: ((\n    four\n      six\n        ))\n    }\n}\n"
+    );
+    let mut nested = ObjectMap::default();
+    nested.insert("text".into(), s("    four\n      six"));
+    let mut a = ObjectMap::default();
+    a.insert("value".into(), Value::Object(nested));
+    let mut expected = ObjectMap::default();
+    expected.insert("a".into(), Value::Object(a));
+    assert_eq!(parse(&output).unwrap(), Value::Object(expected));
+}
+
+#[test]
+fn nested_object_multiline_string_replacement_crlf_exact_and_semantic() {
+    let source = "a: {\r\n    value: old\r\n}\r\n";
+    let mut value_map = ObjectMap::default();
+    value_map.insert("text".into(), s("    four\n      six"));
+    let value = Value::Object(value_map);
+    let output = edit_value(source, "a.value", &value).unwrap();
+    assert_eq!(output, "a: {\r\n    value: {\r\n        text: ((\r\n    four\r\n      six\r\n        ))\r\n    }\r\n}\r\n");
+    let mut nested = ObjectMap::default();
+    nested.insert("text".into(), s("    four\n      six"));
+    let mut a = ObjectMap::default();
+    a.insert("value".into(), Value::Object(nested));
+    let mut expected = ObjectMap::default();
+    expected.insert("a".into(), Value::Object(a));
+    assert_eq!(parse(&output).unwrap(), Value::Object(expected));
+}
 
 #[test]
 fn string_replacement_plain() {

@@ -34,6 +34,32 @@ fn keys_of(v: &Value) -> Vec<&str> {
     }
 }
 
+#[test]
+fn rename_preserves_order_and_nested_sibling_values() {
+    let source = "before: {nested: [1, 2]}\ntarget: 3\nafter: {v: keep}\n";
+    let expected = "before: {nested: [1, 2]}\nrenamed: 3\nafter: {v: keep}\n";
+    let tree = obj(&[
+        (
+            "before",
+            obj(&[(
+                "nested",
+                Value::Array(vec![Value::Integer("1".into()), Value::Integer("2".into())]),
+            )]),
+        ),
+        ("renamed", Value::Integer("3".into())),
+        ("after", obj(&[("v", s("keep"))])),
+    ]);
+    for output in [
+        rename_key(source, "target", "renamed").unwrap(),
+        rename_key_segments(source, &["target"], "renamed").unwrap(),
+    ] {
+        assert_eq!(output, expected);
+        let parsed = parse(&output).unwrap();
+        assert_eq!(parsed, tree);
+        assert_eq!(keys_of(&parsed), ["before", "renamed", "after"]);
+    }
+}
+
 // --- inline root после ведущих trivia ----------------------------------------
 
 #[test]
@@ -422,6 +448,32 @@ fn insert_inline_numeric_looking_string_gets_provenance() {
         insert_value("a: {x: 1}\n", "a.k", &s("42")).unwrap(),
         format!("a: {{x: 1, k: {bs}u00342}}\n")
     );
+}
+
+#[test]
+fn insert_nested_object_multiline_string_lf_exact_and_semantic() {
+    let source = "a: {\n    x: 1\n}\n";
+    let value = obj(&[("text", s("    four\n      six"))]);
+    let output = insert_value(source, "a.value", &value).unwrap();
+    assert_eq!(output, "a: {\n    x: 1\n    value: {\n        text: ((\n    four\n      six\n        ))\n    }\n}\n");
+    let expected = obj(&[(
+        "a",
+        obj(&[("x", Value::Integer("1".into())), ("value", value)]),
+    )]);
+    assert_eq!(parse(&output).unwrap(), expected);
+}
+
+#[test]
+fn insert_nested_object_multiline_string_crlf_exact_and_semantic() {
+    let source = "a: {\r\n    x: 1\r\n}\r\n";
+    let value = obj(&[("text", s("    four\n      six"))]);
+    let output = insert_value(source, "a.value", &value).unwrap();
+    assert_eq!(output, "a: {\r\n    x: 1\r\n    value: {\r\n        text: ((\r\n    four\r\n      six\r\n        ))\r\n    }\r\n}\r\n");
+    let expected = obj(&[(
+        "a",
+        obj(&[("x", Value::Integer("1".into())), ("value", value)]),
+    )]);
+    assert_eq!(parse(&output).unwrap(), expected);
 }
 
 #[test]

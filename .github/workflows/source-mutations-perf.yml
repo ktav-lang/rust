@@ -1,0 +1,55 @@
+name: Source mutation performance
+
+on:
+  pull_request:
+    paths:
+      - 'src/document/parser/edit/**'
+      - 'benches/source_mutations.rs'
+      - 'scripts/bench-mutations.py'
+      - '.github/workflows/source-mutations-perf.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Mutation baseline / candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: baseline
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Record compared revisions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: printf 'baseline=%s\ncandidate=%s\n' "$BASE_SHA" "$HEAD_SHA"
+
+      - name: Compare identical mutation workloads
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: python -I candidate/scripts/bench-mutations.py baseline candidate mutation-results
+
+      - name: Preserve raw samples and environment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-mutation-performance
+          path: mutation-results/
+          if-no-files-found: warn

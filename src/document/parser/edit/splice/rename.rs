@@ -113,18 +113,14 @@ pub(super) fn apply<S: AsRef<str>>(
     let parent = value_at(&mut expected, parent_segs)?;
     match parent {
         Value::Object(o) => {
-            let renamed: Vec<(crate::value::Scalar, Value)> = o
-                .iter()
+            let entries = std::mem::take(o);
+            *o = entries
+                .into_iter()
                 .map(|(k, v)| {
-                    let k = if k.as_str() == key {
-                        new_key.into()
-                    } else {
-                        k.clone()
-                    };
-                    (k, v.clone())
+                    let k = if k.as_str() == key { new_key.into() } else { k };
+                    (k, v)
                 })
                 .collect();
-            *o = renamed.into_iter().collect();
         }
         _ => return Err(unsupported("internal: parent value is not an object")),
     }
