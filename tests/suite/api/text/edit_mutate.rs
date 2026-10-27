@@ -451,6 +451,32 @@ fn insert_inline_numeric_looking_string_gets_provenance() {
 }
 
 #[test]
+fn insert_nested_object_multiline_string_lf_exact_and_semantic() {
+    let source = "a: {\n    x: 1\n}\n";
+    let value = obj(&[("text", s("    four\n      six"))]);
+    let output = insert_value(source, "a.value", &value).unwrap();
+    assert_eq!(output, "a: {\n    x: 1\n    value: {\n        text: ((\n    four\n      six\n        ))\n    }\n}\n");
+    let expected = obj(&[(
+        "a",
+        obj(&[("x", Value::Integer("1".into())), ("value", value)]),
+    )]);
+    assert_eq!(parse(&output).unwrap(), expected);
+}
+
+#[test]
+fn insert_nested_object_multiline_string_crlf_exact_and_semantic() {
+    let source = "a: {\r\n    x: 1\r\n}\r\n";
+    let value = obj(&[("text", s("    four\n      six"))]);
+    let output = insert_value(source, "a.value", &value).unwrap();
+    assert_eq!(output, "a: {\r\n    x: 1\r\n    value: {\r\n        text: ((\r\n    four\r\n      six\r\n        ))\r\n    }\r\n}\r\n");
+    let expected = obj(&[(
+        "a",
+        obj(&[("x", Value::Integer("1".into())), ("value", value)]),
+    )]);
+    assert_eq!(parse(&output).unwrap(), expected);
+}
+
+#[test]
 fn insert_multiline_string_expands_inline_parent_to_block() {
     let t = "a: {x: 1}\n";
     assert_eq!(

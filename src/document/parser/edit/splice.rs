@@ -864,17 +864,20 @@ fn reindent(doc: &str, indent: &str, eol: &str) -> String {
     let mut out = String::with_capacity(doc.len());
     let mut in_verbatim = false;
     for (i, line) in doc.lines().enumerate() {
-        let line = line.strip_prefix("    ").unwrap_or(line);
         let verbatim_open = line.ends_with("((");
         let verbatim_close = line.trim_matches(|c: char| c == ' ' || c == '\t') == "))";
         if i > 0 {
             out.push_str(eol);
-            let skip_prefix = in_verbatim || line.is_empty();
+            let skip_prefix = (in_verbatim && !verbatim_close) || line.is_empty();
             if !skip_prefix {
                 out.push_str(indent);
             }
         }
-        out.push_str(line);
+        if !in_verbatim || verbatim_close {
+            out.push_str(line.strip_prefix("    ").unwrap_or(line));
+        } else {
+            out.push_str(line);
+        }
         if verbatim_open {
             in_verbatim = true;
         } else if verbatim_close {
