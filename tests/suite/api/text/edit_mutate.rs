@@ -34,6 +34,32 @@ fn keys_of(v: &Value) -> Vec<&str> {
     }
 }
 
+#[test]
+fn rename_preserves_order_and_nested_sibling_values() {
+    let source = "before: {nested: [1, 2]}\ntarget: 3\nafter: {v: keep}\n";
+    let expected = "before: {nested: [1, 2]}\nrenamed: 3\nafter: {v: keep}\n";
+    let tree = obj(&[
+        (
+            "before",
+            obj(&[(
+                "nested",
+                Value::Array(vec![Value::Integer("1".into()), Value::Integer("2".into())]),
+            )]),
+        ),
+        ("renamed", Value::Integer("3".into())),
+        ("after", obj(&[("v", s("keep"))])),
+    ]);
+    for output in [
+        rename_key(source, "target", "renamed").unwrap(),
+        rename_key_segments(source, &["target"], "renamed").unwrap(),
+    ] {
+        assert_eq!(output, expected);
+        let parsed = parse(&output).unwrap();
+        assert_eq!(parsed, tree);
+        assert_eq!(keys_of(&parsed), ["before", "renamed", "after"]);
+    }
+}
+
 // --- inline root после ведущих trivia ----------------------------------------
 
 #[test]

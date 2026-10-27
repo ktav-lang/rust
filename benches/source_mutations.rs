@@ -129,6 +129,19 @@ fn cases() -> Vec<Case> {
     for rows in [4, 4096, 32768] {
         cases.extend(flat_cases(rows));
     }
+    let payload = "x".repeat(128 * 1024);
+    cases.push(Case {
+        name: "rename_large_sibling".into(),
+        operation: Operation::Rename,
+        source: format!("payload: {payload}\ntarget: 1\n"),
+        path: "target".into(),
+        segments: vec!["target".into()],
+        expected: format!("payload: {payload}\nrenamed: 1\n"),
+        semantic: object([
+            ("payload", Value::String(payload.into())),
+            ("renamed", integer()),
+        ]),
+    });
     cases.extend([
         Case {
             name: "insert_inline_unicode".into(),
