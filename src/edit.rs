@@ -20,9 +20,16 @@
 //! numeric segment is a string key inside an Object and a zero-based
 //! index inside an Array.
 //!
-//! Only *replacement of an existing value* is supported — no automatic
-//! path creation, no removal, no rename. Descending through a scalar,
-//! a missing key, or an out-of-bounds index is [`EditError::NotFound`].
+//! Replacement, insertion, removal and key renaming share the same
+//! lossless guarantees. [`insert_value`] adds a *new* final Object key
+//! (existing key: [`EditError::AlreadyExists`], never an overwrite;
+//! insertion into an Array is an explicit `Unsupported`);
+//! [`remove_value`] deletes an existing leaf, subtree or Array element
+//! (empty ancestors are kept — removing the only dotted leaf keeps its
+//! parent as an empty Object); [`rename_key`] renames an existing
+//! Object member in place (identical key: byte-identical no-op).
+//! Descending through a scalar, a missing key, or an out-of-bounds
+//! index is [`EditError::NotFound`].
 //!
 //! # Limitations
 //!
@@ -68,6 +75,9 @@ pub enum EditError {
     /// non-numeric or out-of-bounds array index, descent through a
     /// scalar, or an empty path.
     NotFound,
+    /// The addressed Object key already exists; insertion never
+    /// overwrites, and renaming onto an existing sibling is refused.
+    AlreadyExists,
     /// No lossless single-range patch exists for this target or
     /// replacement; the reason describes which limitation fired.
     Unsupported {
@@ -109,6 +119,66 @@ pub fn edit_value_segments<S: AsRef<str>>(
     crate::document::parser::edit::splice::apply(text, path, replacement)
 }
 
+/// Вставить новый ключ `path` (полный путь; последний сегмент — новый
+/// ключ Object) со значением `replacement`. Родитель обязан
+/// существовать и быть Object; существующий ключ —
+/// [`EditError::AlreadyExists`] (никогда не overwrite), вставка в
+/// Array — явный [`EditError::Unsupported`]. Новая пара добавляется в
+/// конец Object; см. [правила](self).
+pub fn insert_value(text: &str, path: &str, replacement: &Value) -> Result<String, EditError> {
+    let segments = parse_path(path)?;
+    insert_value_segments(text, &segments, replacement)
+}
+
+/// [`insert_value`] with pre-decoded literal segments: the last
+/// segment is the new Object key; an empty segment list is
+/// [`EditError::NotFound`].
+pub fn insert_value_segments<S: AsRef<str>>(
+    text: &str,
+    path: &[S],
+    replacement: &Value,
+) -> Result<String, EditError> {
+    crate::document::parser::edit::splice::insert_apply(text, path, replacement)
+}
+
+/// Удалить существующее значение по `path`: лист, целое поддерево или
+/// элемент массива (хвост массива сдвигается естественно). Пустые
+/// предки не удаляются: удаление единственного dotted-листа сохраняет
+/// родителя пустым Object; блочная форма остаётся блочной, inline —
+/// inline, где это возможно. Комментарии внутри удаляемого контейнера
+/// — [`EditError::Unsupported`].
+pub fn remove_value(text: &str, path: &str) -> Result<String, EditError> {
+    let segments = parse_path(path)?;
+    remove_value_segments(text, &segments)
+}
+
+/// [`remove_value`] with pre-decoded literal segments; an empty
+/// segment list is [`EditError::NotFound`].
+pub fn remove_value_segments<S: AsRef<str>>(text: &str, path: &[S]) -> Result<String, EditError> {
+    crate::document::parser::edit::splice::remove_apply(text, path)
+}
+
+/// Переименовать ключ существующего члена Object по `path` в
+/// `new_key` (один буквальный декодированный сегмент; точка и backslash
+/// внутри — часть имени, не синтаксис пути). Позиция, порядок и
+/// значение сохраняются; идентичный ключ — byte-identical no-op;
+/// занятый сосед — [`EditError::AlreadyExists`]; индекс массива и
+/// невоспроизводимый ключ — [`EditError::Unsupported`].
+pub fn rename_key(text: &str, path: &str, new_key: &str) -> Result<String, EditError> {
+    let segments = parse_path(path)?;
+    rename_key_segments(text, &segments, new_key)
+}
+
+/// [`rename_key`] with pre-decoded literal segments; an empty segment
+/// list is [`EditError::NotFound`].
+pub fn rename_key_segments<S: AsRef<str>>(
+    text: &str,
+    path: &[S],
+    new_key: &str,
+) -> Result<String, EditError> {
+    crate::document::parser::edit::splice::rename_apply(text, path, new_key)
+}
+
 impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -118,6 +188,9 @@ impl std::fmt::Display for EditError {
             ),
             EditError::NotFound => {
                 write!(f, "edit path does not address an existing value")
+            }
+            EditError::AlreadyExists => {
+                write!(f, "edit target already exists; insertion never overwrites")
             }
             EditError::Unsupported { reason } => {
                 write!(f, "no lossless source edit: {reason}")

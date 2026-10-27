@@ -4,6 +4,8 @@
 
 #[path = "text/docs.rs"]
 mod docs;
+#[path = "text/edit_mutate.rs"]
+mod edit_mutate;
 #[path = "text/edit_value.rs"]
 mod edit_value;
 #[path = "text/inline.rs"]

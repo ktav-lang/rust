@@ -22,6 +22,7 @@
 
 ### 新增
 
+- 无损源编辑操作 `ktav::edit::{insert_value, remove_value, rename_key}`（及各自的 `*_segments` 变体）：追加新的 Object 键，冲突时报显式 `AlreadyExists` 且绝不隐蔽覆盖；删除叶子/子树/数组元素时保留空祖先和容器形式；在原位重命名 Object 成员并保留顺序、值与注释。沿用相同的路径语法、行内可读性阈值、注释丢失拒绝及编辑后语义验证；无效源以 `Unsupported` 失败闭合。通过六个增量且向后兼容的 ABI 2 导出提供给宿主——`ktav_insert_value`、`ktav_insert_value_segments`、`ktav_remove_value`（两个输入缓冲区，无替换参数）、`ktav_remove_value_segments`、`ktav_rename_key` 和 `ktav_rename_key_segments`（UTF-8 字面已解码键）；`EditAlreadyExists` 映射为 `EditAlreadyExists`；新绑定必须要求这些符号，ABI 版本不变。
 - Rust 源文本编辑 API：`ktav::edit::edit_value` 接受带转义的点分路径，`edit_value_segments` 接受字面路径段切片/向量。两者均在不重新格式化文档的情况下替换已有值，保留周围字节与注释，并返回新的 `String`。
 - 按上下文区分对象键与数组索引，支持路径转义 `\.`/`\\`、最小化 raw 标记调整、值不变时保留原文，以及编辑后的语义验证。类型化的 `EditError` 拒绝错误路径、不存在的目标及不支持的无损替换，包括整个不连续对象和会丢失注释的结构修改。
 - 精确文本回归测试及 EN/RU/ZH 用法示例。不改变语法、现有解析器/formatter API 或包版本；此功能不包含在已发布的 0.8.1 crate 中。

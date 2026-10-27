@@ -7,7 +7,11 @@
 //! `Unsupported` ДО сплайса; совпадающее значение — byte-identical
 //! no-op. После патча — обязательная семантическая верификация.
 
+mod insert;
 mod layout;
+mod ops;
+mod remove;
+mod rename;
 
 use std::fmt::Write as _;
 
@@ -914,4 +918,27 @@ fn detect_eol(text: &str, pos: usize) -> &'static str {
         Some(i) if i > 0 && bytes[i - 1] == b'\r' => "\r\n",
         _ => "\n",
     }
+}
+
+/// Вставка нового ключа в существующий Object (см. [`insert`]).
+pub(crate) fn insert_apply<S: AsRef<str>>(
+    text: &str,
+    segments: &[S],
+    replacement: &Value,
+) -> Result<String, EditError> {
+    insert::apply(text, segments, replacement)
+}
+
+/// Удаление существующего значения/поддерева/элемента массива.
+pub(crate) fn remove_apply<S: AsRef<str>>(text: &str, segments: &[S]) -> Result<String, EditError> {
+    remove::apply(text, segments)
+}
+
+/// Переименование ключа существующего члена Object.
+pub(crate) fn rename_apply<S: AsRef<str>>(
+    text: &str,
+    segments: &[S],
+    new_key: &str,
+) -> Result<String, EditError> {
+    rename::apply(text, segments, new_key)
 }

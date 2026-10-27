@@ -1,4 +1,4 @@
-/// Развернуть ABI2 exports в вызывающем crate: девять document functions,
+/// Развернуть ABI2 exports в вызывающем crate: пятнадцать document functions,
 /// `ktav_free`, `ktav_version` и `ktav_abi_version`. Символы определены
 /// в самом cdylib, а не в потенциально удаляемом dependency rlib.
 ///
@@ -294,17 +294,18 @@ macro_rules! declare_cabi {
             }
         }
 
-        unsafe fn ktav_cabi_edit_call(
-            source: (*const u8, usize),
-            path: (*const u8, usize),
-            replacement: (*const u8, usize),
+        /// Общая FFI-обвязка source-edit семейства: валидация output
+        /// slots, инициализация до работы с inputs, проверка ptr/len,
+        /// catch_unwind. `run` получает срезы входов в порядке `inputs`.
+        unsafe fn ktav_cabi_source_edit_call(
+            inputs: &[(*const u8, usize)],
             output: (
                 *mut *mut u8,
                 *mut usize,
                 *mut *mut ::core::ffi::c_char,
                 *mut usize,
             ),
-            segments: bool,
+            run: fn(&[&[u8]]) -> Result<Vec<u8>, String>,
         ) -> ::core::ffi::c_int {
             let (out_buf, out_len, out_err, out_err_len) = output;
             if out_buf.is_null() || out_len.is_null() || out_err.is_null() || out_err_len.is_null()
@@ -323,37 +324,24 @@ macro_rules! declare_cabi {
                     .to_json()
             };
             let result = ::std::panic::catch_unwind(|| {
-                for (ptr, len) in [source, path, replacement] {
-                    if (ptr.is_null() && len != 0) || len > isize::MAX as usize {
+                for (ptr, len) in inputs {
+                    if (ptr.is_null() && *len != 0) || *len > isize::MAX as usize {
                         return Err(message("invalid source-edit input pointer or length"));
                     }
                 }
                 // SAFETY: caller гарантирует readable spans на время вызова;
                 // null допускается только при нулевой длине, без создания slice из null.
-                let (src, path, replacement) = unsafe {
-                    (
-                        if source.1 == 0 {
+                let slices: Vec<&[u8]> = inputs
+                    .iter()
+                    .map(|(ptr, len)| unsafe {
+                        if *len == 0 {
                             &[][..]
                         } else {
-                            ::core::slice::from_raw_parts(source.0, source.1)
-                        },
-                        if path.1 == 0 {
-                            &[][..]
-                        } else {
-                            ::core::slice::from_raw_parts(path.0, path.1)
-                        },
-                        if replacement.1 == 0 {
-                            &[][..]
-                        } else {
-                            ::core::slice::from_raw_parts(replacement.0, replacement.1)
-                        },
-                    )
-                };
-                if segments {
-                    $crate::cabi::edit_value_segments(src, path, replacement)
-                } else {
-                    $crate::cabi::edit_value(src, path, replacement)
-                }
+                            ::core::slice::from_raw_parts(*ptr, *len)
+                        }
+                    })
+                    .collect();
+                run(&slices)
             })
             .unwrap_or_else(|_| Err(message("internal: source-edit panicked")));
             match result {
@@ -395,12 +383,14 @@ macro_rules! declare_cabi {
         ) -> ::core::ffi::c_int {
             // SAFETY: все spans и output slots унаследованы из контракта этой функции.
             unsafe {
-                ktav_cabi_edit_call(
-                    (src, src_len),
-                    (path, path_len),
-                    (replacement, replacement_len),
+                ktav_cabi_source_edit_call(
+                    &[
+                        (src, src_len),
+                        (path, path_len),
+                        (replacement, replacement_len),
+                    ],
                     (out_buf, out_len, out_err, out_err_len),
-                    false,
+                    |a: &[&[u8]]| $crate::cabi::edit_value(a[0], a[1], a[2]),
                 )
             }
         }
@@ -426,12 +416,194 @@ macro_rules! declare_cabi {
         ) -> ::core::ffi::c_int {
             // SAFETY: все spans и output slots унаследованы из контракта этой функции.
             unsafe {
-                ktav_cabi_edit_call(
-                    (src, src_len),
-                    (path, path_len),
-                    (replacement, replacement_len),
+                ktav_cabi_source_edit_call(
+                    &[
+                        (src, src_len),
+                        (path, path_len),
+                        (replacement, replacement_len),
+                    ],
                     (out_buf, out_len, out_err, out_err_len),
-                    true,
+                    |a: &[&[u8]]| $crate::cabi::edit_value_segments(a[0], a[1], a[2]),
+                )
+            }
+        }
+
+        /// Вставить новый ключ Object: textual path, replacement — tagged wire.
+        ///
+        /// # Safety
+        /// Входные spans читаемы на время вызова; null допустим только при len=0.
+        /// Output slots writable, попарно не пересекаются и не перекрывают inputs.
+        /// Возвращённые buffers освобождаются ровно один раз через ktav_free.
+        #[no_mangle]
+        pub unsafe extern "C" fn ktav_insert_value(
+            src: *const u8,
+            src_len: usize,
+            path: *const u8,
+            path_len: usize,
+            replacement: *const u8,
+            replacement_len: usize,
+            out_buf: *mut *mut u8,
+            out_len: *mut usize,
+            out_err: *mut *mut ::core::ffi::c_char,
+            out_err_len: *mut usize,
+        ) -> ::core::ffi::c_int {
+            // SAFETY: все spans и output slots унаследованы из контракта этой функции.
+            unsafe {
+                ktav_cabi_source_edit_call(
+                    &[
+                        (src, src_len),
+                        (path, path_len),
+                        (replacement, replacement_len),
+                    ],
+                    (out_buf, out_len, out_err, out_err_len),
+                    |a: &[&[u8]]| $crate::cabi::insert_value(a[0], a[1], a[2]),
+                )
+            }
+        }
+
+        /// Вставка нового ключа по JSON-массиву буквальных сегментов.
+        ///
+        /// # Safety
+        /// Входные spans читаемы на время вызова; null допустим только при len=0.
+        /// Output slots writable, попарно не пересекаются и не перекрывают inputs.
+        /// Возвращённые buffers освобождаются ровно один раз через ktav_free.
+        #[no_mangle]
+        pub unsafe extern "C" fn ktav_insert_value_segments(
+            src: *const u8,
+            src_len: usize,
+            path: *const u8,
+            path_len: usize,
+            replacement: *const u8,
+            replacement_len: usize,
+            out_buf: *mut *mut u8,
+            out_len: *mut usize,
+            out_err: *mut *mut ::core::ffi::c_char,
+            out_err_len: *mut usize,
+        ) -> ::core::ffi::c_int {
+            // SAFETY: все spans и output slots унаследованы из контракта этой функции.
+            unsafe {
+                ktav_cabi_source_edit_call(
+                    &[
+                        (src, src_len),
+                        (path, path_len),
+                        (replacement, replacement_len),
+                    ],
+                    (out_buf, out_len, out_err, out_err_len),
+                    |a: &[&[u8]]| $crate::cabi::insert_value_segments(a[0], a[1], a[2]),
+                )
+            }
+        }
+
+        /// Удалить существующее значение/поддерево/элемент массива:
+        /// ровно два входных буфера (source + path).
+        ///
+        /// # Safety
+        /// Входные spans читаемы на время вызова; null допустим только при len=0.
+        /// Output slots writable, попарно не пересекаются и не перекрывают inputs.
+        /// Возвращённые buffers освобождаются ровно один раз через ktav_free.
+        #[no_mangle]
+        pub unsafe extern "C" fn ktav_remove_value(
+            src: *const u8,
+            src_len: usize,
+            path: *const u8,
+            path_len: usize,
+            out_buf: *mut *mut u8,
+            out_len: *mut usize,
+            out_err: *mut *mut ::core::ffi::c_char,
+            out_err_len: *mut usize,
+        ) -> ::core::ffi::c_int {
+            // SAFETY: все spans и output slots унаследованы из контракта этой функции.
+            unsafe {
+                ktav_cabi_source_edit_call(
+                    &[(src, src_len), (path, path_len)],
+                    (out_buf, out_len, out_err, out_err_len),
+                    |a: &[&[u8]]| $crate::cabi::remove_value(a[0], a[1]),
+                )
+            }
+        }
+
+        /// Удаление по JSON-массиву буквальных сегментов пути.
+        ///
+        /// # Safety
+        /// Входные spans читаемы на время вызова; null допустим только при len=0.
+        /// Output slots writable, попарно не пересекаются и не перекрывают inputs.
+        /// Возвращённые buffers освобождаются ровно один раз через ktav_free.
+        #[no_mangle]
+        pub unsafe extern "C" fn ktav_remove_value_segments(
+            src: *const u8,
+            src_len: usize,
+            path: *const u8,
+            path_len: usize,
+            out_buf: *mut *mut u8,
+            out_len: *mut usize,
+            out_err: *mut *mut ::core::ffi::c_char,
+            out_err_len: *mut usize,
+        ) -> ::core::ffi::c_int {
+            // SAFETY: все spans и output slots унаследованы из контракта этой функции.
+            unsafe {
+                ktav_cabi_source_edit_call(
+                    &[(src, src_len), (path, path_len)],
+                    (out_buf, out_len, out_err, out_err_len),
+                    |a: &[&[u8]]| $crate::cabi::remove_value_segments(a[0], a[1]),
+                )
+            }
+        }
+
+        /// Переименовать ключ; textual path, `new_key` — UTF-8 литеральный
+        /// decoded сегмент (не JSON и не path-синтаксис).
+        ///
+        /// # Safety
+        /// Входные spans читаемы на время вызова; null допустим только при len=0.
+        /// Output slots writable, попарно не пересекаются и не перекрывают inputs.
+        /// Возвращённые buffers освобождаются ровно один раз через ktav_free.
+        #[no_mangle]
+        pub unsafe extern "C" fn ktav_rename_key(
+            src: *const u8,
+            src_len: usize,
+            path: *const u8,
+            path_len: usize,
+            new_key: *const u8,
+            new_key_len: usize,
+            out_buf: *mut *mut u8,
+            out_len: *mut usize,
+            out_err: *mut *mut ::core::ffi::c_char,
+            out_err_len: *mut usize,
+        ) -> ::core::ffi::c_int {
+            // SAFETY: все spans и output slots унаследованы из контракта этой функции.
+            unsafe {
+                ktav_cabi_source_edit_call(
+                    &[(src, src_len), (path, path_len), (new_key, new_key_len)],
+                    (out_buf, out_len, out_err, out_err_len),
+                    |a: &[&[u8]]| $crate::cabi::rename_key(a[0], a[1], a[2]),
+                )
+            }
+        }
+
+        /// Переименование по JSON-массиву сегментов пути.
+        ///
+        /// # Safety
+        /// Входные spans читаемы на время вызова; null допустим только при len=0.
+        /// Output slots writable, попарно не пересекаются и не перекрывают inputs.
+        /// Возвращённые buffers освобождаются ровно один раз через ktav_free.
+        #[no_mangle]
+        pub unsafe extern "C" fn ktav_rename_key_segments(
+            src: *const u8,
+            src_len: usize,
+            path: *const u8,
+            path_len: usize,
+            new_key: *const u8,
+            new_key_len: usize,
+            out_buf: *mut *mut u8,
+            out_len: *mut usize,
+            out_err: *mut *mut ::core::ffi::c_char,
+            out_err_len: *mut usize,
+        ) -> ::core::ffi::c_int {
+            // SAFETY: все spans и output slots унаследованы из контракта этой функции.
+            unsafe {
+                ktav_cabi_source_edit_call(
+                    &[(src, src_len), (path, path_len), (new_key, new_key_len)],
+                    (out_buf, out_len, out_err, out_err_len),
+                    |a: &[&[u8]]| $crate::cabi::rename_key_segments(a[0], a[1], a[2]),
                 )
             }
         }

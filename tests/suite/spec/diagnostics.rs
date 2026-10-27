@@ -122,6 +122,14 @@ fn source_cabi_diagnostics_match_same_fixture_oracles() {
         ktav::cabi::canonical_from_source,
         |source| ktav::cabi::edit_value(source, b"target", b"null"),
         |source| ktav::cabi::edit_value_segments(source, br#"["target"]"#, b"null"),
+        // Новые source-CABI операции (task114) проверяются тем же oracle:
+        // те же fixtures, те же ожидаемые locations, без изменения счётчика.
+        |source| ktav::cabi::insert_value(source, b"target", b"null"),
+        |source| ktav::cabi::insert_value_segments(source, br#"["target"]"#, b"null"),
+        |source| ktav::cabi::remove_value(source, b"target"),
+        |source| ktav::cabi::remove_value_segments(source, br#"["target"]"#),
+        |source| ktav::cabi::rename_key(source, b"target", b"other"),
+        |source| ktav::cabi::rename_key_segments(source, br#"["target"]"#, b"other"),
     ];
     let fixtures = collect_invalid_fixtures(&root);
     let mut checked = 0;
