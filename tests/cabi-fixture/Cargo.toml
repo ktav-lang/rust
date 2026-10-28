@@ -6,6 +6,7 @@
 name = "ktav-cabi-fixture"
 version = "0.0.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 publish = false
 # Must match the parent crate's MSRV. This is not cosmetic: without it
 # Cargo resolves the fixture's graph with no MSRV awareness and writes a
