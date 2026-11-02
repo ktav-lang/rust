@@ -1,0 +1,40 @@
+name: License checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-licenses:
+    name: Cargo dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902
+        with:
+          command: check licenses
+
+  fixture-licenses:
+    name: C ABI fixture dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@b66acf5e9fe20f8aba065be86778a8a4c846f902
+        with:
+          manifest-path: ./tests/cabi-fixture/Cargo.toml
+          command: check licenses
+
+  npm-licenses:
+    name: npm dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node --test tests/npm-license-policy.test.mjs
+      - run: node scripts/check-npm-licenses.mjs
